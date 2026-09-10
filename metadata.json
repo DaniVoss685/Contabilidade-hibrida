@@ -1,0 +1,6 @@
+{
+  "name": "Dental Finance",
+  "description": "Controle financeiro e tributário híbrido para dentistas brasileiros com Fluxo de Caixa mensal lado a lado, DRE anual, controle de categorias, Carnê-Leão e Simples Nacional.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
