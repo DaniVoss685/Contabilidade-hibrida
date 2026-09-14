@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Edit3, CheckCircle2, User, Building, Layers } from 'lucide-react';
 import { ExpenseCategory, ExpenseEntity, PaymentMethod } from '../../types';
+import { CustomSelect, DatePicker, useToast } from '../UI';
 
 interface BatchEditExpensesModalProps {
   isOpen: boolean;
@@ -23,11 +24,12 @@ export const BatchEditExpensesModal: React.FC<BatchEditExpensesModalProps> = ({
   onClose,
   onApply,
 }) => {
+  const toast = useToast();
   const [changeEntity, setChangeEntity] = useState(false);
-  const [entity, setEntity] = useState<ExpenseEntity>('CPF');
+  const [entity, setEntity] = useState<ExpenseEntity>('PJ_CLINICA');
 
   const [changeCategory, setChangeCategory] = useState(false);
-  const [categoryId, setCategoryId] = useState<string>(categories[0]?.id || '');
+  const [categoryId, setCategoryId] = useState('');
 
   const [changeStatus, setChangeStatus] = useState(false);
   const [status, setStatus] = useState<'PAGO' | 'A_PAGAR'>('PAGO');
@@ -42,7 +44,7 @@ export const BatchEditExpensesModal: React.FC<BatchEditExpensesModalProps> = ({
     e.preventDefault();
 
     if (!changeEntity && !changeCategory && !changeStatus) {
-      alert('Selecione ao menos um campo para atualizar em lote.');
+      toast.warning('Selecione ao menos um campo para atualizar em lote.');
       return;
     }
 
@@ -76,24 +78,25 @@ export const BatchEditExpensesModal: React.FC<BatchEditExpensesModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden border border-slate-200/80 animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
-        <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-slate-200/80 bg-white flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-teal-500/20 text-teal-400">
-              <Edit3 className="w-5 h-5" />
+            <div className="w-8 h-8 rounded-lg bg-teal-50 border border-teal-200/80 text-teal-600 flex items-center justify-center">
+              <Edit3 className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold">Edição em Lote de Despesas</h2>
-              <p className="text-xs text-slate-400">
-                Aplicar alterações para <span className="text-teal-300 font-semibold">{selectedCount}</span> despesa(s) selecionada(s)
+              <h2 className="text-base font-semibold text-slate-900">Edição em Lote de Despesas</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Aplicar alterações para <span className="text-primary-600 font-semibold">{selectedCount}</span> despesa(s) selecionada(s)
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -164,17 +167,15 @@ export const BatchEditExpensesModal: React.FC<BatchEditExpensesModalProps> = ({
 
             {changeCategory && (
               <div className="pl-6 pt-1">
-                <select
+                <CustomSelect
                   value={categoryId}
-                  onChange={(e) => setCategoryId(e.target.value)}
-                  className="w-full text-xs font-medium rounded-lg border border-slate-300 p-2.5 bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                >
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.code} - {c.name} ({c.type})
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setCategoryId(val)}
+                  options={categories.map((c) => ({
+                    value: c.id,
+                    label: `${c.code} - ${c.name} (${c.type})`,
+                  }))}
+                  searchable
+                />
                 <p className="text-[11px] text-slate-500 mt-1.5">
                   Atualizará os atributos de dedutibilidade (Livro Caixa PF) e impacto no Fator R (PJ) automaticamente com base na categoria escolhida.
                 </p>
@@ -229,28 +230,26 @@ export const BatchEditExpensesModal: React.FC<BatchEditExpensesModalProps> = ({
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                         Forma de Pagamento
                       </label>
-                      <select
+                      <CustomSelect
                         value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-                        className="w-full text-xs rounded-lg border border-slate-300 p-2 bg-white"
-                      >
-                        <option value="PIX">PIX</option>
-                        <option value="BOLETO">Boleto Bancário</option>
-                        <option value="TRANSFERENCIA">Transferência / TED</option>
-                        <option value="CARTAO_DEBITO">Cartão de Débito</option>
-                        <option value="CARTAO_CREDITO">Cartão de Crédito</option>
-                        <option value="DINHEIRO">Dinheiro Espécie</option>
-                      </select>
+                        onChange={(val) => setPaymentMethod(val as PaymentMethod)}
+                        options={[
+                          { value: 'PIX', label: 'PIX' },
+                          { value: 'BOLETO', label: 'Boleto Bancário' },
+                          { value: 'TRANSFERENCIA', label: 'Transferência / TED' },
+                          { value: 'CARTAO_DEBITO', label: 'Cartão de Débito' },
+                          { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
+                          { value: 'DINHEIRO', label: 'Dinheiro Espécie' },
+                        ]}
+                      />
                     </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                         Data de Quitação
                       </label>
-                      <input
-                        type="date"
+                      <DatePicker
                         value={paymentDate}
-                        onChange={(e) => setPaymentDate(e.target.value)}
-                        className="w-full text-xs rounded-lg border border-slate-300 p-2 bg-white"
+                        onChange={setPaymentDate}
                       />
                     </div>
                   </div>

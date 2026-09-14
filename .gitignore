@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# QA, scratch e ferramentas temporárias
+qa-artifacts/
+scratch/
+.agents/

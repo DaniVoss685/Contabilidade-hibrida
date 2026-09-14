@@ -29,6 +29,7 @@ import {
 } from '../../lib/taxEngine';
 import { formatCurrency, formatCpf, formatDateBr, formatPercent } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
+import { PeriodPicker, useToast } from '../UI';
 
 interface ReportsViewProps {
   sales: Sale[];
@@ -70,12 +71,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   selectedMonth: propMonth,
   onChangePeriod,
 }) => {
+  const toast = useToast();
   const [selectedReport, setSelectedReport] = useState<ReportType>('LIVRO_CAIXA_PF');
-  const [internalYear, setInternalYear] = useState<number>(propYear || 2025);
-  const [internalMonth, setInternalMonth] = useState<number | 'ALL'>(propMonth !== undefined ? propMonth : 5);
+  const [internalYear, setInternalYear] = useState<number>(propYear || new Date().getFullYear());
+  const [internalMonth, setInternalMonth] = useState<number | 'ALL'>(
+    propMonth !== undefined ? propMonth : (new Date().getMonth() + 1)
+  );
 
   const effectiveYear = propYear !== undefined ? propYear : internalYear;
   const effectiveMonth = propMonth !== undefined ? propMonth : internalMonth;
+
+  const handlePeriodChange = (year: number, month: number | 'ALL') => {
+    setInternalYear(year);
+    setInternalMonth(month);
+    if (onChangePeriod) onChangePeriod(year, month);
+  };
 
   const handleMonthChange = (val: number | 'ALL') => {
     setInternalMonth(val);
@@ -231,7 +241,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       exportToCsv(`relatorio_mensal_contador_${competenceStr}`, rows);
     } else {
       // Generic export
-      alert('Exportação iniciada para o relatório selecionado.');
+      toast.info('Exportação iniciada para o relatório selecionado.');
     }
   };
 
@@ -255,39 +265,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
 
         {/* Competence Selector & Download CTA */}
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 bg-white p-1.5 rounded-lg border border-slate-200">
-            <select
-              value={effectiveMonth}
-              onChange={(e) => {
-                const val = e.target.value === 'ALL' ? 'ALL' : parseInt(e.target.value, 10);
-                handleMonthChange(val);
-              }}
-              className="text-xs font-semibold rounded border border-slate-300 p-1 bg-slate-50 cursor-pointer"
-            >
-              <option value="ALL">Ano Inteiro (Todos)</option>
-              {months.map((m, idx) => (
-                <option key={idx + 1} value={idx + 1}>
-                  {String(idx + 1).padStart(2, '0')} - {m}
-                </option>
-              ))}
-            </select>
-            <select
-              value={effectiveYear}
-              onChange={(e) => handleYearChange(parseInt(e.target.value, 10))}
-              className="text-xs font-semibold rounded border border-slate-300 p-1 bg-slate-50 cursor-pointer"
-            >
-              {[2024, 2025, 2026, 2027].map((y) => (
-                <option key={y} value={y}>
-                  Ano {y}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="flex items-center gap-3">
+          <PeriodPicker
+            selectedYear={effectiveYear}
+            selectedMonth={effectiveMonth}
+            onChange={handlePeriodChange}
+            allowAllMonths={true}
+          />
 
           <button
             onClick={handleExportCsv}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-md transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-sm transition-all cursor-pointer"
           >
             <Download className="w-4 h-4" />
             <span>Exportar CSV / Excel</span>

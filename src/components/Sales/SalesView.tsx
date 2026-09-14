@@ -18,12 +18,14 @@ import {
   Square,
   Edit,
   Calendar,
+  RotateCcw,
 } from 'lucide-react';
 import { Sale, TaxOrigin, ReceitaSaudeStatus, NfseStatus } from '../../types';
-import { formatCurrency, formatCpf, formatDateBr } from '../../lib/masks';
+import { formatCurrency, formatCpf, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
-import { db } from '../../lib/db';
+import { db, getSalePaymentSummary } from '../../lib/db';
 import { NewSaleModal } from '../Modals/NewSaleModal';
+import { CustomSelect, ConfirmDialog, useToast } from '../UI';
 
 const MONTH_NAMES = [
   '',
@@ -60,6 +62,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
   selectedMonth,
   onResetPeriod,
 }) => {
+  const toast = useToast();
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [taxOriginFilter, setTaxOriginFilter] = useState<'ALL' | TaxOrigin>('ALL');
@@ -73,6 +76,21 @@ export const SalesView: React.FC<SalesViewProps> = ({
   // Bulk selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
+
+  // Confirm dialog state
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    variant?: 'danger' | 'warning' | 'primary';
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   const handleToggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -97,34 +115,57 @@ export const SalesView: React.FC<SalesViewProps> = ({
   const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
-    if (
-      confirm(
-        `ATENÇÃO: Deseja realmente excluir ${count} receita(s) selecionada(s)? Esta ação cancelará os recebimentos vinculados.`
-      )
-    ) {
-      db.batchDeleteSales(Array.from(selectedIds));
-      setSelectedIds(new Set());
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Receitas Selecionadas',
+      message: `ATENÇÃO: Deseja realmente excluir ${count} receita(s) selecionada(s)? Esta ação cancelará os recebimentos vinculados.`,
+      confirmLabel: 'Excluir Todas',
+      variant: 'danger',
+      onConfirm: () => {
+        db.batchDeleteSales(Array.from(selectedIds));
+        setSelectedIds(new Set());
+        toast.success('Receitas excluídas com sucesso.');
+      },
+    });
   };
 
   const handleDeleteSingleSale = (id: string, patient: string) => {
-    if (confirm(`Deseja realmente excluir a venda do paciente "${patient}"?`)) {
-      db.deleteSale(id);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Receita',
+      message: `Deseja realmente excluir a venda do paciente "${patient}"?`,
+      confirmLabel: 'Excluir',
+      variant: 'danger',
+      onConfirm: () => {
+        db.deleteSale(id);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        toast.success('Receita excluída com sucesso.');
+      },
+    });
+  };
+
+  const handleUnsettleInstallment = (saleId: string, installmentId: string) => {
+    db.unsettleInstallment(saleId, installmentId);
+    toast.success('Recebimento da parcela desfeito com sucesso.');
   };
 
   const filteredSales = useMemo(() => {
+    const trimmed = searchTerm.trim();
+    const normQuery = normalizeSearchText(trimmed);
+
     return sales.filter((sale) => {
-      const matchesSearch =
-        sale.patientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        sale.procedureName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (sale.patientCpf && sale.patientCpf.includes(searchTerm.replace(/\D/g, ''))) ||
-        (sale.nfseNumber && sale.nfseNumber.includes(searchTerm));
+      let matchesSearch = true;
+      if (trimmed) {
+        const patientMatch = normalizeSearchText(sale.patientName).includes(normQuery);
+        const procedureMatch = normalizeSearchText(sale.procedureName).includes(normQuery);
+        const cpfMatch = matchDocumentSearch(sale.patientCpf, trimmed);
+        const nfseMatch = sale.nfseNumber ? sale.nfseNumber.includes(trimmed) : false;
+        matchesSearch = patientMatch || procedureMatch || cpfMatch || nfseMatch;
+      }
 
       const matchesOrigin =
         taxOriginFilter === 'ALL' || sale.taxOrigin === taxOriginFilter;
@@ -206,48 +247,48 @@ export const SalesView: React.FC<SalesViewProps> = ({
       {/* Header with Title and Prominent CTA */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-emerald-600" />
+          <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+            <TrendingUp className="w-5 h-5 text-teal-600" />
             Receitas e Procedimentos Clínicos
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Registro de procedimentos com segregação imediata entre Receita Saúde (CPF) e NFS-e (CNPJ)
+            Registro de tratamentos com segregação fiscal imediata entre Receita Saúde (CPF) e NFS-e (CNPJ)
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <button
             onClick={handleExportCsv}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 shadow-2xs transition-colors cursor-pointer"
           >
-            <Download className="w-3.5 h-3.5" />
+            <Download className="w-3.5 h-3.5 text-slate-400" />
             <span>Exportar CSV</span>
           </button>
 
           <button
             onClick={onOpenNewSale}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-md shadow-emerald-700/20 active:scale-98 transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 active:bg-teal-800 shadow-xs hover:shadow-sm transition-all cursor-pointer"
           >
-            <PlusCircle className="w-4 h-4" />
-            <span>+ NOVA RECEITA</span>
+            <PlusCircle className="w-3.5 h-3.5" />
+            <span>+ Nova Receita</span>
           </button>
         </div>
       </div>
 
       {/* Active Global Period Banner */}
       {selectedYear && (
-        <div className="bg-slate-50 border border-slate-200/90 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="bg-white border border-slate-200/80 rounded-2xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-teal-600 shrink-0" />
             <span className="text-slate-600">
-              Período Selecionado:{' '}
+              Período Ativo:{' '}
               <strong className="text-slate-900 font-bold">
                 {selectedMonth === 'ALL'
                   ? `Ano Inteiro de ${selectedYear}`
                   : `${MONTH_NAMES[selectedMonth || 1]} de ${selectedYear}`}
               </strong>
             </span>
-            <span className="bg-teal-100 text-teal-800 font-bold px-2 py-0.5 rounded-md text-[11px]">
+            <span className="bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded-md text-[10px] border border-slate-200">
               {filteredSales.length} {filteredSales.length === 1 ? 'lançamento' : 'lançamentos'}
             </span>
           </div>
@@ -256,35 +297,35 @@ export const SalesView: React.FC<SalesViewProps> = ({
             <button
               type="button"
               onClick={onResetPeriod}
-              className="text-teal-700 hover:text-teal-900 font-bold hover:underline cursor-pointer"
+              className="text-teal-700 hover:text-teal-900 font-semibold hover:underline cursor-pointer"
             >
-              Exibir todo o ano de {selectedYear}
+              Exibir todo o ano de {selectedYear} →
             </button>
           )}
         </div>
       )}
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
         {/* Search */}
         <div className="relative flex-1">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Buscar por paciente, procedimento, CPF ou NFS-e..."
+            placeholder="Buscar por paciente, procedimento, CPF ou documento fiscal..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 text-xs rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
+            className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/70 focus:bg-white focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 focus:outline-none transition-all"
           />
         </div>
 
         {/* Origin Filter Tabs */}
-        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+        <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 text-xs">
           <button
             onClick={() => setTaxOriginFilter('ALL')}
-            className={`px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
+            className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
               taxOriginFilter === 'ALL'
-                ? 'bg-white text-slate-900 shadow-xs'
+                ? 'bg-white text-slate-900 shadow-2xs font-bold'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -292,20 +333,20 @@ export const SalesView: React.FC<SalesViewProps> = ({
           </button>
           <button
             onClick={() => setTaxOriginFilter('CPF')}
-            className={`px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
+            className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
               taxOriginFilter === 'CPF'
-                ? 'bg-emerald-600 text-white shadow-xs'
-                : 'text-emerald-800 hover:bg-emerald-50'
+                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200/80 shadow-2xs font-bold'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             CPF ({sales.filter((s) => s.taxOrigin === 'CPF').length})
           </button>
           <button
             onClick={() => setTaxOriginFilter('CNPJ')}
-            className={`px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
+            className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
               taxOriginFilter === 'CNPJ'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-blue-800 hover:bg-blue-50'
+                ? 'bg-blue-50 text-blue-800 border border-blue-200/80 shadow-2xs font-bold'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             CNPJ ({sales.filter((s) => s.taxOrigin === 'CNPJ').length})
@@ -313,25 +354,27 @@ export const SalesView: React.FC<SalesViewProps> = ({
         </div>
 
         {/* Document Status Filter */}
-        <select
-          value={docFilter}
-          onChange={(e) => setDocFilter(e.target.value)}
-          className="text-xs font-medium rounded-lg border border-slate-300 p-2 bg-slate-50 focus:ring-2 focus:ring-teal-500 focus:outline-none"
-        >
-          <option value="ALL">Status Fiscal: Todos</option>
-          <option value="PENDING">Docs Pendentes de Emissão</option>
-          <option value="EMITTED">Docs Emitidos</option>
-        </select>
+        <div className="w-56">
+          <CustomSelect
+            value={docFilter}
+            onChange={(val) => setDocFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Status Fiscal: Todos' },
+              { value: 'PENDING', label: 'Docs Pendentes de Emissão' },
+              { value: 'EMITTED', label: 'Docs Emitidos' },
+            ]}
+          />
+        </div>
       </div>
 
       {/* Floating Bulk Action Bar */}
       {selectedIds.size > 0 && (
-        <div className="bg-slate-900 text-white p-3.5 rounded-xl shadow-lg border border-slate-800 flex items-center justify-between gap-3 animate-in fade-in">
+        <div className="bg-slate-900 text-white p-3 rounded-2xl shadow-lg border border-slate-800 flex items-center justify-between gap-3 animate-in fade-in">
           <div className="flex items-center gap-2">
-            <span className="bg-teal-500 text-slate-950 text-xs font-extrabold px-2.5 py-0.5 rounded-full">
+            <span className="bg-teal-500 text-slate-950 text-xs font-black px-2 py-0.5 rounded-full font-mono">
               {selectedIds.size}
             </span>
-            <span className="text-xs font-semibold text-slate-200">
+            <span className="text-xs font-medium text-slate-200">
               receita(s) selecionada(s)
             </span>
           </div>
@@ -339,7 +382,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={handleBatchDelete}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white transition-colors cursor-pointer shadow-xs"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white transition-colors cursor-pointer shadow-xs"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Excluir em Lote
@@ -347,7 +390,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
 
             <button
               onClick={() => setSelectedIds(new Set())}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
             >
               Desmarcar
             </button>
@@ -356,21 +399,21 @@ export const SalesView: React.FC<SalesViewProps> = ({
       )}
 
       {/* Table of Sales */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 text-slate-700 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200">
+            <thead className="bg-slate-50/80 text-slate-500 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200/80">
               <tr>
                 <th className="py-3 px-4 w-10 text-center">
                   <button
                     type="button"
                     onClick={() => handleSelectAll(filteredSales)}
-                    className="cursor-pointer text-slate-600 hover:text-slate-900"
+                    className="cursor-pointer text-slate-400 hover:text-slate-700"
                   >
                     {filteredSales.length > 0 && selectedIds.size === filteredSales.length ? (
                       <CheckSquare className="w-4 h-4 text-teal-600" />
                     ) : (
-                      <Square className="w-4 h-4 text-slate-400" />
+                      <Square className="w-4 h-4 text-slate-300" />
                     )}
                   </button>
                 </th>
@@ -395,6 +438,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
                 filteredSales.map((sale) => {
                   const isExpanded = expandedSaleId === sale.id;
                   const isSelected = selectedIds.has(sale.id);
+                  const summary = getSalePaymentSummary(sale);
                   const hasPendingReceitaSaude =
                     sale.taxOrigin === 'CPF' &&
                     sale.installments.some(
@@ -424,12 +468,12 @@ export const SalesView: React.FC<SalesViewProps> = ({
 
                         <td className="py-3.5 px-4">
                           {sale.taxOrigin === 'CPF' ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200/80">
                               <User className="w-3 h-3 text-emerald-600" />
                               CPF
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-blue-100 text-blue-800 border border-blue-200">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[10px] bg-blue-50 text-blue-800 border border-blue-200/80">
                               <Building className="w-3 h-3 text-blue-600" />
                               CNPJ
                             </span>
@@ -437,18 +481,18 @@ export const SalesView: React.FC<SalesViewProps> = ({
                         </td>
 
                         <td className="py-3.5 px-4">
-                          <div className="font-semibold text-slate-900">{sale.patientName}</div>
-                          <div className="text-[11px] text-slate-500 font-mono">
+                          <div className="font-semibold text-slate-900 text-xs">{sale.patientName}</div>
+                          <div className="text-[11px] text-slate-400 font-mono mt-0.5">
                             CPF: {formatCpf(sale.patientCpf, maskCpf)}
                           </div>
                           {!sale.payerIsBeneficiary && sale.payerName && (
-                            <div className="text-[10px] text-amber-700 font-medium">
+                            <div className="text-[10px] text-amber-700 font-medium mt-0.5">
                               Pagador: {sale.payerName}
                             </div>
                           )}
                         </td>
 
-                        <td className="py-3.5 px-4 font-medium text-slate-800 max-w-[200px] truncate">
+                        <td className="py-3.5 px-4 font-medium text-slate-700 max-w-[200px] truncate text-xs">
                           {sale.procedureName}
                         </td>
 
@@ -457,11 +501,11 @@ export const SalesView: React.FC<SalesViewProps> = ({
                           {sale.taxOrigin === 'CPF' ? (
                             <div>
                               {hasPendingReceitaSaude ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-50 text-amber-900 border border-amber-200/80">
                                   Receita Saúde Pendente
                                 </span>
                               ) : (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-800 font-semibold">
+                                <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-700 font-semibold">
                                   <FileCheck className="w-3.5 h-3.5 text-emerald-600" />
                                   {sale.installments[0]?.receitaSaudeId || 'Receita Saúde Emitido'}
                                 </span>
@@ -470,12 +514,12 @@ export const SalesView: React.FC<SalesViewProps> = ({
                           ) : (
                             <div>
                               {sale.nfseStatus === 'EMITIDA' ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-mono text-blue-800 font-semibold">
+                                <span className="inline-flex items-center gap-1 text-[11px] font-mono text-blue-700 font-semibold">
                                   <FileText className="w-3.5 h-3.5 text-blue-600" />
                                   NFS-e #{sale.nfseNumber || 'Emitida'}
                                 </span>
                               ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-50 text-amber-900 border border-amber-200/80">
                                   NFS-e a Emitir
                                 </span>
                               )}
@@ -483,14 +527,36 @@ export const SalesView: React.FC<SalesViewProps> = ({
                           )}
                         </td>
 
-                        <td className="py-3.5 px-4 text-right font-bold text-slate-900 text-sm">
+                        <td className="py-3.5 px-4 text-right font-bold text-slate-900 text-xs font-mono">
                           {formatCurrency(sale.totalValue)}
                         </td>
 
                         <td className="py-3.5 px-4 text-center">
-                          <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold text-[11px]">
-                            {sale.installmentsCount}x
-                          </span>
+                          <div className="flex flex-col items-center gap-1">
+                            <span className="inline-block px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-bold text-[10px]">
+                              {sale.installmentsCount}x
+                            </span>
+                            {summary.overallStatus === 'TOTALMENTE_RECEBIDA' && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200/80">
+                                Totalmente Recebida
+                              </span>
+                            )}
+                            {summary.overallStatus === 'PARCIALMENTE_RECEBIDA' && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-teal-50 text-teal-700 border border-teal-200/80">
+                                Parcial ({summary.receivedCount}/{summary.totalInstallments})
+                              </span>
+                            )}
+                            {summary.overallStatus === 'VENCIDA' && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-rose-50 text-rose-700 border border-rose-200/80">
+                                Vencida
+                              </span>
+                            )}
+                            {summary.overallStatus === 'PENDENTE' && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-amber-50 text-amber-700 border border-amber-200/80">
+                                A Receber
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         <td className="py-3.5 px-4 text-center">
@@ -504,15 +570,15 @@ export const SalesView: React.FC<SalesViewProps> = ({
                             >
                               <span>Parcelas</span>
                               {isExpanded ? (
-                                <ChevronUp className="w-4 h-4" />
+                                <ChevronUp className="w-3.5 h-3.5" />
                               ) : (
-                                <ChevronDown className="w-4 h-4" />
+                                <ChevronDown className="w-3.5 h-3.5" />
                               )}
                             </button>
 
                             <button
                               onClick={() => setEditingSale(sale)}
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-teal-600 hover:bg-teal-50 transition-colors cursor-pointer"
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-teal-600 hover:bg-teal-50 transition-colors cursor-pointer"
                               title="Editar receita"
                             >
                               <Edit className="w-3.5 h-3.5" />
@@ -598,6 +664,14 @@ export const SalesView: React.FC<SalesViewProps> = ({
                                               </span>
                                             </div>
                                           )}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleUnsettleInstallment(sale.id, inst.id)}
+                                            className="w-full mt-2 py-1 px-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 border border-rose-200 rounded-lg text-[10px] font-semibold transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                                          >
+                                            <RotateCcw className="w-3 h-3" />
+                                            Desfazer Recebimento
+                                          </button>
                                         </div>
                                       ) : (
                                         <div className="pt-2">
@@ -648,6 +722,17 @@ export const SalesView: React.FC<SalesViewProps> = ({
           saleToEdit={editingSale}
         />
       )}
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        confirmLabel={confirmState.confirmLabel}
+        variant={confirmState.variant}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 };

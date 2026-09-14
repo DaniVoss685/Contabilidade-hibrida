@@ -16,11 +16,12 @@ import {
   Calendar,
 } from 'lucide-react';
 import { Expense, ExpenseCategory, ExpenseEntity } from '../../types';
-import { formatCurrency, formatDateBr } from '../../lib/masks';
+import { formatCurrency, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { BatchEditExpensesModal } from '../Modals/BatchEditExpensesModal';
 import { NewExpenseModal } from '../Modals/NewExpenseModal';
+import { CustomSelect, ConfirmDialog, useToast } from '../UI';
 
 const MONTH_NAMES = [
   '',
@@ -55,6 +56,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   selectedMonth,
   onResetPeriod,
 }) => {
+  const toast = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [entityFilter, setEntityFilter] = useState<'ALL' | 'CPF' | 'CNPJ'>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -65,12 +67,34 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   const [isBatchEditOpen, setIsBatchEditOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
+  // Confirm dialog state
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    variant?: 'danger' | 'warning' | 'primary';
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
+
   const filteredExpenses = useMemo(() => {
+    const trimmed = searchTerm.trim();
+    const normQuery = normalizeSearchText(trimmed);
+
     return expenses.filter((exp) => {
-      const matchesSearch =
-        exp.supplierName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        exp.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        exp.categoryName.toLowerCase().includes(searchTerm.toLowerCase());
+      let matchesSearch = true;
+      if (trimmed) {
+        matchesSearch =
+          normalizeSearchText(exp.supplierName).includes(normQuery) ||
+          normalizeSearchText(exp.description).includes(normQuery) ||
+          normalizeSearchText(exp.categoryName).includes(normQuery) ||
+          matchDocumentSearch(exp.supplierCpfCnpj, trimmed);
+      }
 
       const matchesEntity =
         entityFilter === 'ALL' || exp.entity === entityFilter;
@@ -93,14 +117,22 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
   // Handle single delete
   const handleDeleteExpense = (id: string, supplier: string) => {
-    if (confirm(`Deseja realmente excluir a despesa de "${supplier}"?`)) {
-      db.deleteExpense(id);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Despesa',
+      message: `Deseja realmente excluir a despesa de "${supplier}"?`,
+      confirmLabel: 'Excluir',
+      variant: 'danger',
+      onConfirm: () => {
+        db.deleteExpense(id);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        toast.success('Despesa excluída com sucesso.');
+      },
+    });
   };
 
   // Bulk selection handlers
@@ -132,14 +164,18 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
-    if (
-      confirm(
-        `ATENÇÃO: Deseja realmente excluir ${count} despesa(s) selecionada(s)? Esta ação não pode ser desfeita.`
-      )
-    ) {
-      db.batchDeleteExpenses(Array.from(selectedIds));
-      setSelectedIds(new Set());
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Despesas Selecionadas',
+      message: `ATENÇÃO: Deseja realmente excluir ${count} despesa(s) selecionada(s)? Esta ação não pode ser desfeita.`,
+      confirmLabel: 'Excluir Todas',
+      variant: 'danger',
+      onConfirm: () => {
+        db.batchDeleteExpenses(Array.from(selectedIds));
+        setSelectedIds(new Set());
+        toast.success('Despesas excluídas com sucesso.');
+      },
+    });
   };
 
   // Bulk mark as paid
@@ -147,14 +183,22 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
     const todayStr = new Date().toISOString().split('T')[0];
-    if (confirm(`Deseja marcar ${count} despesa(s) selecionada(s) como PAGAS hoje via PIX?`)) {
-      db.batchUpdateExpenses(Array.from(selectedIds), {
-        status: 'PAGO',
-        paymentDate: todayStr,
-        paymentMethod: 'PIX',
-      });
-      setSelectedIds(new Set());
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Quitar Despesas Selecionadas',
+      message: `Deseja marcar ${count} despesa(s) selecionada(s) como PAGAS hoje via PIX?`,
+      confirmLabel: 'Confirmar Quitação',
+      variant: 'primary',
+      onConfirm: () => {
+        db.batchUpdateExpenses(Array.from(selectedIds), {
+          status: 'PAGO',
+          paymentDate: todayStr,
+          paymentMethod: 'PIX',
+        });
+        setSelectedIds(new Set());
+        toast.success('Despesas quitadas com sucesso.');
+      },
+    });
   };
 
   // Bulk edit apply
@@ -190,6 +234,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
     db.batchUpdateExpenses(Array.from(selectedIds), rawUpdates);
     setSelectedIds(new Set());
+    toast.success('Despesas atualizadas em lote com sucesso.');
   };
 
   const handleExport = () => {
@@ -365,7 +410,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             }`}
           >
             <User className="w-3 h-3" />
-            Pessoa Física (PF)
+            Pessoa Física (CPF)
           </button>
           <button
             onClick={() => setEntityFilter('CNPJ')}
@@ -374,20 +419,22 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             }`}
           >
             <Building className="w-3 h-3" />
-            Pessoa Jurídica (PJ)
+            Pessoa Jurídica (CNPJ)
           </button>
         </div>
 
         {/* Status Filter */}
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="text-xs font-medium rounded-lg border border-slate-300 p-2 bg-slate-50 focus:ring-2 focus:ring-teal-500 focus:outline-none"
-        >
-          <option value="ALL">Status: Todos</option>
-          <option value="A_PAGAR">A Pagar</option>
-          <option value="PAGO">Pagas</option>
-        </select>
+        <div className="w-40">
+          <CustomSelect
+            value={statusFilter}
+            onChange={(val) => setStatusFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Status: Todos' },
+              { value: 'A_PAGAR', label: 'A Pagar' },
+              { value: 'PAGO', label: 'Pagas' },
+            ]}
+          />
+        </div>
       </div>
 
       {/* Table */}
@@ -410,20 +457,21 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4">Vencimento / Pgto</th>
+                <th className="py-3 px-4">Vencimento</th>
+                <th className="py-3 px-4">Pagamento</th>
                 <th className="py-3 px-4">Titularidade</th>
                 <th className="py-3 px-4">Fornecedor / Descrição</th>
                 <th className="py-3 px-4">Categoria do Plano</th>
                 <th className="py-3 px-4 text-center">Atributos Fiscais</th>
                 <th className="py-3 px-4 text-right">Valor</th>
-                <th className="py-3 px-4 text-center">Status</th>
+                <th className="py-3 px-4 text-center min-w-[110px] whitespace-nowrap">Status</th>
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
               {filteredExpenses.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-400">
+                  <td colSpan={10} className="py-8 text-center text-slate-400">
                     Nenhuma despesa encontrada.
                   </td>
                 </tr>
@@ -454,23 +502,29 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                         </button>
                       </td>
 
-                      {/* Due / Payment Date */}
-                      <td className="py-3.5 px-4 font-mono">
-                        <div className="font-semibold text-slate-800">{formatDateBr(exp.dueDate)}</div>
-                        <div className="text-[11px] text-slate-500">
-                          {isPaid ? `Pago: ${formatDateBr(exp.paymentDate || '')}` : 'Pendente'}
-                        </div>
+                      {/* Due Date */}
+                      <td className="py-3.5 px-4 font-mono font-medium text-slate-900">
+                        {formatDateBr(exp.dueDate)}
                       </td>
 
-                      {/* Entity Badge: strictly PF or PJ */}
+                      {/* Payment Date */}
+                      <td className="py-3.5 px-4 font-mono text-slate-600">
+                        {isPaid && exp.paymentDate ? (
+                          <span className="text-emerald-700 font-semibold">{formatDateBr(exp.paymentDate)}</span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+
+                      {/* Entity Badge: strictly CPF or CNPJ */}
                       <td className="py-3.5 px-4">
                         {exp.entity === 'CPF' ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-200">
-                            <User className="w-3 h-3" /> PF (CPF)
+                            <User className="w-3 h-3" /> CPF
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-blue-100 text-blue-800 border border-blue-200">
-                            <Building className="w-3 h-3" /> PJ (CNPJ)
+                            <Building className="w-3 h-3" /> CNPJ
                           </span>
                         )}
                       </td>
@@ -535,9 +589,9 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                       </td>
 
                       {/* Status */}
-                      <td className="py-3.5 px-4 text-center">
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
                         <span
-                          className={`inline-block px-2.5 py-1 rounded-full font-bold text-[10px] ${
+                          className={`inline-flex items-center justify-center min-w-[85px] whitespace-nowrap px-2.5 py-1 rounded-full font-bold text-[10px] ${
                             isPaid
                               ? 'bg-emerald-100 text-emerald-800'
                               : 'bg-amber-100 text-amber-800'
@@ -609,6 +663,17 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
           expenseToEdit={editingExpense}
         />
       )}
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        confirmLabel={confirmState.confirmLabel}
+        variant={confirmState.variant}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 };

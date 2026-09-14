@@ -11,7 +11,7 @@ export function getMonthKey(year: number, month: number): string {
 export function augmentYearlyDataset(
   existingSales: Sale[],
   existingExpenses: Expense[],
-  year: number = 2025
+  year: number = new Date().getFullYear()
 ): { sales: Sale[]; expenses: Expense[] } {
   // Check if year already has sales in more than 3 distinct months
   const monthsWithSales = new Set(

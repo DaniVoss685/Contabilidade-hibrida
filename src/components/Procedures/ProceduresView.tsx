@@ -19,14 +19,18 @@ import {
 } from 'lucide-react';
 import { DentalProcedure } from '../../types';
 import { formatCurrency } from '../../lib/masks';
+import { safeMargin, formatPercent, safeDivide } from '../../lib/mathUtils';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { ProcedureModal } from '../Modals/ProcedureModal';
 import { SuppliesView } from '../Supplies/SuppliesView';
+import { CustomSelect, ConfirmDialog, useToast } from '../UI';
 
 interface ProceduresViewProps {
   procedures: DentalProcedure[];
   onOpenNewProcedure?: () => void;
+  initialOpenNewModal?: boolean;
+  onClearAction?: () => void;
 }
 
 const CATEGORY_NAMES: Record<DentalProcedure['category'], string> = {
@@ -42,15 +46,28 @@ const CATEGORY_NAMES: Record<DentalProcedure['category'], string> = {
   OUTROS: 'Outros',
 };
 
-export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) => {
+export const ProceduresView: React.FC<ProceduresViewProps> = ({
+  procedures,
+  initialOpenNewModal = false,
+  onClearAction,
+}) => {
+  const toast = useToast();
   const [activeSubTab, setActiveSubTab] = useState<'procedures' | 'supplies'>('procedures');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Modal State
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(initialOpenNewModal);
   const [editingProcedure, setEditingProcedure] = useState<DentalProcedure | null>(null);
+
+  React.useEffect(() => {
+    if (initialOpenNewModal) {
+      setEditingProcedure(null);
+      setIsModalOpen(true);
+      if (onClearAction) onClearAction();
+    }
+  }, [initialOpenNewModal, onClearAction]);
 
   // Filtered Procedures
   const filteredProcedures = useMemo(() => {
@@ -71,19 +88,17 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
   const metrics = useMemo(() => {
     const count = procedures.length;
     if (count === 0) {
-      return { count: 0, avgCost: 0, avgPrice: 0, avgMargin: 0 };
+      return { count: 0, avgCost: 0, avgPrice: 0, avgMargin: null };
     }
     const totalCost = procedures.reduce((acc, p) => acc + (p.totalDirectCost || 0), 0);
     const totalPrice = procedures.reduce((acc, p) => acc + (p.defaultPrice || 0), 0);
-    const avgMargin =
-      totalPrice > 0
-        ? Number((((totalPrice - totalCost) / totalPrice) * 100).toFixed(1))
-        : 0;
+    const marginRes = safeMargin(totalPrice, totalCost);
+    const avgMargin = marginRes.status === 'OK' ? marginRes.marginPercent : null;
 
     return {
       count,
-      avgCost: totalCost / count,
-      avgPrice: totalPrice / count,
+      avgCost: safeDivide(totalCost, count, 0),
+      avgPrice: safeDivide(totalPrice, count, 0),
       avgMargin,
     };
   }, [procedures]);
@@ -109,17 +124,34 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
     });
   };
 
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    consequence?: string;
+    variant?: 'danger' | 'warning' | 'primary';
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    description: '',
+    onConfirm: () => {},
+  });
+
   const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
-    if (
-      confirm(
-        `Deseja realmente excluir os ${count} procedimentos selecionados do catálogo?`
-      )
-    ) {
-      db.batchDeleteProcedures(Array.from(selectedIds));
-      setSelectedIds(new Set());
-    }
+    setConfirmState({
+      isOpen: true,
+      title: `Excluir ${count} procedimentos`,
+      description: `Deseja realmente excluir os ${count} procedimentos selecionados do catálogo?`,
+      consequence: 'Esta ação não poderá ser desfeita.',
+      variant: 'danger',
+      onConfirm: () => {
+        db.batchDeleteProcedures(Array.from(selectedIds));
+        setSelectedIds(new Set());
+      },
+    });
   };
 
   // Single Action Handlers
@@ -129,14 +161,22 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
   };
 
   const handleDelete = (id: string, name: string) => {
-    if (confirm(`Deseja realmente excluir o procedimento "${name}"?`)) {
-      db.deleteProcedure(id);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Procedimento',
+      description: `Deseja realmente excluir o procedimento "${name}" do catálogo?`,
+      consequence: 'O procedimento não aparecerá mais em novos lançamentos.',
+      variant: 'danger',
+      onConfirm: () => {
+        db.deleteProcedure(id);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        toast.success('Procedimento excluído do catálogo.');
+      },
+    });
   };
 
   const handleDuplicate = (proc: DentalProcedure) => {
@@ -145,24 +185,31 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
       code: `${proc.code}-COPIA`,
       name: `${proc.name} (Cópia)`,
     });
+    toast.success('Procedimento duplicado com sucesso.');
   };
 
   const handleResetToDemo = () => {
-    if (
-      confirm(
-        'Deseja restaurar a tabela padrão de procedimentos clínicos com custos e precificação configurados?'
-      )
-    ) {
-      db.resetProceduresToDemo();
-      setSelectedIds(new Set());
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Restaurar Catálogo Padrão',
+      description: 'Deseja restaurar a tabela padrão de procedimentos clínicos com custos e precificação configurados?',
+      consequence: 'Procedimentos personalizados serão substituídos pelos modelos iniciais.',
+      variant: 'warning',
+      onConfirm: () => {
+        db.resetProceduresToDemo();
+        setSelectedIds(new Set());
+        toast.success('Catálogo de procedimentos restaurado.');
+      },
+    });
   };
 
   const handleSaveProcedure = (procData: Omit<DentalProcedure, 'id'>) => {
     if (editingProcedure) {
       db.updateProcedure(editingProcedure.id, procData);
+      toast.success('Procedimento atualizado com sucesso.');
     } else {
       db.addProcedure(procData);
+      toast.success('Procedimento cadastrado com sucesso.');
     }
     setEditingProcedure(null);
   };
@@ -183,10 +230,8 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
     ];
 
     const rows = filteredProcedures.map((p) => {
-      const margin =
-        p.defaultPrice > 0
-          ? (((p.defaultPrice - p.totalDirectCost) / p.defaultPrice) * 100).toFixed(1)
-          : '0';
+      const marginInfo = safeMargin(p.defaultPrice, p.totalDirectCost);
+      const marginStr = marginInfo.status === 'OK' ? `${marginInfo.marginPercent}%` : '—';
       const profit = (p.defaultPrice - p.totalDirectCost).toFixed(2);
 
       return [
@@ -199,7 +244,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
         p.labCost,
         p.totalDirectCost,
         p.defaultPrice,
-        `${margin}%`,
+        marginStr,
         profit,
       ];
     });
@@ -323,7 +368,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Margem Média de Contribuição</div>
           <div className="text-xl sm:text-2xl font-black text-emerald-600 mt-1">
-            {metrics.avgMargin}%
+            {formatPercent(metrics.avgMargin)}
           </div>
           <div className="text-[11px] text-emerald-700 font-semibold mt-0.5">
             Lucro após custos diretos
@@ -375,22 +420,24 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
           />
         </div>
 
-        <select
-          value={selectedCategory}
-          onChange={(e) => setSelectedCategory(e.target.value)}
-          className="text-xs font-medium rounded-lg border border-slate-300 p-2 bg-slate-50 focus:ring-2 focus:ring-teal-500 focus:outline-none"
-        >
-          <option value="ALL">Todas as Especialidades</option>
-          <option value="DENTISTICA">Dentística</option>
-          <option value="PREVENTIVA">Preventiva</option>
-          <option value="ENDODONTIA">Endodontia</option>
-          <option value="CIRURGIA">Cirurgia</option>
-          <option value="PROTESE">Prótese</option>
-          <option value="IMPLANTODONTIA">Implante</option>
-          <option value="ESTETICA">Estética</option>
-          <option value="PERIODONTIA">Periodontia</option>
-          <option value="ORTODONTIA">Ortodontia</option>
-        </select>
+        <div className="w-full md:w-64">
+          <CustomSelect
+            options={[
+              { value: 'ALL', label: 'Todas as Especialidades' },
+              { value: 'DENTISTICA', label: 'Dentística' },
+              { value: 'PREVENTIVA', label: 'Preventiva' },
+              { value: 'ENDODONTIA', label: 'Endodontia' },
+              { value: 'CIRURGIA', label: 'Cirurgia' },
+              { value: 'PROTESE', label: 'Prótese' },
+              { value: 'IMPLANTODONTIA', label: 'Implante' },
+              { value: 'ESTETICA', label: 'Estética' },
+              { value: 'PERIODONTIA', label: 'Periodontia' },
+              { value: 'ORTODONTIA', label: 'Ortodontia' },
+            ]}
+            value={selectedCategory}
+            onChange={(val) => setSelectedCategory(val)}
+          />
+        </div>
       </div>
 
       {/* Table */}
@@ -432,16 +479,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
               ) : (
                 filteredProcedures.map((proc) => {
                   const isSelected = selectedIds.has(proc.id);
-                  const marginPercent =
-                    proc.defaultPrice > 0
-                      ? Number(
-                          (
-                            ((proc.defaultPrice - proc.totalDirectCost) /
-                              proc.defaultPrice) *
-                            100
-                          ).toFixed(1)
-                        )
-                      : 0;
+                  const marginInfo = safeMargin(proc.defaultPrice, proc.totalDirectCost);
                   const profitBrl = proc.defaultPrice - proc.totalDirectCost;
 
                   return (
@@ -520,19 +558,30 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
 
                       {/* Margin % */}
                       <td className="py-3.5 px-4 text-center">
-                        <span
-                          className={`inline-block px-2 py-0.5 rounded-full font-black text-[11px] ${
-                            marginPercent >= 60
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : marginPercent >= 40
-                              ? 'bg-teal-100 text-teal-800'
-                              : marginPercent >= 20
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-rose-100 text-rose-800'
-                          }`}
-                        >
-                          {marginPercent}%
-                        </span>
+                        {marginInfo.status === 'NO_PRICE' ? (
+                          <span className="text-slate-400 font-medium text-[11px]">—</span>
+                        ) : marginInfo.status === 'WAITING_COSTS' ? (
+                          <span
+                            className="inline-block px-2 py-0.5 rounded-full font-bold text-[10px] bg-slate-100 text-slate-600"
+                            title="Aguardando cadastro de insumos e custos diretos"
+                          >
+                            Aguardando custos
+                          </span>
+                        ) : (
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded-full font-black text-[11px] ${
+                              marginInfo.marginPercent !== null && marginInfo.marginPercent >= 60
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : marginInfo.marginPercent !== null && marginInfo.marginPercent >= 40
+                                ? 'bg-teal-100 text-teal-800'
+                                : marginInfo.marginPercent !== null && marginInfo.marginPercent >= 20
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
+                            {formatPercent(marginInfo.marginPercent)}
+                          </span>
+                        )}
                       </td>
 
                       {/* Profit BRL */}
@@ -590,6 +639,16 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({ procedures }) =>
         }}
         onSave={handleSaveProcedure}
         initialProcedure={editingProcedure}
+      />
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={confirmState.isOpen}
+        onClose={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
+        onConfirm={confirmState.onConfirm}
+        title={confirmState.title}
+        description={confirmState.description}
+        consequence={confirmState.consequence}
+        variant={confirmState.variant}
       />
     </div>
   );

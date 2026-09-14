@@ -20,7 +20,80 @@ export type PaymentMethod =
   | 'DINHEIRO'
   | 'TRANSFERENCIA';
 
-// 1. Organization & User
+// 1. Organization, Clinic Tenant, User & Auth
+export type UserRole =
+  | 'OWNER'
+  | 'ADMIN'
+  | 'PROFESSIONAL'
+  | 'DENTIST'
+  | 'RECEPTION'
+  | 'ASSISTANT'
+  | 'PLATFORM_ADMIN';
+
+export interface ClinicTenant {
+  id: string; // e.g. "tenant_demo" or "clinic_uuid"
+  name: string;
+  tradeName?: string;
+  cro: string;
+  croUf: string;
+  cpfCnpj?: string;
+  cnpj?: string;
+  phone?: string;
+  email?: string;
+  city?: string;
+  uf?: string;
+  isDemo?: boolean;
+  isActive?: boolean;
+  createdAt: string;
+}
+
+export interface StoredUserAccount {
+  id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  passwordHash: string; // PBKDF2/SHA-256 derived hex
+  passwordSalt?: string; // 16 bytes hex salt
+  salt?: string;
+  clinicId: string;
+  clinicName?: string;
+  emailVerified?: boolean;
+  isActive?: boolean;
+  createdAt: string;
+}
+
+export interface SupportSessionState {
+  isSupportMode?: boolean;
+  platformAdminId?: string;
+  platformAdminName?: string;
+  originalAdminUserId?: string;
+  originalAdminName?: string;
+  targetClinicId?: string;
+  targetTenantId?: string;
+  targetClinicName?: string;
+  targetTenantName?: string;
+  reason?: string;
+  startedAt: string;
+}
+
+export type TenantAuthStatus =
+  | 'AUTH_LOADING'
+  | 'AUTHENTICATED_WITH_TENANT'
+  | 'AUTHENTICATED_WITHOUT_TENANT'
+  | 'UNAUTHENTICATED'
+  | 'DEMO';
+
+export interface AuthSession {
+  token?: string;
+  user: User;
+  clinic: ClinicTenant;
+  tenantId?: string;
+  isDemo: boolean;
+  createdAt?: string;
+  expiresAt?: string;
+  supportSession?: SupportSessionState | null;
+}
+
 export interface Organization {
   id: string;
   name: string; // e.g. "Clínica Odontológica Mendes"
@@ -33,7 +106,7 @@ export interface User {
   orgId: string;
   name: string;
   email: string;
-  role: 'OWNER' | 'DENTIST' | 'ADMIN' | 'ASSISTANT';
+  role: UserRole;
 }
 
 // 2. Professional (Dentist Profile & Tax Settings)
@@ -54,10 +127,39 @@ export interface Professional {
   rbt12Inicial: number;
   folha12MesesInicial: number;
   proLaboreMensal: number;
+  baselineConfigured?: boolean; // false para novos tenants até confirmação explícita
+  fiscalSourceType?: FiscalSourceType; // 'MANUAL_TOTAL' | 'MANUAL_MONTHLY' | 'CONTABILEX' | 'ACCOUNTING_MANUAL'
+  fiscalSnapshots?: FiscalTotalSnapshot[]; // Histórico de snapshots de totais informados
+  contabilexClientId?: string; // ID interno futuro do cliente no Contábilex
+  initialFiscalHistory?: MonthlyFiscalHistoryEntry[]; // Histórico mês a mês dos 12 meses anteriores
+  phone?: string;
+  email?: string;
+  especialidade?: string;
+  anexoPadrao?: 'III' | 'V';
+  uf?: string;
   // PF Tax parameters
   numDependentes: number; // Dedução PF ~ R$ 189,59 cada
   inssProprioMensal: number; // Previdência oficial própria (dedutível no Carnê-Leão)
   outrosRendimentosTributaveis: number; // Rendimentos externos que somam na base
+}
+
+// 2.1 Modos de Origem das Bases Fiscais
+export type FiscalSourceType = 'MANUAL_TOTAL' | 'MANUAL_MONTHLY' | 'CONTABILEX' | 'ACCOUNTING_MANUAL';
+
+export interface FiscalTotalSnapshot {
+  competence: string; // YYYY-MM de referência
+  rbt12: number;
+  fs12: number;
+  proLaboreMensal?: number;
+  sourceType: FiscalSourceType;
+  updatedAt: string; // ISO 8601
+}
+
+// 2.2 Histórico Fiscal Mensal (12 meses anteriores para RBT12 e FS12)
+export interface MonthlyFiscalHistoryEntry {
+  month: string; // YYYY-MM
+  cnpjRevenue: number; // Receita bruta PJ do mês
+  payroll: number; // Folha de salários + encargos + pró-labore do mês
 }
 
 // 3. Patient & Payer
@@ -213,6 +315,7 @@ export interface AccountReceivableItem {
   procedureName: string;
   competenceDate: string;
   dueDate: string;
+  paymentDate?: string;
   value: number;
   amountReceived: number;
   balance: number;
@@ -240,6 +343,21 @@ export interface ExpenseCategory {
   noticeText?: string;
 }
 
+// 8.1 Attachment & Receipts Metadata
+export type AllowedReceiptExtension = 'pdf' | 'png' | 'jpg' | 'jpeg';
+
+export interface AttachmentMetadata {
+  id?: string;
+  name: string;
+  size: number; // tamanho em bytes
+  formattedSize: string; // ex: "245 KB", "1.8 MB"
+  type: string; // MIME type, ex: "application/pdf", "image/png"
+  extension: AllowedReceiptExtension;
+  dataUrl?: string; // payload base64 para preview imediato
+  url?: string; // URL externa ou blob URL
+  uploadedAt?: string; // ISO 8601
+}
+
 // 8. Expenses / Contas a Pagar
 export interface Expense {
   id: string;
@@ -261,6 +379,7 @@ export interface Expense {
   bankAccountId?: string;
   documentNumber?: string;
   attachmentName?: string;
+  attachment?: AttachmentMetadata | null;
   notes?: string;
 
   // Entity separation
@@ -288,6 +407,7 @@ export interface BankAccount {
   accountType: 'CORRENTE_PF' | 'CORRENTE_PJ' | 'POUPANCA' | 'INVESTIMENTO';
   initialBalance: number;
   currentBalance: number;
+  isActive?: boolean;
 }
 
 // 10. Tax Brackets & Rules (Parametrized by Year)
@@ -382,4 +502,138 @@ export interface AuditLog {
   entityType: string;
   entityId: string;
   details: string;
+}
+
+// 14. Saved Fiscal Scenarios (Central de Simulações)
+export interface SavedFiscalScenario {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+  parameters: {
+    rbt12: number;
+    fs12: number;
+    monthlyRevenueNfse: number;
+    monthlyProLabore: number;
+  };
+  results: {
+    fatorR: number;
+    fatorRPercent: number;
+    effectiveAnnex: 'ANEXO_III' | 'ANEXO_V';
+    bracketNumber: number;
+    nominalRate: number;
+    deductionAmount: number;
+    effectiveTaxRate: number;
+    dasEstimated: number;
+    potentialMonthlySavings: number;
+  };
+}
+
+// 15. Clinical Appointments & Scheduling (Agenda Clínica)
+export type AppointmentStatus =
+  | 'AGENDADA'
+  | 'CONFIRMADA'
+  | 'CHEGOU'
+  | 'PENDENTE'
+  | 'AGUARDANDO'
+  | 'EM_ATENDIMENTO'
+  | 'FINALIZADA'
+  | 'CANCELADA'
+  | 'FALTOU';
+
+export type AppointmentOrigin =
+  | 'WHATSAPP'
+  | 'TELEFONE'
+  | 'PRESENCIAL'
+  | 'RECEPCAO'
+  | 'ONLINE'
+  | 'RETORNO'
+  | 'INDICACAO'
+  | 'OUTRO';
+
+export interface Appointment {
+  id: string;
+  orgId: string;
+  patientId: string;
+  patientName: string;
+  patientPhone?: string;
+  patientCpf?: string;
+  date: string; // YYYY-MM-DD
+  startTime: string; // HH:mm (e.g. "09:00")
+  durationMinutes: number; // e.g. 30, 45, 60, 90
+  endTime: string; // HH:mm (e.g. "09:45")
+  dentistName: string;
+  professionalId?: string;
+  professionalName?: string;
+  procedureName: string;
+  procedureId?: string;
+  status: AppointmentStatus;
+  notes?: string;
+  sendWhatsappReminder?: boolean;
+  origin?: AppointmentOrigin;
+  saleId?: string;
+
+  // Rescheduling & Attendance Link
+  rescheduledToId?: string;
+  rescheduledToDate?: string;
+  rescheduledToTime?: string;
+  rescheduledFromId?: string;
+  rescheduledFromDate?: string;
+  missedAt?: string;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
+// 16. Sale Payment Progress & Settlement Status
+export type SaleOverallPaymentStatus =
+  | 'TOTALMENTE_RECEBIDA'
+  | 'PARCIALMENTE_RECEBIDA'
+  | 'PENDENTE'
+  | 'VENCIDA'
+  | 'CANCELADA';
+
+export interface SalePaymentSummary {
+  overallStatus: SaleOverallPaymentStatus;
+  status: SaleOverallPaymentStatus;
+  totalValue: number;
+  receivedValue: number;
+  pendingValue: number;
+  totalInstallments: number;
+  receivedInstallments: number;
+  receivedCount: number;
+  pendingInstallments: number;
+  pendingCount: number;
+  overdueInstallments: number;
+  nextDueDate?: string;
+  lastPaymentDate?: string;
+}
+
+// 17. Official Legal & Fiscal Versioned Parameters
+export type FiscalParameterType =
+  | 'SALARIO_MINIMO'
+  | 'TETO_INSS'
+  | 'FAIXA_ISENCAO_IRPF'
+  | 'ALIQUOTA_BASE_SIMPLES';
+
+export interface FiscalParameter {
+  id: string;
+  type: FiscalParameterType;
+  name: string;
+  value: number;
+  effectiveFrom: string; // YYYY-MM-DD
+  effectiveTo?: string; // YYYY-MM-DD
+  sourceLaw: string; // e.g. "Decreto nº 12.797/2025"
+  status: 'ATIVO' | 'REVOGADO' | 'PREVISTO';
+  updatedAt: string;
+  updatedBy: string;
+  notes?: string;
+}
+
+// 18. System Operational Preferences & Privacy
+export interface SystemPreferences {
+  hideCpf: boolean; // default: false (visível por padrão)
+  alertFatorR: boolean; // default: true
+  alertDueDates: boolean; // default: true
+  operationalReminders: boolean; // default: true
 }

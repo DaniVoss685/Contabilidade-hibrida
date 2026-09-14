@@ -85,17 +85,17 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
   return (
     <div className="space-y-4">
       {/* Controls Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-slate-200/80 shadow-xs">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-            Modo de Caixa:
+          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            Visão:
           </span>
-          <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50 text-xs font-medium">
+          <div className="inline-flex rounded-xl border border-slate-200/80 p-0.5 bg-slate-100/80 text-xs font-medium">
             <button
               onClick={() => onDisplayModeChange('ALL')}
-              className={`px-3 py-1 rounded-md transition-all ${
+              className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
                 displayMode === 'ALL'
-                  ? 'bg-white text-teal-800 font-bold shadow-sm'
+                  ? 'bg-white text-slate-900 font-bold shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
@@ -103,23 +103,23 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
             </button>
             <button
               onClick={() => onDisplayModeChange('REALIZED_ONLY')}
-              className={`px-3 py-1 rounded-md transition-all ${
+              className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
                 displayMode === 'REALIZED_ONLY'
-                  ? 'bg-white text-emerald-800 font-bold shadow-sm'
+                  ? 'bg-white text-emerald-800 font-bold shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Apenas Realizado (Efetivado)
+              Apenas Realizado
             </button>
             <button
               onClick={() => onDisplayModeChange('PROJECTED_ONLY')}
-              className={`px-3 py-1 rounded-md transition-all ${
+              className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
                 displayMode === 'PROJECTED_ONLY'
-                  ? 'bg-white text-blue-800 font-bold shadow-sm'
+                  ? 'bg-white text-blue-800 font-bold shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Apenas Previsto (A Receber/Pagar)
+              Apenas Previsto
             </button>
           </div>
         </div>
@@ -127,41 +127,41 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={expandAll}
-            className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1 rounded border border-slate-200 bg-white hover:bg-slate-50"
+            className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 shadow-2xs cursor-pointer transition-colors"
           >
-            Expandir Todos
+            Expandir Tudo
           </button>
           <button
             onClick={collapseAll}
-            className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1 rounded border border-slate-200 bg-white hover:bg-slate-50"
+            className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 shadow-2xs cursor-pointer transition-colors"
           >
-            Recolher Todos
+            Recolher Tudo
           </button>
         </div>
       </div>
 
       {/* Main Month-by-Month Side-by-Side Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="overflow-x-auto max-w-full">
           <table className="w-full text-xs text-left border-collapse min-w-[1100px]">
             <thead>
-              <tr className="bg-slate-900 text-white font-semibold divide-x divide-slate-800">
-                <th className="p-3 w-72 sticky left-0 z-20 bg-slate-900 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
+              <tr className="bg-slate-50/95 text-slate-600 font-semibold border-b border-slate-200/90 divide-x divide-slate-200/70 text-[11px] uppercase tracking-wider">
+                <th className="p-3 w-72 sticky left-0 z-20 bg-slate-50 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] text-slate-700 font-bold">
                   Conta / Indicador de Caixa
                 </th>
                 {data.months.map((m) => (
                   <th
                     key={m.monthKey}
                     onClick={() => onSelectMonth && onSelectMonth(m.monthIndex)}
-                    className="p-2.5 text-right w-24 hover:bg-slate-800 cursor-pointer transition-colors"
+                    className="p-2.5 text-right w-24 hover:bg-slate-100/80 cursor-pointer transition-colors"
                   >
-                    <div className="font-bold">{m.monthLabel}</div>
-                    <div className="text-[10px] font-normal text-slate-400">
+                    <div className="font-bold text-slate-800">{m.monthLabel}</div>
+                    <div className="text-[10px] font-normal text-slate-400 lowercase">
                       {m.monthKey.substring(5, 7)}/{data.year}
                     </div>
                   </th>
                 ))}
-                <th className="p-3 text-right w-28 bg-slate-950 font-bold text-teal-400">
+                <th className="p-3 text-right w-28 bg-slate-100/90 font-bold text-teal-800 border-l border-slate-200">
                   Total {data.year}
                 </th>
               </tr>

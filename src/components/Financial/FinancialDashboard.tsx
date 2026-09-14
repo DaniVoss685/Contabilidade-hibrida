@@ -40,7 +40,7 @@ interface FinancialDashboardProps {
 }
 
 export const FinancialDashboard: React.FC<FinancialDashboardProps> = ({
-  selectedYear: initialYear = 2025,
+  selectedYear: initialYear = new Date().getFullYear(),
   onSelectYear,
 }) => {
   const db = DentalFinanceDB.getInstance();
@@ -148,7 +148,7 @@ export const FinancialDashboard: React.FC<FinancialDashboardProps> = ({
           {/* Year selector */}
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-semibold">
             <Calendar className="w-3.5 h-3.5 text-slate-500 ml-1.5" />
-            {[2024, 2025, 2026].map((y) => (
+            {[new Date().getFullYear() - 1, new Date().getFullYear(), new Date().getFullYear() + 1].map((y) => (
               <button
                 key={y}
                 onClick={() => handleYearChange(y)}

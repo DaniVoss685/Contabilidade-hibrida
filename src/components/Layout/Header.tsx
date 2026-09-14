@@ -2,12 +2,12 @@ import React from 'react';
 import {
   Menu,
   PlusCircle,
-  Eye,
-  EyeOff,
   AlertTriangle,
-  FileText,
   Building2,
   Sparkles,
+  Search,
+  Plus,
+  LogOut,
 } from 'lucide-react';
 import { Professional, Organization } from '../../types';
 import { formatCpf, formatCnpj } from '../../lib/masks';
@@ -18,11 +18,13 @@ interface HeaderProps {
   onOpenMobileMenu: () => void;
   onOpenNewSale: () => void;
   onOpenNewExpense: () => void;
-  maskCpf: boolean;
-  onToggleMaskCpf: () => void;
+  maskCpf?: boolean;
+  onToggleMaskCpf?: () => void;
   pendingReceitaSaudeCount: number;
   onNavigateToTab: (tab: any) => void;
-  onQuickToggleFatorR: () => void;
+  onQuickToggleFatorR?: () => void;
+  isDemo?: boolean;
+  onLogout?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -36,119 +38,100 @@ export const Header: React.FC<HeaderProps> = ({
   pendingReceitaSaudeCount,
   onNavigateToTab,
   onQuickToggleFatorR,
+  isDemo,
+  onLogout,
 }) => {
   return (
-    <header className="sticky top-0 z-30 bg-white border-b border-slate-200 shadow-xs">
-      <div className="px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
-        {/* Left Side: Mobile Menu Button & Clinic Info */}
-        <div className="flex items-center space-x-3 sm:space-x-4">
+    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80">
+      <div className="px-4 sm:px-6 py-2.5 flex items-center justify-between gap-4">
+        {/* Left Side: Clinic Identity */}
+        <div className="flex items-center space-x-3 min-w-0">
           <button
             onClick={onOpenMobileMenu}
-            className="lg:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100 transition-colors"
+            className="lg:hidden p-1.5 rounded-xl text-slate-500 hover:bg-slate-100 transition-colors"
             title="Abrir menu"
           >
-            <Menu className="w-6 h-6" />
+            <Menu className="w-5 h-5" />
           </button>
 
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-base sm:text-lg font-bold text-slate-800 tracking-tight leading-none">
-                {organization.name}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-sm font-bold text-slate-900 tracking-tight leading-snug truncate">
+                {professional.name}
               </h1>
-              <span className="hidden md:inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                <Building2 className="w-3 h-3 mr-1 text-slate-500" />
-                {professional.municipio}
+              <span className="hidden sm:inline-flex items-center px-1.5 py-0.2 rounded-md text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200/70">
+                CRO-{professional.croUf} {professional.cro}
               </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 mt-1">
-              <span className="font-medium text-slate-700">{professional.name}</span>
-              <span>•</span>
-              <span>CRO-{professional.croUf} {professional.cro}</span>
-              <span>•</span>
-              <span className="font-mono">
-                CPF: {formatCpf(professional.cpf, maskCpf)}
-              </span>
-              {professional.cnpj && (
-                <>
-                  <span className="hidden sm:inline">•</span>
-                  <span className="hidden sm:inline font-mono">
-                    CNPJ: {formatCnpj(professional.cnpj)}
-                  </span>
-                </>
+              {isDemo && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs" title="Ambiente com dados fictícios para demonstração">
+                  <Sparkles className="w-3 h-3 text-amber-600" />
+                  Modo Demonstração
+                </span>
               )}
             </div>
+            <p className="text-[11px] text-slate-400 font-medium truncate">
+              {organization.name} • {professional.municipio}
+            </p>
           </div>
         </div>
 
-        {/* Right Side: LGPD Toggle, Alerts, Action Buttons */}
-        <div className="flex items-center space-x-2 sm:space-x-3">
-          {/* Fator R Simulation Shortcut */}
-          <button
-            onClick={onQuickToggleFatorR}
-            className="hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition-all cursor-pointer"
-            title="Alternar rapidamente entre Fator R >= 28% (Anexo III) e < 28% (Anexo V) para testes"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-            <span>Testar Fator R (III / V)</span>
-          </button>
+        {/* Center: Search Bar Shortcut (Prodex / TradoX style) */}
+        <div className="hidden md:flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-slate-100/70 border border-slate-200/70 text-slate-400 text-xs w-64 lg:w-80 select-none">
+          <Search className="w-3.5 h-3.5 text-slate-400" />
+          <span className="text-slate-400 text-xs truncate">Buscar paciente, procedimento...</span>
+          <kbd className="ml-auto text-[10px] font-mono font-semibold bg-white border border-slate-200/80 px-1.5 py-0.5 rounded text-slate-500 shadow-2xs">
+            ⌘K
+          </kbd>
+        </div>
 
-          {/* LGPD Mask CPF Toggle */}
-          <button
-            onClick={onToggleMaskCpf}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
-              maskCpf
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
-            }`}
-            title="LGPD: Ocultar ou exibir CPFs na interface e relatórios"
-          >
-            {maskCpf ? (
-              <>
-                <EyeOff className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">CPF Mascarado</span>
-              </>
-            ) : (
-              <>
-                <Eye className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">CPF Visível</span>
-              </>
-            )}
-          </button>
+        {/* Right Side: Primary and Secondary Action Hierarchy */}
+        <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
 
           {/* Pending Receita Saúde Notification Pill */}
           {pendingReceitaSaudeCount > 0 && (
             <button
               onClick={() => onNavigateToTab('receivables')}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors animate-pulse cursor-pointer"
-              title={`${pendingReceitaSaudeCount} recebimentos em CPF possuem Receita Saúde pendente de emissão!`}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-50 text-amber-900 border border-amber-200/80 hover:bg-amber-100 transition-colors cursor-pointer"
+              title={`${pendingReceitaSaudeCount} recebimentos em CPF possuem Receita Saúde pendente!`}
             >
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-              <span className="hidden md:inline">Receita Saúde:</span>
-              <span className="bg-amber-500 text-white px-1.5 py-0.2 rounded-full text-[10px]">
-                {pendingReceitaSaudeCount} pendente{pendingReceitaSaudeCount > 1 ? 's' : ''}
-              </span>
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              <span>{pendingReceitaSaudeCount} {pendingReceitaSaudeCount === 1 ? 'pendência' : 'pendências'}</span>
             </button>
           )}
+
+          <div className="h-5 w-px bg-slate-200/80 mx-1 hidden sm:block"></div>
 
           {/* Secondary Action: Nova Despesa */}
           <button
             id="btn-nova-despesa"
             onClick={onOpenNewExpense}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-700 bg-rose-50/80 hover:bg-rose-100 border border-rose-200/80 transition-colors cursor-pointer"
           >
-            <PlusCircle className="w-4 h-4 text-slate-500" />
-            <span>Nova Despesa</span>
+            <Plus className="w-3.5 h-3.5 text-rose-600" />
+            <span className="hidden sm:inline">Nova Despesa</span>
+            <span className="sm:hidden">Despesa</span>
           </button>
 
-          {/* Primary Action: + NOVA RECEITA (Prominently styled) */}
+          {/* Primary Action: + NOVA RECEITA (Clear Primary Accent) */}
           <button
             id="btn-nova-receita"
             onClick={onOpenNewSale}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs sm:text-sm font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-md shadow-emerald-700/20 active:scale-98 transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs hover:shadow transition-all cursor-pointer"
           >
-            <PlusCircle className="w-4 h-4" />
-            <span>+ NOVA RECEITA</span>
+            <Plus className="w-3.5 h-3.5" />
+            <span>Nova Receita</span>
           </button>
+
+          {/* Logout Action */}
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer ml-1"
+              title="Encerrar Sessão / Sair"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
     </header>

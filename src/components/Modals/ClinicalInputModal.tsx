@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { ClinicalInput, InputUsageUnit } from '../../types';
 import { formatCurrency } from '../../lib/masks';
+import { CustomSelect, CurrencyInput, useToast, SuccessDialog } from '../UI';
 
 interface ClinicalInputModalProps {
   isOpen: boolean;
@@ -39,6 +40,7 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
   onSave,
   initialData,
 }) => {
+  const toast = useToast();
   const [name, setName] = useState('');
   const [brand, setBrand] = useState('');
   const [category, setCategory] = useState('Dentística & Resinas');
@@ -48,6 +50,8 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
   const [usageUnit, setUsageUnit] = useState<InputUsageUnit>('un');
   const [unitHelper, setUnitHelper] = useState<'direct' | 'litro_ml' | 'kg_g'>('direct');
   const [notes, setNotes] = useState('');
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [savedItemName, setSavedItemName] = useState('');
 
   useEffect(() => {
     if (initialData) {
@@ -106,18 +110,30 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
       ? Number((purchasePrice / packageQuantity).toFixed(4))
       : 0;
 
+  const resetForm = () => {
+    setName('');
+    setBrand('');
+    setCategory('Dentística & Resinas');
+    setPurchasePackageName('');
+    setPurchasePrice(0);
+    setPackageQuantity(1);
+    setUsageUnit('un');
+    setUnitHelper('direct');
+    setNotes('');
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
-      alert('Por favor, informe o nome do insumo.');
+      toast.warning('Por favor, informe o nome do insumo.');
       return;
     }
     if (purchasePrice <= 0) {
-      alert('O preço de compra da embalagem deve ser maior que zero.');
+      toast.warning('O preço de compra da embalagem deve ser maior que zero.');
       return;
     }
     if (packageQuantity <= 0) {
-      alert('A quantidade ou rendimento na embalagem deve ser maior que zero.');
+      toast.warning('A quantidade ou rendimento na embalagem deve ser maior que zero.');
       return;
     }
 
@@ -134,32 +150,34 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
       notes: notes.trim() || undefined,
     });
 
-    onClose();
+    setSavedItemName(name.trim());
+    setShowSuccess(true);
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95">
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden border border-slate-200/80 animate-in fade-in zoom-in-95">
         {/* Header */}
-        <div className="bg-slate-900 px-6 py-4 flex items-center justify-between text-white">
+        <div className="border-b border-slate-200/80 bg-white px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-teal-500/20 text-teal-400">
-              <Package className="w-5 h-5" />
+            <div className="w-8 h-8 rounded-lg bg-teal-50 border border-teal-200/80 text-teal-600 flex items-center justify-center">
+              <Package className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-bold">
+              <h2 className="text-base font-semibold text-slate-900">
                 {initialData ? 'Editar Insumo Clínico' : 'Cadastrar Novo Insumo Clínico'}
               </h2>
-              <p className="text-[11px] text-slate-400">
+              <p className="text-xs text-slate-500 mt-0.5">
                 Configure a apresentação de compra e o fracionamento por unidade de uso
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -202,54 +220,63 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
             <label className="block text-xs font-bold text-slate-700 mb-1">
               Especialidade / Categoria
             </label>
-            <select
+            <CustomSelect
               value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="w-full text-xs font-semibold rounded-lg border border-slate-300 p-2.5 bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none cursor-pointer"
-            >
-              {CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setCategory(val)}
+              options={CATEGORIES.map((cat) => ({ value: cat, label: cat }))}
+              searchable
+            />
           </div>
 
           {/* Unidade Fracionada de Consumo */}
-          <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+          <div className="p-4 bg-slate-50/90 rounded-2xl border border-slate-200/90 space-y-3">
             <div>
-              <label className="block text-xs font-bold text-slate-800 mb-1">
+              <label className="block text-xs font-bold text-slate-800 mb-1.5">
                 Como esse material é consumido no atendimento? (Unidade de Uso) *
               </label>
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                 {[
-                  { unit: 'tubete', label: 'Tubete', desc: 'Anestésicos' },
-                  { unit: 'ml', label: 'ml', desc: 'Líquidos/Soluções' },
-                  { unit: 'g', label: 'grama (g)', desc: 'Resinas/Cimentos' },
-                  { unit: 'un', label: 'Unidade', desc: 'Luvas, agulhas, etc' },
-                  { unit: 'dose', label: 'Dose', desc: 'Gotas, aplicações' },
-                  { unit: 'kit', label: 'Kit', desc: 'Kits estéreis' },
-                ].map((item) => (
-                  <button
-                    key={item.unit}
-                    type="button"
-                    onClick={() => handleUnitChange(item.unit as InputUsageUnit)}
-                    className={`py-2 px-1 text-center rounded-lg border font-bold text-xs transition-all cursor-pointer ${
-                      usageUnit === item.unit
-                        ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
-                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                    }`}
-                  >
-                    <div>{item.label}</div>
-                    <div
-                      className={`text-[9px] font-normal ${
-                        usageUnit === item.unit ? 'text-teal-100' : 'text-slate-400'
+                  { unit: 'tubete', label: 'Tubete', desc: 'Anestésicos odontológicos' },
+                  { unit: 'ml', label: 'Mililitro (ml)', desc: 'Líquidos, soluções e géis' },
+                  { unit: 'g', label: 'Grama (g)', desc: 'Resinas, cimentos e pós' },
+                  { unit: 'un', label: 'Unidade (un)', desc: 'Luvas, agulhas, sugadores' },
+                  { unit: 'dose', label: 'Dose / Aplicação', desc: 'Gotas e doses únicas' },
+                  { unit: 'kit', label: 'Kit descartável', desc: 'Conjuntos e campos estéreis' },
+                ].map((item) => {
+                  const isSelected = usageUnit === item.unit;
+                  return (
+                    <button
+                      key={item.unit}
+                      type="button"
+                      onClick={() => handleUnitChange(item.unit as InputUsageUnit)}
+                      className={`p-2.5 text-left rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? 'bg-teal-50 border-teal-600 ring-2 ring-teal-500/20 shadow-xs'
+                          : 'bg-white text-slate-700 border-slate-200 hover:border-teal-300 hover:bg-slate-50/80'
                       }`}
                     >
-                      {item.desc}
-                    </div>
-                  </button>
-                ))}
+                      <div className="flex items-center justify-between">
+                        <span className={`text-xs font-bold ${isSelected ? 'text-teal-900' : 'text-slate-800'}`}>
+                          {item.label}
+                        </span>
+                        <div
+                          className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                            isSelected ? 'border-teal-600 bg-teal-600' : 'border-slate-300'
+                          }`}
+                        >
+                          {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] mt-1 line-clamp-1 font-medium ${
+                          isSelected ? 'text-teal-700' : 'text-slate-400'
+                        }`}
+                      >
+                        {item.desc}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -319,21 +346,12 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
               <label className="block text-xs font-bold text-slate-700 mb-1">
                 Preço da Embalagem (R$) *
               </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                  R$
-                </span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  placeholder="0,00"
-                  value={purchasePrice || ''}
-                  onChange={(e) => setPurchasePrice(parseFloat(e.target.value) || 0)}
-                  className="w-full pl-9 pr-3 py-2 text-xs font-bold text-slate-900 rounded-lg border border-slate-300 bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
-                  required
-                />
-              </div>
+              <CurrencyInput
+                value={purchasePrice}
+                onChange={setPurchasePrice}
+                className="w-full text-xs font-bold text-slate-900 rounded-lg border border-slate-300 bg-white"
+                required
+              />
             </div>
 
             <div>
@@ -430,6 +448,28 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
           </div>
         </form>
       </div>
+
+      <SuccessDialog
+        isOpen={showSuccess}
+        title={initialData ? 'Insumo Atualizado!' : 'Insumo Cadastrado!'}
+        message={`O insumo clínico "${savedItemName}" foi registrado com sucesso com custo unitário de R$ ${calculatedUnitCost.toFixed(calculatedUnitCost < 0.1 ? 3 : 2).replace('.', ',')} por ${usageUnit}.`}
+        primaryActionLabel="Concluir"
+        onClose={() => {
+          setShowSuccess(false);
+          onClose();
+        }}
+        secondaryAction={
+          !initialData
+            ? {
+                label: 'Cadastrar outro',
+                onClick: () => {
+                  setShowSuccess(false);
+                  resetForm();
+                },
+              }
+            : undefined
+        }
+      />
     </div>
   );
 };

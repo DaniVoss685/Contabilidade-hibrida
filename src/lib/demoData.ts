@@ -9,6 +9,7 @@ import {
   PayrollHistoryEntry,
   DentalProcedure,
   ClinicalInput,
+  Appointment,
 } from '../types';
 
 export const DEMO_ORGANIZATION: Organization = {
@@ -43,6 +44,7 @@ export const DEMO_PROFESSIONAL: Professional = {
   rbt12Inicial: 280000.00, // R$ 280.000,00 nos últimos 12 meses
   folha12MesesInicial: 84000.00, // R$ 84.000,00 nos últimos 12 meses -> Fator R inicial = 30% (Anexo III)
   proLaboreMensal: 4500.00,
+  baselineConfigured: true,
   numDependentes: 1, // Dedução PF: 1 dependente = R$ 189,59/mês
   inssProprioMensal: 950.00, // Previdência oficial própria autônomo
   outrosRendimentosTributaveis: 0,
@@ -744,10 +746,19 @@ export const DEMO_PATIENTS: Patient[] = [
   },
 ];
 
-// Helper to get current month YYYY-MM
-const currentYear = 2025;
-const currentMonth = '05'; // Maio de 2025
+// Helper to get current month YYYY-MM dynamically
+const _now = new Date();
+const currentYear = _now.getFullYear();
+const currentMonth = String(_now.getMonth() + 1).padStart(2, '0');
 const curYM = `${currentYear}-${currentMonth}`;
+
+function getOffsetMonthDate(offsetMonths: number, day: number): string {
+  const d = new Date(currentYear, Number(currentMonth) - 1 + offsetMonths, day);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
 
 export const DEMO_SALES: Sale[] = [
   // 1. CPF: Mariana - À vista, Receita Saúde já emitido
@@ -1880,18 +1891,382 @@ export const DEMO_EXPENSES: Expense[] = [
   },
 ];
 
-// Historical payroll data for Fator R calculation (last 12 months)
-export const DEMO_PAYROLL_HISTORY: PayrollHistoryEntry[] = [
-  { month: '2024-06', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2024-07', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2024-08', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2024-09', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2024-10', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2024-11', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2024-12', salaries: 4400, charges: 1100, proLabore: 4500, totalPayroll: 10000 }, // com 13º
-  { month: '2025-01', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2025-02', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2025-03', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2025-04', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
-  { month: '2025-05', salaries: 2200, charges: 550, proLabore: 4500, totalPayroll: 7250 },
+// Historical payroll data for Fator R calculation (rolling last 12 months)
+export const DEMO_PAYROLL_HISTORY: PayrollHistoryEntry[] = (() => {
+  const entries: PayrollHistoryEntry[] = [];
+  const now = new Date();
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const isDec = m === '12';
+    const salaries = isDec ? 4400 : 2200;
+    const charges = isDec ? 1100 : 550;
+    const proLabore = 4500;
+    entries.push({
+      month: `${y}-${m}`,
+      salaries,
+      charges,
+      proLabore,
+      totalPayroll: salaries + charges + proLabore,
+    });
+  }
+  return entries;
+})();
+
+function getDemoOffsetDate(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+export const DEMO_APPOINTMENTS: Appointment[] = [
+  // Hoje
+  {
+    id: 'apt_today_01',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_01',
+    patientName: 'Mariana Santos Lima',
+    patientPhone: '(11) 98765-4321',
+    patientCpf: '21948375120',
+    date: getDemoOffsetDate(0),
+    startTime: '08:30',
+    durationMinutes: 45,
+    endTime: '09:15',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Restauração em Resina Composta (1 Face)',
+    procedureId: 'proc_01',
+    status: 'FINALIZADA',
+    notes: 'Dente 46 oclusal, restauração estética concluída sem sensibilidade.',
+    sendWhatsappReminder: true,
+    origin: 'WHATSAPP',
+    createdAt: '2025-05-01T08:00:00Z',
+    updatedAt: '2025-05-01T09:15:00Z',
+  },
+  {
+    id: 'apt_today_02',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_02',
+    patientName: 'Roberto Alves Pereira',
+    patientPhone: '(11) 97654-3210',
+    patientCpf: '45678912300',
+    date: getDemoOffsetDate(0),
+    startTime: '10:00',
+    durationMinutes: 60,
+    endTime: '11:00',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Profilaxia e Raspagem Supragengival',
+    procedureId: 'proc_02',
+    status: 'EM_ATENDIMENTO',
+    notes: 'Profilaxia com ultrassom e aplicação tópica de flúor gel.',
+    sendWhatsappReminder: true,
+    origin: 'PRESENCIAL',
+    createdAt: '2025-05-02T10:00:00Z',
+    updatedAt: '2025-05-02T10:00:00Z',
+  },
+  {
+    id: 'apt_today_03',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_03',
+    patientName: 'Camila Souza Dias',
+    patientPhone: '(11) 96543-2109',
+    patientCpf: '78912345600',
+    date: getDemoOffsetDate(0),
+    startTime: '14:00',
+    durationMinutes: 45,
+    endTime: '14:45',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Manutenção Ortodôntica Mensal',
+    procedureId: 'proc_03',
+    status: 'CONFIRMADA',
+    notes: 'Troca de arcos estéticos e ligaduras elásticas.',
+    sendWhatsappReminder: true,
+    origin: 'WHATSAPP',
+    createdAt: '2025-05-03T11:00:00Z',
+    updatedAt: '2025-05-03T11:00:00Z',
+  },
+  {
+    id: 'apt_today_04',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_04',
+    patientName: 'Fernando Henrique Castro',
+    patientPhone: '(11) 95432-1098',
+    patientCpf: '32165498700',
+    date: getDemoOffsetDate(0),
+    startTime: '15:30',
+    durationMinutes: 90,
+    endTime: '17:00',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Tratamento Endodôntico Molar',
+    procedureId: 'proc_04',
+    status: 'CONFIRMADA',
+    notes: 'Instrumentação rotatória e medicação intracanal com hidróxido de cálcio.',
+    sendWhatsappReminder: true,
+    origin: 'TELEFONE',
+    createdAt: '2025-05-04T12:00:00Z',
+    updatedAt: '2025-05-04T12:00:00Z',
+  },
+  {
+    id: 'apt_today_05',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_05',
+    patientName: 'Larissa Costa Santos',
+    patientPhone: '(11) 94321-0987',
+    patientCpf: '65498732100',
+    date: getDemoOffsetDate(0),
+    startTime: '17:15',
+    durationMinutes: 30,
+    endTime: '17:45',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Avaliação Inicial e Planejamento',
+    procedureId: 'proc_06',
+    status: 'PENDENTE',
+    notes: 'Paciente solicitou encaixe no final da tarde para dor no molar.',
+    sendWhatsappReminder: true,
+    origin: 'WHATSAPP',
+    createdAt: '2025-05-05T14:00:00Z',
+    updatedAt: '2025-05-05T14:00:00Z',
+  },
+
+  // Amanhã
+  {
+    id: 'apt_tomorrow_01',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_06',
+    patientName: 'Lucas Mendes Ribeiro',
+    patientPhone: '(11) 93210-9876',
+    patientCpf: '98732165400',
+    date: getDemoOffsetDate(1),
+    startTime: '09:00',
+    durationMinutes: 60,
+    endTime: '10:00',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Clareamento Dental em Consultório',
+    procedureId: 'proc_05',
+    status: 'CONFIRMADA',
+    notes: 'Sessão 2 de 3 de peróxido de hidrogênio 35%.',
+    sendWhatsappReminder: true,
+    origin: 'WHATSAPP',
+    createdAt: '2025-05-06T09:00:00Z',
+    updatedAt: '2025-05-06T09:00:00Z',
+  },
+  {
+    id: 'apt_tomorrow_02',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_07',
+    patientName: 'Beatriz Ferreira Lima',
+    patientPhone: '(11) 92109-8765',
+    patientCpf: '14725836900',
+    date: getDemoOffsetDate(1),
+    startTime: '10:30',
+    durationMinutes: 45,
+    endTime: '11:15',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Restauração em Resina Composta (2 Faces)',
+    procedureId: 'proc_01',
+    status: 'AGUARDANDO',
+    notes: 'Aguardando confirmação pelo WhatsApp.',
+    sendWhatsappReminder: true,
+    origin: 'TELEFONE',
+    createdAt: '2025-05-06T10:00:00Z',
+    updatedAt: '2025-05-06T10:00:00Z',
+  },
+  {
+    id: 'apt_tomorrow_03',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_08',
+    patientName: 'Gabriel Monteiro Silva',
+    patientPhone: '(11) 91098-7654',
+    patientCpf: '25836914700',
+    date: getDemoOffsetDate(1),
+    startTime: '14:00',
+    durationMinutes: 60,
+    endTime: '15:00',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Exodontia Simples de Dente Erupcionado',
+    procedureId: 'proc_07',
+    status: 'CONFIRMADA',
+    notes: 'Prescrição prévia de amoxicilina e cetoprofeno enviada.',
+    sendWhatsappReminder: true,
+    origin: 'INDICACAO',
+    createdAt: '2025-05-06T11:00:00Z',
+    updatedAt: '2025-05-06T11:00:00Z',
+  },
+
+  // Ontem
+  {
+    id: 'apt_yesterday_01',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_09',
+    patientName: 'Juliana Paes de Almeida',
+    patientPhone: '(11) 99887-7665',
+    patientCpf: '36914725800',
+    date: getDemoOffsetDate(-1),
+    startTime: '09:00',
+    durationMinutes: 60,
+    endTime: '10:00',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Profilaxia e Raspagem Supragengival',
+    procedureId: 'proc_02',
+    status: 'FINALIZADA',
+    notes: 'Retorno para manutenção preventiva sem queixas.',
+    sendWhatsappReminder: false,
+    origin: 'PRESENCIAL',
+    createdAt: '2025-05-01T08:00:00Z',
+    updatedAt: '2025-05-01T10:00:00Z',
+  },
+  {
+    id: 'apt_yesterday_02',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_10',
+    patientName: 'Rodrigo Silveira Santos',
+    patientPhone: '(11) 98776-6554',
+    patientCpf: '74185296300',
+    date: getDemoOffsetDate(-1),
+    startTime: '14:30',
+    durationMinutes: 45,
+    endTime: '15:15',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Ajuste Oclusal e Placa Miorrelaxante',
+    procedureId: 'proc_08',
+    status: 'FALTOU',
+    notes: 'Paciente não compareceu e não atendeu contato telefônico.',
+    sendWhatsappReminder: true,
+    origin: 'TELEFONE',
+    createdAt: '2025-05-02T12:00:00Z',
+    updatedAt: '2025-05-02T15:15:00Z',
+  },
+
+  // +2 dias
+  {
+    id: 'apt_plus2_01',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_01',
+    patientName: 'Mariana Santos Lima',
+    patientPhone: '(11) 98765-4321',
+    patientCpf: '21948375120',
+    date: getDemoOffsetDate(2),
+    startTime: '11:00',
+    durationMinutes: 30,
+    endTime: '11:30',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Polimento e Acabamento de Restauração',
+    procedureId: 'proc_01',
+    status: 'CONFIRMADA',
+    notes: 'Revisão pós-operatória rápida.',
+    sendWhatsappReminder: true,
+    origin: 'WHATSAPP',
+    createdAt: '2025-05-07T08:00:00Z',
+    updatedAt: '2025-05-07T08:00:00Z',
+  },
+  {
+    id: 'apt_plus2_02',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_04',
+    patientName: 'Fernando Henrique Castro',
+    patientPhone: '(11) 95432-1098',
+    patientCpf: '32165498700',
+    date: getDemoOffsetDate(2),
+    startTime: '15:00',
+    durationMinutes: 60,
+    endTime: '16:00',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Obturação de Canais Radiculares',
+    procedureId: 'proc_04',
+    status: 'CONFIRMADA',
+    notes: 'Segunda sessão endodôntica para obturação definitiva com guta-percha.',
+    sendWhatsappReminder: true,
+    origin: 'PRESENCIAL',
+    createdAt: '2025-05-07T09:00:00Z',
+    updatedAt: '2025-05-07T09:00:00Z',
+  },
+
+  // Consultas do mês corrente (competência ativa)
+  {
+    id: 'apt_fixed_cur_01',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_01',
+    patientName: 'Mariana Santos Lima',
+    patientPhone: '(11) 98765-4321',
+    patientCpf: '21948375120',
+    date: getOffsetMonthDate(0, 5),
+    startTime: '09:00',
+    durationMinutes: 60,
+    endTime: '10:00',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Restauração em Resina Composta (1 Face)',
+    procedureId: 'proc_01',
+    status: 'FINALIZADA',
+    notes: 'Consulta correspondente à receita emitida.',
+    sendWhatsappReminder: true,
+    origin: 'WHATSAPP',
+    saleId: 'sale_01',
+    createdAt: `${curYM}-01T09:00:00Z`,
+    updatedAt: `${curYM}-05T10:00:00Z`,
+  },
+  {
+    id: 'apt_fixed_cur_02',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_02',
+    patientName: 'Roberto Alves Pereira',
+    patientPhone: '(11) 97654-3210',
+    patientCpf: '45678912300',
+    date: getOffsetMonthDate(0, 10),
+    startTime: '10:30',
+    durationMinutes: 45,
+    endTime: '11:15',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Profilaxia e Raspagem Supragengival',
+    procedureId: 'proc_02',
+    status: 'FINALIZADA',
+    notes: 'Consulta com nota fiscal emitida.',
+    sendWhatsappReminder: true,
+    origin: 'PRESENCIAL',
+    saleId: 'sale_02',
+    createdAt: `${curYM}-02T10:00:00Z`,
+    updatedAt: `${curYM}-10T11:15:00Z`,
+  },
+  {
+    id: 'apt_fixed_cur_03',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_03',
+    patientName: 'Camila Souza Dias',
+    patientPhone: '(11) 96543-2109',
+    patientCpf: '78912345600',
+    date: getOffsetMonthDate(0, 15),
+    startTime: '14:00',
+    durationMinutes: 45,
+    endTime: '14:45',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Manutenção Ortodôntica Mensal',
+    procedureId: 'proc_03',
+    status: 'CONFIRMADA',
+    notes: 'Consulta de rotina ortodôntica.',
+    sendWhatsappReminder: true,
+    origin: 'WHATSAPP',
+    createdAt: `${curYM}-05T11:00:00Z`,
+    updatedAt: `${curYM}-15T14:45:00Z`,
+  },
+  {
+    id: 'apt_fixed_cur_04',
+    orgId: 'org_mendes_01',
+    patientId: 'pat_04',
+    patientName: 'Fernando Henrique Castro',
+    patientPhone: '(11) 95432-1098',
+    patientCpf: '32165498700',
+    date: getOffsetMonthDate(0, 20),
+    startTime: '16:00',
+    durationMinutes: 90,
+    endTime: '17:30',
+    dentistName: 'Dr. Carlos Eduardo Mendes',
+    procedureName: 'Tratamento Endodôntico Molar',
+    procedureId: 'proc_04',
+    status: 'CANCELADA',
+    notes: 'Desmarcado pelo paciente por motivo de viagem.',
+    sendWhatsappReminder: true,
+    origin: 'TELEFONE',
+    createdAt: `${curYM}-08T14:00:00Z`,
+    updatedAt: `${curYM}-19T18:00:00Z`,
+  },
 ];
+

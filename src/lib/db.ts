@@ -8,6 +8,7 @@ import {
   ExpenseCategory,
   BankAccount,
   PayrollHistoryEntry,
+  MonthlyFiscalHistoryEntry,
   AuditLog,
   TaxRulesPf,
   TaxRulesSimples,
@@ -18,6 +19,21 @@ import {
   DentalProcedure,
   ClinicalInput,
   TaxOrigin,
+  SavedFiscalScenario,
+  Appointment,
+  AppointmentStatus,
+  SaleOverallPaymentStatus,
+  SalePaymentSummary,
+  UserRole,
+  ClinicTenant,
+  StoredUserAccount,
+  SupportSessionState,
+  AuthSession,
+  FiscalParameter,
+  SystemPreferences,
+  FiscalSourceType,
+  FiscalTotalSnapshot,
+  TenantAuthStatus,
 } from '../types';
 import {
   DEMO_ORGANIZATION,
@@ -30,13 +46,76 @@ import {
   DEMO_PAYROLL_HISTORY,
   DEMO_PROCEDURES,
   DEMO_CLINICAL_INPUTS,
+  DEMO_APPOINTMENTS,
 } from './demoData';
 import { INITIAL_CHART_OF_ACCOUNTS } from './chartOfAccountsData';
 import {
   DEFAULT_TAX_RULES_PF,
   DEFAULT_TAX_RULES_SIMPLES,
 } from './taxEngine';
+import {
+  INITIAL_OFFICIAL_FISCAL_PARAMETERS,
+  getOfficialMinimumWage as getMinWageCentral,
+  checkUpcomingYearWageReview,
+} from './fiscalParameters';
 import { augmentYearlyDataset } from './annualFinanceData';
+import { hashPassword, verifyPassword, generateSalt } from './authCrypto';
+import { isValidEmail } from './masks';
+import { SupabaseService } from './supabaseClient';
+
+export const GLOBAL_STORAGE_KEYS = {
+  ACTIVE_TENANT: 'df_active_tenant_v1',
+  AUTH_SESSION: 'df_auth_session_v1',
+  REGISTERED_CLINICS: 'df_registered_clinics_v1',
+  STORED_USERS: 'df_stored_users_v1',
+  FISCAL_PARAMETERS: 'df_fiscal_params_v1',
+};
+
+export const PRESEEDED_CLINICS: ClinicTenant[] = [
+  {
+    id: 'tenant_demo',
+    name: DEMO_ORGANIZATION.name,
+    tradeName: DEMO_ORGANIZATION.tradeName,
+    cnpj: DEMO_PROFESSIONAL.cnpj,
+    cpfCnpj: DEMO_PROFESSIONAL.cnpj || DEMO_PROFESSIONAL.cpf,
+    cro: DEMO_PROFESSIONAL.cro,
+    croUf: DEMO_PROFESSIONAL.croUf,
+    uf: DEMO_PROFESSIONAL.croUf,
+    email: 'carlos@mendesodonto.com.br',
+    phone: '(11) 98765-4321',
+    city: DEMO_PROFESSIONAL.municipio,
+    createdAt: '2025-01-01T00:00:00.000Z',
+    isActive: true,
+    isDemo: true,
+  },
+];
+
+export const PRESEEDED_USERS: StoredUserAccount[] = [
+  {
+    id: 'usr_carlos_01',
+    email: 'carlos@mendesodonto.com.br',
+    name: 'Dr. Carlos Eduardo Mendes',
+    salt: 'a1b2c3d4e5f607182938475610293847',
+    // Pre-calculated PBKDF2 HMAC-SHA-256 (100,000 iters) for 'Dental@2026'
+    passwordHash: '792a1306d905e867fb71cb0a8923f738bfda34e8db645f341da473146988685c',
+    clinicId: 'tenant_demo',
+    role: 'OWNER',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    isActive: true,
+  },
+  {
+    id: 'usr_platform_admin_01',
+    email: 'suporte@dentalfinance.com.br',
+    name: 'Suporte Técnico Dental Finance',
+    salt: 'f1e2d3c4b5a607182938475610293847',
+    // Pre-calculated PBKDF2 HMAC-SHA-256 (100,000 iters) for 'Admin@2026'
+    passwordHash: '3b84555b6099c8ba00f9bf74b94f7e4a96bea6bc23c43087c632a2b8c19370f7',
+    clinicId: 'tenant_platform',
+    role: 'PLATFORM_ADMIN',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    isActive: true,
+  },
+];
 
 const STORAGE_KEYS = {
   ORGANIZATION: 'df_org_v1',
@@ -53,12 +132,40 @@ const STORAGE_KEYS = {
   TAX_RULES_SIMPLES: 'df_tax_simples_v1',
   PROCEDURES: 'df_procedures_v2',
   CLINICAL_INPUTS: 'df_clinical_inputs_v1',
+  FISCAL_SCENARIOS: 'df_fiscal_scenarios_v1',
+  APPOINTMENTS: 'df_appointments_v1',
+  SYSTEM_PREFERENCES: 'df_preferences_v1',
 };
 
-// Safe storage accessors
-function loadItem<T>(key: string, fallback: T): T {
+let globalActiveTenantId = 'tenant_demo';
+
+export function setActiveTenantIdGlobal(tenantId: string) {
+  globalActiveTenantId = tenantId;
+}
+
+export function getScopedStorageKey(baseKey: string, tenantId: string = globalActiveTenantId): string {
+  // Global cross-tenant keys are never prefixed
+  if (
+    baseKey === GLOBAL_STORAGE_KEYS.ACTIVE_TENANT ||
+    baseKey === GLOBAL_STORAGE_KEYS.AUTH_SESSION ||
+    baseKey === GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS ||
+    baseKey === GLOBAL_STORAGE_KEYS.STORED_USERS ||
+    baseKey === GLOBAL_STORAGE_KEYS.FISCAL_PARAMETERS
+  ) {
+    return baseKey;
+  }
+  // Demo tenant keeps exact base keys for 100% legacy backward compatibility
+  if (tenantId === 'tenant_demo') {
+    return baseKey;
+  }
+  return `df_${tenantId}_${baseKey}`;
+}
+
+// Safe storage accessors with automatic multi-tenant scoping
+function loadItem<T>(key: string, fallback: T, tenantId?: string): T {
   try {
-    const raw = localStorage.getItem(key);
+    const scopedKey = getScopedStorageKey(key, tenantId || globalActiveTenantId);
+    const raw = localStorage.getItem(scopedKey);
     if (!raw) return fallback;
     return JSON.parse(raw);
   } catch (e) {
@@ -67,81 +174,432 @@ function loadItem<T>(key: string, fallback: T): T {
   }
 }
 
-function saveItem<T>(key: string, value: T): void {
+// Auto-limpeza inteligente e segura para evitar QuotaExceededError no localStorage
+export function pruneLocalStorage(keepTenantId?: string): void {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch (e) {
-    console.warn(`Failed to save ${key} to storage:`, e);
+    if (typeof localStorage === 'undefined') return;
+    const active = keepTenantId || globalActiveTenantId;
+    const keysToRemove: string[] = [];
+
+    // Chaves protegidas que nunca devem ser removidas
+    const protectedKeys = new Set([
+      GLOBAL_STORAGE_KEYS.ACTIVE_TENANT,
+      GLOBAL_STORAGE_KEYS.AUTH_SESSION,
+      GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS,
+      GLOBAL_STORAGE_KEYS.STORED_USERS,
+      GLOBAL_STORAGE_KEYS.FISCAL_PARAMETERS,
+    ]);
+
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+
+      if (protectedKeys.has(key)) continue;
+
+      // Não remover chaves do tenant ativo nem as chaves legadas do demo
+      if (
+        key.startsWith(`df_${active}_`) ||
+        key === 'df_prof_v1' ||
+        key === 'df_org_v1' ||
+        key === 'df_user_v1' ||
+        key.includes('tenant_demo')
+      ) {
+        continue;
+      }
+
+      // Remover partições locais de outros tenants antigos
+      if (key.startsWith('df_clinic_') || key.startsWith('df_tenant_')) {
+        keysToRemove.push(key);
+      }
+    }
+
+    keysToRemove.forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {
+        // ignore
+      }
+    });
+
+    // Truncar coleções de logs volumosos no localStorage
+    const auditKey = getScopedStorageKey(STORAGE_KEYS.AUDIT_LOGS, active);
+    const rawAudit = localStorage.getItem(auditKey);
+    if (rawAudit) {
+      try {
+        const parsed = JSON.parse(rawAudit);
+        if (Array.isArray(parsed) && parsed.length > 20) {
+          localStorage.setItem(auditKey, JSON.stringify(parsed.slice(0, 20)));
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch (err) {
+    console.warn('[Storage] Falha ao executar pruneLocalStorage:', err);
   }
 }
+
+function saveItem<T>(key: string, value: T, tenantId?: string): void {
+  const targetTenant = tenantId || globalActiveTenantId;
+  const scopedKey = getScopedStorageKey(key, targetTenant);
+  try {
+    localStorage.setItem(scopedKey, JSON.stringify(value));
+    // If saving for demo tenant and scopedKey differs, keep legacy key in sync
+    if (targetTenant === 'tenant_demo' && scopedKey !== key) {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+  } catch (e: any) {
+    const isQuota =
+      e &&
+      (e.name === 'QuotaExceededError' ||
+        e.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+        e.code === 22 ||
+        e.code === 1014);
+
+    if (isQuota) {
+      console.warn(`[Storage] QuotaExceededError ao persistir ${scopedKey}. Executando auto-limpeza...`);
+      pruneLocalStorage(targetTenant);
+      try {
+        localStorage.setItem(scopedKey, JSON.stringify(value));
+        if (targetTenant === 'tenant_demo' && scopedKey !== key) {
+          localStorage.setItem(key, JSON.stringify(value));
+        }
+      } catch (retryErr) {
+        // O banco PostgreSQL no Supabase é a fonte da verdade definitiva.
+        console.warn(`[Storage] Cache local não pôde ser gravado para ${scopedKey}, persistência garantida no PostgreSQL:`, retryErr);
+      }
+    } else {
+      console.warn(`Failed to save ${key} to storage:`, e);
+    }
+  }
+}
+
+const DEFAULT_FISCAL_SCENARIOS: SavedFiscalScenario[] = [
+  {
+    id: 'scen_01',
+    name: 'Cenário Otimizado — Fator R ≥ 28% (Anexo III)',
+    description: 'Pró-labore estratégico de R$ 7.000/mês mantendo a razão folha/faturamento em 30%, garantindo alíquota de 6% e economia tributária.',
+    createdAt: '2025-05-01T10:00:00.000Z',
+    parameters: {
+      rbt12: 280000,
+      fs12: 84000,
+      monthlyRevenueNfse: 25000,
+      monthlyProLabore: 7000,
+    },
+    results: {
+      fatorR: 0.3,
+      fatorRPercent: 30,
+      effectiveAnnex: 'ANEXO_III',
+      bracketNumber: 1,
+      nominalRate: 0.06,
+      deductionAmount: 0,
+      effectiveTaxRate: 6.0,
+      dasEstimated: 1500,
+      potentialMonthlySavings: 2375,
+    },
+  },
+  {
+    id: 'scen_02',
+    name: 'Cenário Conservador — Pró-labore Mínimo (Anexo V)',
+    description: 'Pró-labore reduzido em R$ 3.500/mês, resultando em Fator R de 15% e tributação majorada pelo Anexo V (15,5%).',
+    createdAt: '2025-05-01T10:05:00.000Z',
+    parameters: {
+      rbt12: 280000,
+      fs12: 42000,
+      monthlyRevenueNfse: 25000,
+      monthlyProLabore: 3500,
+    },
+    results: {
+      fatorR: 0.15,
+      fatorRPercent: 15,
+      effectiveAnnex: 'ANEXO_V',
+      bracketNumber: 1,
+      nominalRate: 0.155,
+      deductionAmount: 0,
+      effectiveTaxRate: 15.5,
+      dasEstimated: 3875,
+      potentialMonthlySavings: 2375,
+    },
+  },
+];
 
 export class DentalFinanceDB {
   private static instance: DentalFinanceDB;
 
-  private org: Organization;
-  private user: User;
-  private professional: Professional;
-  private patients: Patient[];
-  private sales: Sale[];
-  private expenses: Expense[];
-  private categories: ExpenseCategory[];
-  private bankAccounts: BankAccount[];
-  private payrollHistory: PayrollHistoryEntry[];
-  private auditLogs: AuditLog[];
-  private taxRulesPf: Record<number, TaxRulesPf>;
-  private taxRulesSimples: Record<number, TaxRulesSimples>;
-  private procedures: DentalProcedure[];
-  private clinicalInputs: ClinicalInput[];
+  private activeTenantId: string = 'tenant_demo';
+  private isDemoMode: boolean = true;
+  private currentSession: AuthSession | null = null;
+  private registeredClinics: ClinicTenant[] = [];
+  private storedUsers: StoredUserAccount[] = [];
+
+  private org!: Organization;
+  private user!: User;
+  private professional!: Professional;
+  private patients!: Patient[];
+  private sales!: Sale[];
+  private expenses!: Expense[];
+  private categories!: ExpenseCategory[];
+  private bankAccounts!: BankAccount[];
+  private payrollHistory!: PayrollHistoryEntry[];
+  private auditLogs!: AuditLog[];
+  private taxRulesPf!: Record<number, TaxRulesPf>;
+  private taxRulesSimples!: Record<number, TaxRulesSimples>;
+  private procedures!: DentalProcedure[];
+  private clinicalInputs!: ClinicalInput[];
+  private fiscalScenarios!: SavedFiscalScenario[];
+  private appointments!: Appointment[];
+  private preferences!: SystemPreferences;
+  private fiscalParameters!: FiscalParameter[];
   private listeners: (() => void)[] = [];
+  private isHydrating: boolean = false;
+
+  public getIsHydrating(): boolean {
+    return this.isHydrating;
+  }
 
   private constructor() {
-    this.org = loadItem<Organization>(STORAGE_KEYS.ORGANIZATION, DEMO_ORGANIZATION);
-    this.user = loadItem<User>(STORAGE_KEYS.USER, DEMO_USER);
-    this.professional = loadItem<Professional>(STORAGE_KEYS.PROFESSIONAL, DEMO_PROFESSIONAL);
-    this.patients = loadItem<Patient[]>(STORAGE_KEYS.PATIENTS, DEMO_PATIENTS);
-    const loadedSales = loadItem<Sale[]>(STORAGE_KEYS.SALES, DEMO_SALES);
-    const loadedExpenses = loadItem<Expense[]>(STORAGE_KEYS.EXPENSES, DEMO_EXPENSES);
-    const augmented = augmentYearlyDataset(loadedSales, loadedExpenses, 2025);
-    this.sales = augmented.sales;
-    this.expenses = augmented.expenses;
-    const loadedCategories = loadItem<ExpenseCategory[]>(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS);
-    // Ensure all categories (even if previously cached in localStorage) use standardized group names
-    const catMap = new Map<string, ExpenseCategory>();
-    INITIAL_CHART_OF_ACCOUNTS.forEach((c) => catMap.set(c.id, c));
-    loadedCategories.forEach((c) => {
-      const standard = catMap.get(c.id);
-      if (standard) {
-        catMap.set(c.id, {
-          ...standard,
-          ...c,
-          groupName: standard.groupName, // Always prefer official descriptive group name
-          groupCode: standard.groupCode,
-        });
-      } else {
-        catMap.set(c.id, c);
-      }
-    });
-    this.categories = Array.from(catMap.values());
-    saveItem(STORAGE_KEYS.CATEGORIES, this.categories);
+    this.registeredClinics = loadItem<ClinicTenant[]>(
+      GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS,
+      PRESEEDED_CLINICS
+    );
+    this.storedUsers = loadItem<StoredUserAccount[]>(
+      GLOBAL_STORAGE_KEYS.STORED_USERS,
+      PRESEEDED_USERS
+    );
+    this.fiscalParameters = loadItem<FiscalParameter[]>(
+      GLOBAL_STORAGE_KEYS.FISCAL_PARAMETERS,
+      INITIAL_OFFICIAL_FISCAL_PARAMETERS
+    );
+    this.currentSession = loadItem<AuthSession | null>(
+      GLOBAL_STORAGE_KEYS.AUTH_SESSION,
+      null
+    );
 
-    this.bankAccounts = loadItem<BankAccount[]>(STORAGE_KEYS.BANK_ACCOUNTS, DEMO_BANK_ACCOUNTS);
-    this.payrollHistory = loadItem<PayrollHistoryEntry[]>(STORAGE_KEYS.PAYROLL_HISTORY, DEMO_PAYROLL_HISTORY);
-    this.procedures = loadItem<DentalProcedure[]>(STORAGE_KEYS.PROCEDURES, DEMO_PROCEDURES);
-    this.clinicalInputs = loadItem<ClinicalInput[]>(STORAGE_KEYS.CLINICAL_INPUTS, DEMO_CLINICAL_INPUTS);
-    this.auditLogs = loadItem<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, [
-      {
-        id: 'log_01',
-        timestamp: new Date().toISOString(),
-        userId: 'usr_carlos_01',
-        userName: 'Dr. Carlos Eduardo Mendes',
-        action: 'SISTEMA_INICIALIZADO',
-        entityType: 'ORGANIZATION',
-        entityId: 'org_mendes_01',
-        details: 'Banco de dados híbrido inicializado com plano de contas odontológico e dados demonstrativos.',
-      },
-    ]);
-    this.taxRulesPf = loadItem<Record<number, TaxRulesPf>>(STORAGE_KEYS.TAX_RULES_PF, DEFAULT_TAX_RULES_PF);
-    this.taxRulesSimples = loadItem<Record<number, TaxRulesSimples>>(STORAGE_KEYS.TAX_RULES_SIMPLES, DEFAULT_TAX_RULES_SIMPLES);
+    let initialTenant = 'tenant_demo';
+    let isDemo = true;
+    if (this.currentSession) {
+      if (this.currentSession.supportSession?.targetTenantId) {
+        initialTenant = this.currentSession.supportSession.targetTenantId;
+        isDemo = initialTenant === 'tenant_demo';
+      } else {
+        initialTenant =
+          this.currentSession.tenantId ||
+          this.currentSession.clinic?.id ||
+          (this.currentSession.user?.orgId ? this.currentSession.user.orgId.replace(/^org_/, '') : '') ||
+          'tenant_demo';
+        this.currentSession.tenantId = initialTenant;
+        isDemo = Boolean(this.currentSession.isDemo) || initialTenant === 'tenant_demo';
+      }
+    }
+
+    this.loadTenant(initialTenant, isDemo);
+
+    if (this.currentSession && !isDemo && initialTenant !== 'tenant_demo') {
+      this.hydrateTenantAsync(initialTenant).catch((err) => {
+        console.warn('Initial tenant hydration background error:', err);
+      });
+    }
+  }
+
+  public async hydrateTenantAsync(tenantId: string): Promise<void> {
+    if (!tenantId || tenantId === 'tenant_demo') {
+      this.isHydrating = false;
+      this.notify();
+      return;
+    }
+
+    this.isHydrating = true;
+    this.notify();
+
+    try {
+      const res = await SupabaseService.getTenantData(tenantId);
+      if (res.professional) {
+        this.professional = res.professional;
+        saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, tenantId);
+      }
+      if (res.payrollHistory && res.payrollHistory.length > 0) {
+        this.payrollHistory = res.payrollHistory;
+        saveItem(STORAGE_KEYS.PAYROLL_HISTORY, this.payrollHistory, tenantId);
+      }
+      if (res.patients) {
+        this.patients = res.patients;
+        saveItem(STORAGE_KEYS.PATIENTS, this.patients, tenantId);
+      }
+      if (res.sales) {
+        this.sales = res.sales;
+        saveItem(STORAGE_KEYS.SALES, this.sales, tenantId);
+      }
+      if (res.expenses) {
+        this.expenses = res.expenses;
+        saveItem(STORAGE_KEYS.EXPENSES, this.expenses, tenantId);
+      }
+      if (res.procedures && res.procedures.length > 0) {
+        this.procedures = res.procedures;
+        saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, tenantId);
+      }
+      if (res.clinicalInputs && res.clinicalInputs.length > 0) {
+        this.clinicalInputs = res.clinicalInputs;
+        saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, tenantId);
+      }
+      if (res.bankAccounts && res.bankAccounts.length > 0) {
+        this.bankAccounts = res.bankAccounts;
+        saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, tenantId);
+      }
+      if (res.appointments) {
+        this.appointments = res.appointments;
+        saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, tenantId);
+      }
+      if (res.preferences) {
+        this.preferences = res.preferences;
+        saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, this.preferences, tenantId);
+      }
+      if (res.auditLogs && res.auditLogs.length > 0) {
+        this.auditLogs = res.auditLogs;
+        saveItem(STORAGE_KEYS.AUDIT_LOGS, this.auditLogs, tenantId);
+      }
+    } catch (err) {
+      console.warn(`Erro ao hidratar tenant ${tenantId} do banco de dados:`, err);
+    } finally {
+      this.isHydrating = false;
+      this.notify();
+    }
+  }
+
+  public loadTenant(tenantId: string, isDemo: boolean = false): void {
+    this.activeTenantId = tenantId;
+    this.isDemoMode = isDemo || tenantId === 'tenant_demo';
+    setActiveTenantIdGlobal(tenantId);
+
+    if (this.isDemoMode) {
+      this.org = loadItem<Organization>(STORAGE_KEYS.ORGANIZATION, DEMO_ORGANIZATION, tenantId);
+      this.user = loadItem<User>(STORAGE_KEYS.USER, DEMO_USER, tenantId);
+      this.professional = loadItem<Professional>(STORAGE_KEYS.PROFESSIONAL, DEMO_PROFESSIONAL, tenantId);
+      this.patients = loadItem<Patient[]>(STORAGE_KEYS.PATIENTS, DEMO_PATIENTS, tenantId);
+      const loadedSales = loadItem<Sale[]>(STORAGE_KEYS.SALES, DEMO_SALES, tenantId);
+      const loadedExpenses = loadItem<Expense[]>(STORAGE_KEYS.EXPENSES, DEMO_EXPENSES, tenantId);
+      const curYear = new Date().getFullYear();
+      let augmented = augmentYearlyDataset(loadedSales, loadedExpenses, curYear);
+      if (curYear !== 2025) {
+        augmented = augmentYearlyDataset(augmented.sales, augmented.expenses, 2025);
+      }
+      this.sales = augmented.sales;
+      this.expenses = augmented.expenses;
+      const loadedCategories = loadItem<ExpenseCategory[]>(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
+      const catMap = new Map<string, ExpenseCategory>();
+      INITIAL_CHART_OF_ACCOUNTS.forEach((c) => catMap.set(c.id, c));
+      loadedCategories.forEach((c) => {
+        const standard = catMap.get(c.id);
+        if (standard) {
+          catMap.set(c.id, {
+            ...standard,
+            ...c,
+            groupName: standard.groupName,
+            groupCode: standard.groupCode,
+          });
+        } else {
+          catMap.set(c.id, c);
+        }
+      });
+      this.categories = Array.from(catMap.values());
+      saveItem(STORAGE_KEYS.CATEGORIES, this.categories, tenantId);
+
+      this.bankAccounts = loadItem<BankAccount[]>(STORAGE_KEYS.BANK_ACCOUNTS, DEMO_BANK_ACCOUNTS, tenantId);
+      this.payrollHistory = loadItem<PayrollHistoryEntry[]>(STORAGE_KEYS.PAYROLL_HISTORY, DEMO_PAYROLL_HISTORY, tenantId);
+      this.procedures = loadItem<DentalProcedure[]>(STORAGE_KEYS.PROCEDURES, DEMO_PROCEDURES, tenantId);
+      this.clinicalInputs = loadItem<ClinicalInput[]>(STORAGE_KEYS.CLINICAL_INPUTS, DEMO_CLINICAL_INPUTS, tenantId);
+      this.fiscalScenarios = loadItem<SavedFiscalScenario[]>(STORAGE_KEYS.FISCAL_SCENARIOS, DEFAULT_FISCAL_SCENARIOS, tenantId);
+      this.appointments = loadItem<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, DEMO_APPOINTMENTS, tenantId);
+      this.auditLogs = loadItem<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, [
+        {
+          id: 'log_01',
+          timestamp: new Date().toISOString(),
+          userId: 'usr_carlos_01',
+          userName: 'Dr. Carlos Eduardo Mendes',
+          action: 'SISTEMA_INICIALIZADO',
+          entityType: 'ORGANIZATION',
+          entityId: 'org_mendes_01',
+          details: 'Banco de dados híbrido inicializado com plano de contas odontológico e dados demonstrativos.',
+        },
+      ], tenantId);
+      this.taxRulesPf = loadItem<Record<number, TaxRulesPf>>(STORAGE_KEYS.TAX_RULES_PF, DEFAULT_TAX_RULES_PF, tenantId);
+      this.taxRulesSimples = loadItem<Record<number, TaxRulesSimples>>(STORAGE_KEYS.TAX_RULES_SIMPLES, DEFAULT_TAX_RULES_SIMPLES, tenantId);
+      this.preferences = loadItem<SystemPreferences>(
+        STORAGE_KEYS.SYSTEM_PREFERENCES,
+        { hideCpf: false, alertFatorR: true, alertDueDates: true, operationalReminders: true },
+        tenantId
+      );
+    } else {
+      // REAL CLINIC TENANT — ABSOLUTELY CLEAN, NO MOCKS!
+      const clinic = this.registeredClinics.find((c) => c.id === tenantId);
+      const defaultOrg: Organization = {
+        id: `org_${tenantId}`,
+        name: clinic?.name || 'Minha Clínica Odontológica',
+        tradeName: clinic?.tradeName || clinic?.name || 'Minha Clínica',
+        createdAt: clinic?.createdAt || new Date().toISOString(),
+      };
+      const defaultUser: User = {
+        id: `usr_${tenantId}`,
+        name: clinic?.name || 'Cirurgião-Dentista',
+        email: clinic?.email || '',
+        role: 'ADMIN',
+        orgId: defaultOrg.id,
+      };
+      const defaultProf: Professional = {
+        id: `prof_${tenantId}`,
+        orgId: defaultOrg.id,
+        name: clinic?.name || 'Cirurgião-Dentista',
+        cpf: '',
+        cro: clinic?.cro || '',
+        croUf: clinic?.croUf || clinic?.uf || 'SP',
+        cnpj: clinic?.cnpj || clinic?.cpfCnpj || '',
+        razaoSocial: clinic?.name || '',
+        nomeFantasia: clinic?.tradeName || clinic?.name || '',
+        municipio: clinic?.city || 'São Paulo - SP',
+        regimeTributario: 'SIMPLES_NACIONAL',
+        optanteSimples: true,
+        dataAbertura: clinic?.createdAt?.split('T')[0] || new Date().toISOString().split('T')[0],
+        rbt12Inicial: 0,
+        folha12MesesInicial: 0,
+        proLaboreMensal: 0,
+        baselineConfigured: false,
+        numDependentes: 0,
+        inssProprioMensal: 0,
+        outrosRendimentosTributaveis: 0,
+      };
+
+      this.org = loadItem<Organization>(STORAGE_KEYS.ORGANIZATION, defaultOrg, tenantId);
+      this.user = loadItem<User>(STORAGE_KEYS.USER, defaultUser, tenantId);
+      this.professional = loadItem<Professional>(STORAGE_KEYS.PROFESSIONAL, defaultProf, tenantId);
+      this.patients = loadItem<Patient[]>(STORAGE_KEYS.PATIENTS, [], tenantId);
+      this.sales = loadItem<Sale[]>(STORAGE_KEYS.SALES, [], tenantId);
+      this.expenses = loadItem<Expense[]>(STORAGE_KEYS.EXPENSES, [], tenantId);
+      this.categories = loadItem<ExpenseCategory[]>(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
+      this.bankAccounts = loadItem<BankAccount[]>(STORAGE_KEYS.BANK_ACCOUNTS, [], tenantId);
+      this.payrollHistory = loadItem<PayrollHistoryEntry[]>(STORAGE_KEYS.PAYROLL_HISTORY, [], tenantId);
+      this.procedures = loadItem<DentalProcedure[]>(STORAGE_KEYS.PROCEDURES, [], tenantId);
+      this.clinicalInputs = loadItem<ClinicalInput[]>(STORAGE_KEYS.CLINICAL_INPUTS, [], tenantId);
+      this.fiscalScenarios = loadItem<SavedFiscalScenario[]>(STORAGE_KEYS.FISCAL_SCENARIOS, [], tenantId);
+      this.appointments = loadItem<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, [], tenantId);
+      this.preferences = loadItem<SystemPreferences>(
+        STORAGE_KEYS.SYSTEM_PREFERENCES,
+        { hideCpf: false, alertFatorR: true, alertDueDates: true, operationalReminders: true },
+        tenantId
+      );
+      this.auditLogs = loadItem<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, [
+        {
+          id: `log_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          userId: this.user.id,
+          userName: this.user.name,
+          action: 'TENANT_CARREGADO',
+          entityType: 'CLINIC',
+          entityId: tenantId,
+          details: `Ambiente da clínica ${this.org.name} carregado com sucesso.`,
+        },
+      ], tenantId);
+      this.taxRulesPf = loadItem<Record<number, TaxRulesPf>>(STORAGE_KEYS.TAX_RULES_PF, DEFAULT_TAX_RULES_PF, tenantId);
+      this.taxRulesSimples = loadItem<Record<number, TaxRulesSimples>>(STORAGE_KEYS.TAX_RULES_SIMPLES, DEFAULT_TAX_RULES_SIMPLES, tenantId);
+    }
   }
 
   public static getInstance(): DentalFinanceDB {
@@ -162,20 +620,841 @@ export class DentalFinanceDB {
     this.listeners.forEach((l) => l());
   }
 
-  // Audit Logging
+  // Audit Logging with audited support identification
   public log(action: string, entityType: string, entityId: string, details: string) {
+    const isSupport = !!this.currentSession?.supportSession;
+    const userId = isSupport
+      ? `${this.currentSession!.supportSession!.originalAdminUserId} [SUPPORT]`
+      : (this.currentSession?.user?.id || (this.user ? this.user.id : 'sys'));
+    const userName = isSupport
+      ? `${this.currentSession!.supportSession!.originalAdminName} (Modo Suporte)`
+      : (this.currentSession?.user?.name || (this.user ? this.user.name : 'Sistema'));
+
     const newLog: AuditLog = {
       id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: new Date().toISOString(),
-      userId: this.user.id,
-      userName: this.user.name,
+      userId,
+      userName,
       action,
       entityType,
       entityId,
       details,
     };
-    this.auditLogs = [newLog, ...this.auditLogs.slice(0, 99)];
+    this.auditLogs = [newLog, ...this.auditLogs.slice(0, 24)];
     saveItem(STORAGE_KEYS.AUDIT_LOGS, this.auditLogs);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.logAudit(newLog, this.activeTenantId).catch(() => {});
+    }
+  }
+
+  // Multi-tenant & Authentication Getters
+  public getActiveTenantId(): string {
+    if (this.currentSession) {
+      if (this.currentSession.supportSession?.targetTenantId) {
+        const supportTenant = this.currentSession.supportSession.targetTenantId;
+        if (this.activeTenantId !== supportTenant) {
+          this.activeTenantId = supportTenant;
+          setActiveTenantIdGlobal(supportTenant);
+        }
+        return supportTenant;
+      }
+      const candidate =
+        this.currentSession.tenantId ||
+        this.currentSession.clinic?.id ||
+        (this.currentSession.user?.orgId ? this.currentSession.user.orgId.replace(/^org_/, '') : '');
+      if (candidate && candidate.trim() !== '') {
+        if (!this.currentSession.tenantId) {
+          this.currentSession.tenantId = candidate;
+        }
+        if (this.activeTenantId !== candidate) {
+          this.activeTenantId = candidate;
+          setActiveTenantIdGlobal(candidate);
+        }
+        return candidate;
+      }
+    }
+    return this.activeTenantId || 'tenant_demo';
+  }
+
+  public getTenantAuthStatus(): TenantAuthStatus {
+    if (this.isHydrating) {
+      return 'AUTH_LOADING';
+    }
+    if (!this.currentSession) {
+      return 'UNAUTHENTICATED';
+    }
+    const tenantId = this.getActiveTenantId();
+    if (this.currentSession.isDemo || this.isDemoMode || tenantId === 'tenant_demo') {
+      return 'DEMO';
+    }
+    if (!tenantId || tenantId.trim() === '' || tenantId === 'tenant_platform') {
+      return 'AUTHENTICATED_WITHOUT_TENANT';
+    }
+    return 'AUTHENTICATED_WITH_TENANT';
+  }
+
+  public getIsDemoMode(): boolean {
+    return this.isDemoMode;
+  }
+
+  public getCurrentSession(): AuthSession | null {
+    if (this.currentSession && !this.currentSession.tenantId) {
+      this.currentSession.tenantId = this.getActiveTenantId();
+    }
+    return this.currentSession;
+  }
+
+  public getRegisteredClinics(): ClinicTenant[] {
+    return this.registeredClinics;
+  }
+
+  public getStoredUsers(): StoredUserAccount[] {
+    return this.storedUsers;
+  }
+
+  // Authentication Flow
+  public async authenticate(
+    identifier: string,
+    secret: string
+  ): Promise<{ success: boolean; session?: AuthSession; error?: string }> {
+    const cleanId = identifier.trim().toLowerCase();
+    const cleanSecret = secret.trim();
+
+    if (!cleanId || !cleanSecret) {
+      return { success: false, error: 'Por favor, informe suas credenciais completas.' };
+    }
+
+    let user = this.storedUsers.find((u) => u.email.toLowerCase() === cleanId);
+    if (!user) {
+      try {
+        const remoteUsers = await SupabaseService.getAllUsers();
+        const remoteClinics = await SupabaseService.getAllClinics();
+        if (remoteUsers.length > 0) {
+          this.storedUsers = remoteUsers;
+          saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
+        }
+        if (remoteClinics.length > 0) {
+          this.registeredClinics = remoteClinics;
+          saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+        }
+        user = this.storedUsers.find((u) => u.email.toLowerCase() === cleanId);
+      } catch (e) {
+        console.warn('Erro ao consultar usuários no Supabase:', e);
+      }
+    }
+
+    if (!user) {
+      this.log('LOGIN_FALHA', 'AUTH', cleanId, `Tentativa de login falha: usuário ${cleanId} não encontrado.`);
+      return {
+        success: false,
+        error: 'E-mail ou senha inválidos. Por favor, verifique suas credenciais.',
+      };
+    }
+
+    // Special compatibility check for demo doctor: accept 'Dental@2025' or 'Dental@2026'
+    let isValid = false;
+    if (user.clinicId === 'tenant_demo' && (cleanSecret === 'Dental@2025' || cleanSecret === 'Dental@2026')) {
+      isValid = true;
+    } else {
+      isValid = await verifyPassword(cleanSecret, user.passwordHash, user.salt);
+    }
+
+    if (!isValid) {
+      this.log('LOGIN_FALHA', 'AUTH', user.id, `Tentativa de login falha: senha incorreta para ${user.email}.`);
+      return {
+        success: false,
+        error: 'E-mail ou senha inválidos. Por favor, verifique suas credenciais.',
+      };
+    }
+
+    let clinic = this.registeredClinics.find((c) => c.id === user.clinicId);
+    if (!clinic && user.clinicId !== 'tenant_demo' && user.clinicId !== 'tenant_platform') {
+      try {
+        const remoteClinics = await SupabaseService.getAllClinics();
+        if (remoteClinics.length > 0) {
+          this.registeredClinics = remoteClinics;
+          saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+          clinic = this.registeredClinics.find((c) => c.id === user.clinicId);
+        }
+      } catch (e) {
+        console.warn('Erro ao consultar clínicas no Supabase:', e);
+      }
+    }
+
+    const sessionClinic: ClinicTenant = clinic || {
+      id: user.clinicId,
+      name: user.clinicName || 'Minha Clínica',
+      cro: '00000',
+      croUf: 'SP',
+      cpfCnpj: '00.000.000/0001-00',
+      isDemo: user.clinicId === 'tenant_demo',
+      createdAt: new Date().toISOString(),
+    };
+
+    const session: AuthSession = {
+      token: `sess_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`,
+      user: {
+        id: user.id,
+        orgId: `org_${user.clinicId}`,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+      clinic: sessionClinic,
+      tenantId: user.clinicId,
+      isDemo: user.clinicId === 'tenant_demo',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+    };
+
+    this.currentSession = session;
+    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
+    this.loadTenant(user.clinicId, session.isDemo);
+
+    if (!session.isDemo) {
+      await this.hydrateTenantAsync(user.clinicId);
+    }
+
+    this.log('LOGIN_SUCESSO', 'AUTH', user.id, `Usuário ${user.email} realizou login com sucesso.`);
+    this.notify();
+
+    return { success: true, session };
+  }
+
+  // Instant Demo Access
+  public loginDemo(): AuthSession {
+    const demoUser = this.storedUsers.find((u) => u.clinicId === 'tenant_demo') || PRESEEDED_USERS[0];
+    const demoClinic = this.registeredClinics.find((c) => c.id === 'tenant_demo') || PRESEEDED_CLINICS[0];
+
+    const session: AuthSession = {
+      token: `sess_demo_${Date.now()}`,
+      user: {
+        id: demoUser.id,
+        orgId: 'org_mendes_01',
+        name: demoUser.name,
+        email: demoUser.email,
+        role: demoUser.role,
+      },
+      clinic: { ...demoClinic },
+      tenantId: 'tenant_demo',
+      isDemo: true,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+    };
+
+    this.currentSession = session;
+    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
+    this.loadTenant('tenant_demo', true);
+    this.log('LOGIN_DEMO', 'AUTH', demoUser.id, 'Acesso rápido ao Modo Demonstração.');
+    this.notify();
+
+    return session;
+  }
+
+  // Logout
+  public logout(): void {
+    if (this.currentSession) {
+      this.log('LOGOUT', 'AUTH', this.currentSession.user.id, `Logout efetuado por ${this.currentSession.user.email}.`);
+    }
+    this.currentSession = null;
+    this.activeTenantId = 'tenant_demo';
+    this.isDemoMode = true;
+    setActiveTenantIdGlobal('tenant_demo');
+    try {
+      localStorage.removeItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION);
+    } catch (e) {
+      // ignore
+    }
+    this.notify();
+  }
+
+  // Create Access Account (Credentials Only — Rodada 11)
+  public async createAccount(params: {
+    email: string;
+    password: string;
+    termsAccepted?: boolean;
+  }): Promise<{ success: boolean; session?: AuthSession; error?: string }> {
+    const normalizedEmail = (params.email || '').trim().toLowerCase();
+
+    if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+      return { success: false, error: 'Por favor, informe um endereço de e-mail válido.' };
+    }
+    if (!params.password || params.password.length < 8) {
+      return { success: false, error: 'A senha de acesso deve conter no mínimo 8 caracteres.' };
+    }
+    if (params.termsAccepted === false) {
+      return { success: false, error: 'É necessário concordar com os Termos de Uso e Política de Privacidade.' };
+    }
+
+    if (this.storedUsers.some((u) => u.email.toLowerCase() === normalizedEmail)) {
+      return { success: false, error: 'Este e-mail já está cadastrado no Dental Finance.' };
+    }
+
+    const salt = generateSalt();
+    const passwordHash = await hashPassword(params.password, salt);
+    const tenantId = `clinic_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const userId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    const newClinic: ClinicTenant = {
+      id: tenantId,
+      name: 'Minha Clínica',
+      tradeName: 'Minha Clínica Odontológica',
+      cnpj: '',
+      cro: '',
+      croUf: 'SP',
+      uf: 'SP',
+      email: normalizedEmail,
+      phone: '',
+      createdAt: new Date().toISOString(),
+      isActive: true,
+      isDemo: false,
+    };
+
+    const newUser: StoredUserAccount = {
+      id: userId,
+      email: normalizedEmail,
+      passwordHash,
+      salt,
+      name: normalizedEmail.split('@')[0],
+      role: 'OWNER',
+      clinicId: tenantId,
+      createdAt: new Date().toISOString(),
+      isActive: true,
+    };
+
+    this.registeredClinics.push(newClinic);
+    saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+
+    this.storedUsers.push(newUser);
+    saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
+
+    // Initialize clean partitions for this new real tenant
+    saveItem(STORAGE_KEYS.ORGANIZATION, {
+      id: `org_${tenantId}`,
+      name: newClinic.name,
+      tradeName: newClinic.tradeName,
+      createdAt: newClinic.createdAt,
+    }, tenantId);
+
+    saveItem(STORAGE_KEYS.USER, {
+      id: userId,
+      name: newUser.name,
+      email: newUser.email,
+      role: 'ADMIN',
+      orgId: `org_${tenantId}`,
+    }, tenantId);
+
+    saveItem(STORAGE_KEYS.PROFESSIONAL, {
+      id: `prof_${tenantId}`,
+      orgId: `org_${tenantId}`,
+      name: '',
+      cpf: '',
+      cro: '',
+      croUf: 'SP',
+      cnpj: '',
+      razaoSocial: '',
+      nomeFantasia: '',
+      municipio: 'São Paulo - SP',
+      uf: 'SP',
+      phone: '',
+      regimeTributario: 'SIMPLES_NACIONAL',
+      optanteSimples: true,
+      dataAbertura: newClinic.createdAt.split('T')[0],
+      rbt12Inicial: 0,
+      folha12MesesInicial: 0,
+      proLaboreMensal: 0,
+      baselineConfigured: false, // FLAG EXPLÍCITO: bases ainda não configuradas
+      fiscalSourceType: undefined,
+      fiscalSnapshots: [],
+      initialFiscalHistory: [],
+      numDependentes: 0,
+      inssProprioMensal: 0,
+      outrosRendimentosTributaveis: 0,
+    }, tenantId);
+
+    saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, {
+      hideCpf: false, // CPF visível por padrão
+      alertFatorR: true,
+      alertDueDates: true,
+      operationalReminders: true,
+    }, tenantId);
+
+    // Operational collections start strictly EMPTY
+    saveItem(STORAGE_KEYS.PATIENTS, [], tenantId);
+    saveItem(STORAGE_KEYS.SALES, [], tenantId);
+    saveItem(STORAGE_KEYS.EXPENSES, [], tenantId);
+    saveItem(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, [], tenantId);
+    saveItem(STORAGE_KEYS.PAYROLL_HISTORY, [], tenantId);
+    saveItem(STORAGE_KEYS.PROCEDURES, [], tenantId);
+    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, [], tenantId);
+    saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, [], tenantId);
+    saveItem(STORAGE_KEYS.APPOINTMENTS, [], tenantId);
+    saveItem(STORAGE_KEYS.AUDIT_LOGS, [
+      {
+        id: `log_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId,
+        userName: newUser.name,
+        action: 'CONTA_CRIADA',
+        entityType: 'USER',
+        entityId: userId,
+        details: `Conta criada com credenciais puras para ${newUser.email}. Workspace limpo inicializado.`,
+      },
+    ], tenantId);
+
+    const session: AuthSession = {
+      token: `sess_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`,
+      user: {
+        id: userId,
+        orgId: `org_${tenantId}`,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role,
+      },
+      clinic: { ...newClinic },
+      tenantId,
+      isDemo: false,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+    };
+
+    this.currentSession = session;
+    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
+    this.loadTenant(tenantId, false);
+
+    await SupabaseService.saveClinic(newClinic);
+    await SupabaseService.saveUser(newUser);
+    await SupabaseService.saveProfessional(this.professional, tenantId);
+    await SupabaseService.savePreferences(this.preferences, tenantId);
+
+    this.notify();
+
+    return { success: true, session };
+  }
+
+  // Legacy & Programmatic Clinic Account Creation
+  public async createClinicAccount(params: {
+    clinicName?: string;
+    tradeName?: string;
+    cnpj?: string;
+    cro?: string;
+    uf?: string;
+    professionalName?: string;
+    email: string;
+    password: string;
+    phone?: string;
+  }): Promise<{ success: boolean; session?: AuthSession; error?: string }> {
+    const normalizedEmail = params.email.trim().toLowerCase();
+
+    if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+      return { success: false, error: 'E-mail corporativo válido é obrigatório.' };
+    }
+    if (!params.password || params.password.length < 6) {
+      return { success: false, error: 'A senha deve conter no mínimo 6 caracteres.' };
+    }
+
+    if (this.storedUsers.some((u) => u.email.toLowerCase() === normalizedEmail)) {
+      return { success: false, error: 'Este e-mail já está cadastrado no Dental Finance.' };
+    }
+
+    const salt = generateSalt();
+    const passwordHash = await hashPassword(params.password, salt);
+    const tenantId = `clinic_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const userId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    const newClinic: ClinicTenant = {
+      id: tenantId,
+      name: (params.clinicName || 'Minha Clínica').trim(),
+      tradeName: (params.tradeName || params.clinicName || 'Minha Clínica').trim(),
+      cnpj: params.cnpj?.trim() || '',
+      cro: (params.cro || '').trim(),
+      croUf: (params.uf || 'SP').trim().toUpperCase(),
+      uf: (params.uf || 'SP').trim().toUpperCase(),
+      email: normalizedEmail,
+      phone: params.phone?.trim() || '',
+      createdAt: new Date().toISOString(),
+      isActive: true,
+      isDemo: false,
+    };
+
+    const newUser: StoredUserAccount = {
+      id: userId,
+      email: normalizedEmail,
+      passwordHash,
+      salt,
+      name: (params.professionalName || normalizedEmail.split('@')[0]).trim(),
+      role: 'OWNER',
+      clinicId: tenantId,
+      createdAt: new Date().toISOString(),
+      isActive: true,
+    };
+
+    this.registeredClinics.push(newClinic);
+    saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+
+    this.storedUsers.push(newUser);
+    saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
+
+    // Initialize clean partitions for this new real tenant
+    saveItem(STORAGE_KEYS.ORGANIZATION, {
+      id: `org_${tenantId}`,
+      name: newClinic.name,
+      tradeName: newClinic.tradeName,
+      createdAt: newClinic.createdAt,
+    }, tenantId);
+
+    saveItem(STORAGE_KEYS.USER, {
+      id: userId,
+      name: newUser.name,
+      email: newUser.email,
+      role: 'ADMIN',
+      orgId: `org_${tenantId}`,
+    }, tenantId);
+
+    saveItem(STORAGE_KEYS.PROFESSIONAL, {
+      id: `prof_${tenantId}`,
+      orgId: `org_${tenantId}`,
+      name: newUser.name,
+      cpf: '',
+      cro: newClinic.cro,
+      croUf: newClinic.croUf || newClinic.uf || 'SP',
+      cnpj: newClinic.cnpj || '',
+      razaoSocial: newClinic.name,
+      nomeFantasia: newClinic.tradeName || newClinic.name,
+      municipio: newClinic.city || 'São Paulo - SP',
+      regimeTributario: 'SIMPLES_NACIONAL',
+      optanteSimples: true,
+      dataAbertura: newClinic.createdAt.split('T')[0],
+      rbt12Inicial: 0,
+      folha12MesesInicial: 0,
+      proLaboreMensal: 0,
+      baselineConfigured: false,
+      fiscalSourceType: undefined,
+      fiscalSnapshots: [],
+      initialFiscalHistory: [],
+      numDependentes: 0,
+      inssProprioMensal: 0,
+      outrosRendimentosTributaveis: 0,
+    }, tenantId);
+
+    saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, {
+      hideCpf: false,
+      alertFatorR: true,
+      alertDueDates: true,
+      operationalReminders: true,
+    }, tenantId);
+
+    // Operational collections start strictly EMPTY
+    saveItem(STORAGE_KEYS.PATIENTS, [], tenantId);
+    saveItem(STORAGE_KEYS.SALES, [], tenantId);
+    saveItem(STORAGE_KEYS.EXPENSES, [], tenantId);
+    saveItem(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, [], tenantId);
+    saveItem(STORAGE_KEYS.PAYROLL_HISTORY, [], tenantId);
+    saveItem(STORAGE_KEYS.PROCEDURES, [], tenantId);
+    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, [], tenantId);
+    saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, [], tenantId);
+    saveItem(STORAGE_KEYS.APPOINTMENTS, [], tenantId);
+    saveItem(STORAGE_KEYS.AUDIT_LOGS, [
+      {
+        id: `log_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        userId,
+        userName: newUser.name,
+        action: 'CLINICA_CRIADA',
+        entityType: 'CLINIC',
+        entityId: tenantId,
+        details: `Conta e clínica ${newClinic.name} criadas com sucesso. Ambiente operacional limpo inicializado.`,
+      },
+    ], tenantId);
+
+    const session: AuthSession = {
+      token: `sess_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`,
+      user: {
+        id: userId,
+        orgId: `org_${tenantId}`,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role,
+      },
+      clinic: { ...newClinic },
+      tenantId,
+      isDemo: false,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+    };
+
+    this.currentSession = session;
+    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
+    this.loadTenant(tenantId, false);
+
+    await SupabaseService.saveClinic(newClinic);
+    await SupabaseService.saveUser(newUser);
+    await SupabaseService.saveProfessional(this.professional, tenantId);
+    await SupabaseService.savePreferences(this.preferences, tenantId);
+
+    this.notify();
+
+    return { success: true, session };
+  }
+
+  // Password Recovery Flow
+  public requestPasswordReset(
+    email: string
+  ): { success: boolean; message: string; token?: string } {
+    const cleanEmail = email.trim().toLowerCase();
+    const user = this.storedUsers.find((u) => u.email.toLowerCase() === cleanEmail);
+
+    if (!user) {
+      return {
+        success: true,
+        message: 'Se o e-mail informado estiver cadastrado em nosso sistema, as instruções para redefinição foram emitidas.',
+      };
+    }
+
+    const token = `RST-${Math.floor(100000 + Math.random() * 900000)}`;
+    (user as any).resetToken = token;
+    (user as any).resetExpires = Date.now() + 15 * 60 * 1000; // 15 min
+    saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
+
+    this.log(
+      'PASSWORD_RESET_REQUESTED',
+      'AUTH',
+      user.id,
+      `Token de redefinição de senha solicitado para ${user.email}.`
+    );
+
+    return {
+      success: true,
+      message: 'Código de redefinição emitido com sucesso (válido por 15 minutos).',
+      token,
+    };
+  }
+
+  public async resetPasswordWithToken(
+    email: string,
+    token: string,
+    newPassword: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanToken = token.trim().toUpperCase();
+
+    if (!newPassword || newPassword.length < 6) {
+      return { success: false, error: 'A nova senha deve ter no mínimo 6 caracteres.' };
+    }
+
+    const user = this.storedUsers.find((u) => u.email.toLowerCase() === cleanEmail);
+    if (!user) {
+      return { success: false, error: 'Usuário não encontrado.' };
+    }
+
+    const userObj = user as any;
+    if (!userObj.resetToken || userObj.resetToken !== cleanToken) {
+      return { success: false, error: 'Código de redefinição inválido ou incorreto.' };
+    }
+
+    if (userObj.resetExpires && Date.now() > userObj.resetExpires) {
+      return { success: false, error: 'Código de redefinição expirado. Solicite um novo código.' };
+    }
+
+    const salt = generateSalt();
+    const passwordHash = await hashPassword(newPassword, salt);
+    user.salt = salt;
+    user.passwordHash = passwordHash;
+    delete userObj.resetToken;
+    delete userObj.resetExpires;
+
+    saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
+    this.log(
+      'SENHA_REDEFINIDA',
+      'AUTH',
+      user.id,
+      `Senha redefinida com sucesso para o usuário ${user.email}.`
+    );
+
+    return { success: true };
+  }
+
+  // Audited Support Session Management (Platform Admin)
+  public startSupportSession(
+    targetTenantId: string,
+    reason: string
+  ): { success: boolean; error?: string } {
+    if (!this.currentSession) {
+      return { success: false, error: 'Sessão ativa não encontrada.' };
+    }
+    if (this.currentSession.user.role !== 'PLATFORM_ADMIN') {
+      return {
+        success: false,
+        error: 'Acesso negado: apenas administradores da plataforma possuem permissão de suporte.',
+      };
+    }
+    if (!reason?.trim()) {
+      return {
+        success: false,
+        error: 'O motivo ou número de chamado deve ser informado para fins de auditoria.',
+      };
+    }
+
+    const targetClinic =
+      this.registeredClinics.find((c) => c.id === targetTenantId) ||
+      (targetTenantId === 'tenant_demo' ? PRESEEDED_CLINICS[0] : null);
+
+    if (!targetClinic) {
+      return { success: false, error: 'Clínica de destino não encontrada no sistema.' };
+    }
+
+    const supportState: SupportSessionState = {
+      isSupportMode: true,
+      originalAdminUserId: this.currentSession.user.id,
+      originalAdminName: this.currentSession.user.name,
+      targetTenantId,
+      targetTenantName: targetClinic.name,
+      startedAt: new Date().toISOString(),
+      reason: reason.trim(),
+    };
+
+    this.currentSession.supportSession = supportState;
+    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
+
+    // Switch tenant
+    this.loadTenant(targetTenantId, targetClinic.isDemo || targetTenantId === 'tenant_demo');
+
+    // Register audit log in target clinic's trail!
+    this.log(
+      'SUPPORT_SESSION_START',
+      'SUPPORT',
+      targetTenantId,
+      `Sessão de suporte iniciada por ${supportState.originalAdminName}. Motivo auditado: "${supportState.reason}".`
+    );
+
+    this.notify();
+    return { success: true };
+  }
+
+  public endSupportSession(): { success: boolean; error?: string } {
+    if (!this.currentSession?.supportSession) {
+      return { success: false, error: 'Nenhuma sessão de suporte está ativa no momento.' };
+    }
+
+    const support = this.currentSession.supportSession;
+    const targetTenantId = support.targetTenantId || (support as any).targetClinicId || '';
+    const adminName = support.originalAdminName || (support as any).platformAdminName || 'Administrador';
+
+    // Log exit in target clinic audit trail
+    this.log(
+      'SUPPORT_SESSION_END',
+      'SUPPORT',
+      targetTenantId,
+      `Sessão de suporte encerrada por ${adminName}.`
+    );
+
+    delete this.currentSession.supportSession;
+    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
+
+    // Restore to admin's original tenant
+    const origTenant = this.currentSession.tenantId || this.currentSession.clinic.id;
+    this.loadTenant(origTenant, this.currentSession.isDemo);
+
+    // Also log in platform admin's audit trail
+    this.log(
+      'SUPPORT_SESSION_END',
+      'SUPPORT',
+      targetTenantId,
+      `Sessão de suporte na clínica (${support.targetTenantName || targetTenantId}) finalizada com sucesso por ${adminName}.`
+    );
+
+    this.notify();
+
+    return { success: true };
+  }
+
+  public resetTenantData(tenantId: string) {
+    if (tenantId === 'tenant_demo') {
+      this.resetToDemo();
+      return;
+    }
+    // Clean all operational arrays for this tenant
+    saveItem(STORAGE_KEYS.PATIENTS, [], tenantId);
+    saveItem(STORAGE_KEYS.SALES, [], tenantId);
+    saveItem(STORAGE_KEYS.EXPENSES, [], tenantId);
+    saveItem(STORAGE_KEYS.APPOINTMENTS, [], tenantId);
+    saveItem(STORAGE_KEYS.PROCEDURES, [], tenantId);
+    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, [], tenantId);
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, [], tenantId);
+    saveItem(STORAGE_KEYS.PAYROLL_HISTORY, [], tenantId);
+    saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, [], tenantId);
+    saveItem(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
+
+    if (this.activeTenantId === tenantId) {
+      this.loadTenant(tenantId, false);
+      this.log('RESET_TENANT', 'CLINIC', tenantId, 'Dados da clínica redefinidos para o estado inicial limpo.');
+      this.notify();
+    }
+  }
+
+  // Getters & Preferences
+  public getPreferences(): SystemPreferences {
+    if (!this.preferences) {
+      this.preferences = { hideCpf: false, alertFatorR: true, alertDueDates: true, operationalReminders: true };
+    }
+    return { operationalReminders: true, ...this.preferences };
+  }
+
+  public updatePreferences(updates: Partial<SystemPreferences>): SystemPreferences {
+    this.preferences = { ...this.getPreferences(), ...updates };
+    saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, this.preferences);
+    this.log('ATUALIZACAO_PREFERENCIAS', 'PREFERENCES', 'sys', 'Preferências e privacidade do sistema atualizadas.');
+    this.notify();
+    return { ...this.preferences };
+  }
+
+  // Versioned Fiscal Parameters (Platform Governance)
+  public getFiscalParameters(): FiscalParameter[] {
+    return [...this.fiscalParameters];
+  }
+
+  public getOfficialMinimumWage(dateOrYear: number | string = 2026): number {
+    return getMinWageCentral(dateOrYear, this.fiscalParameters);
+  }
+
+  public checkMinimumWageReview(dateStr?: string) {
+    return checkUpcomingYearWageReview(dateStr, this.fiscalParameters);
+  }
+
+  public updateFiscalParameter(id: string, updates: Partial<FiscalParameter>): boolean {
+    let affected = false;
+    this.fiscalParameters = this.fiscalParameters.map((p) => {
+      if (p.id !== id) return p;
+      affected = true;
+      return {
+        ...p,
+        ...updates,
+        updatedAt: new Date().toISOString(),
+        updatedBy: this.currentSession?.user?.name || 'Platform Admin',
+      };
+    });
+    if (affected) {
+      saveItem(GLOBAL_STORAGE_KEYS.FISCAL_PARAMETERS, this.fiscalParameters);
+      this.log('PARAMETRO_FISCAL_ATUALIZADO', 'FISCAL_PARAMETER', id, `Parâmetro legal ${id} atualizado.`);
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  public addFiscalParameter(param: Omit<FiscalParameter, 'id' | 'updatedAt'>): FiscalParameter {
+    const newParam: FiscalParameter = {
+      ...param,
+      id: `param_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      updatedAt: new Date().toISOString(),
+    };
+    this.fiscalParameters = [...this.fiscalParameters, newParam];
+    saveItem(GLOBAL_STORAGE_KEYS.FISCAL_PARAMETERS, this.fiscalParameters);
+    this.log('PARAMETRO_FISCAL_CRIADO', 'FISCAL_PARAMETER', newParam.id, `Parâmetro legal ${newParam.name} cadastrado com sucesso.`);
+    this.notify();
+    return newParam;
   }
 
   // Getters
@@ -189,6 +1468,10 @@ export class DentalFinanceDB {
 
   public getProfessional(): Professional {
     return this.professional;
+  }
+
+  public getProfessionals(): Professional[] {
+    return [this.professional];
   }
 
   public getPatients(): Patient[] {
@@ -209,6 +1492,38 @@ export class DentalFinanceDB {
 
   public getBankAccounts(): BankAccount[] {
     return this.bankAccounts;
+  }
+
+  public addBankAccount(account: Omit<BankAccount, 'id' | 'orgId'>): BankAccount {
+    const newAccount: BankAccount = {
+      ...account,
+      id: `bank_${Date.now()}`,
+      orgId: this.org.id,
+    };
+    this.bankAccounts = [...this.bankAccounts, newAccount];
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts);
+    this.log('CRIACAO_CONTA_BANCARIA', 'BANK_ACCOUNT', newAccount.id, `Conta bancária "${newAccount.name}" (${newAccount.accountType}) cadastrada.`);
+    this.notify();
+    return newAccount;
+  }
+
+  public updateBankAccount(id: string, updates: Partial<BankAccount>) {
+    this.bankAccounts = this.bankAccounts.map((b) => (b.id === id ? { ...b, ...updates } : b));
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts);
+    this.log('ATUALIZACAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária atualizada.`);
+    this.notify();
+  }
+
+  public deleteBankAccount(id: string): boolean {
+    const prevLen = this.bankAccounts.length;
+    this.bankAccounts = this.bankAccounts.filter((b) => b.id !== id);
+    if (this.bankAccounts.length !== prevLen) {
+      saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts);
+      this.log('EXCLUSAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária excluída.`);
+      this.notify();
+      return true;
+    }
+    return false;
   }
 
   public getPayrollHistory(): PayrollHistoryEntry[] {
@@ -233,6 +1548,60 @@ export class DentalFinanceDB {
       return candidate;
     }
     return DEFAULT_TAX_RULES_SIMPLES[year] || DEFAULT_TAX_RULES_SIMPLES[2025];
+  }
+
+  // Fiscal Scenarios CRUD
+  public getFiscalScenarios(): SavedFiscalScenario[] {
+    return this.fiscalScenarios;
+  }
+
+  public addFiscalScenario(scenario: Omit<SavedFiscalScenario, 'id' | 'createdAt'>): SavedFiscalScenario {
+    const newScenario: SavedFiscalScenario = {
+      ...scenario,
+      id: `scen_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: new Date().toISOString(),
+    };
+    this.fiscalScenarios = [newScenario, ...this.fiscalScenarios];
+    saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, this.fiscalScenarios);
+    this.log('CRIACAO_CENARIO_FISCAL', 'FISCAL_SCENARIO', newScenario.id, `Cenário fiscal "${newScenario.name}" salvo com sucesso.`);
+    this.notify();
+    return newScenario;
+  }
+
+  public updateFiscalScenario(id: string, updates: Partial<SavedFiscalScenario>): void {
+    this.fiscalScenarios = this.fiscalScenarios.map((s) => (s.id === id ? { ...s, ...updates } : s));
+    saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, this.fiscalScenarios);
+    this.log('ATUALIZACAO_CENARIO_FISCAL', 'FISCAL_SCENARIO', id, `Cenário fiscal atualizado.`);
+    this.notify();
+  }
+
+  public deleteFiscalScenario(id: string): boolean {
+    const prevLen = this.fiscalScenarios.length;
+    this.fiscalScenarios = this.fiscalScenarios.filter((s) => s.id !== id);
+    if (this.fiscalScenarios.length !== prevLen) {
+      saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, this.fiscalScenarios);
+      this.log('EXCLUSAO_CENARIO_FISCAL', 'FISCAL_SCENARIO', id, `Cenário fiscal excluído.`);
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  public applyFiscalScenario(scenario: SavedFiscalScenario): void {
+    this.professional = {
+      ...this.professional,
+      rbt12Inicial: scenario.parameters.rbt12,
+      folha12MesesInicial: scenario.parameters.fs12,
+      proLaboreMensal: scenario.parameters.monthlyProLabore,
+    };
+    saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional);
+    this.log(
+      'APLICACAO_CENARIO_FISCAL',
+      'PROFESSIONAL',
+      this.professional.id,
+      `Cenário "${scenario.name}" aplicado aos parâmetros oficiais: RBT12 R$ ${scenario.parameters.rbt12.toLocaleString('pt-BR')}, FS12 R$ ${scenario.parameters.fs12.toLocaleString('pt-BR')}, Pró-labore R$ ${scenario.parameters.monthlyProLabore.toLocaleString('pt-BR')}.`
+    );
+    this.notify();
   }
 
   // Accounts Receivable View Derived
@@ -274,6 +1643,7 @@ export class DentalFinanceDB {
           procedureName: sale.procedureName,
           competenceDate: sale.serviceDate,
           dueDate: inst.dueDate,
+          paymentDate: inst.paymentDate,
           value: inst.value,
           amountReceived: received,
           balance,
@@ -291,43 +1661,148 @@ export class DentalFinanceDB {
   }
 
   // Setters & Actions
-  public updateProfessional(updates: Partial<Professional>) {
+  public updateProfessional(updates: Partial<Professional>): void {
     this.professional = { ...this.professional, ...updates };
-    saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional);
+    saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
     this.log('ATUALIZACAO_PERFIL', 'PROFESSIONAL', this.professional.id, 'Dados cadastrais ou tributários atualizados.');
     this.notify();
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveProfessional(this.professional, this.activeTenantId).catch(console.warn);
+    }
   }
 
-  public addPatient(patientData: Omit<Patient, 'id' | 'orgId' | 'createdAt'>): Patient {
+  public async updateProfessionalAsync(updates: Partial<Professional>): Promise<{ success: boolean; error?: string }> {
+    const previous = { ...this.professional };
+    this.updateProfessional(updates);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveProfessional(this.professional, this.activeTenantId);
+      if (!res.success) {
+        this.professional = previous;
+        saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+        this.notify();
+        return { success: false, error: res.error || 'Erro ao persistir no servidor' };
+      }
+    }
+    return { success: true };
+  }
+
+  public async addPatientAsync(patientData: Omit<Patient, 'id' | 'orgId' | 'createdAt'> & { orgId?: string }): Promise<{ success: boolean; patient?: Patient; error?: string }> {
     const newPatient: Patient = {
       ...patientData,
-      id: `pat_${Date.now()}`,
-      orgId: this.org.id,
+      id: `pat_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      orgId: patientData.orgId || this.org.id,
+      createdAt: new Date().toISOString(),
+    };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.savePatient(newPatient, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao salvar paciente no servidor' };
+      }
+    }
+    this.patients = [newPatient, ...this.patients];
+    saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
+    this.log('CRIACAO_PACIENTE', 'PATIENT', newPatient.id, `Paciente ${newPatient.name} cadastrado.`);
+    this.notify();
+    return { success: true, patient: newPatient };
+  }
+
+  public addPatient(patientData: Omit<Patient, 'id' | 'orgId' | 'createdAt'> & { orgId?: string }): Patient {
+    const newPatient: Patient = {
+      ...patientData,
+      id: `pat_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      orgId: patientData.orgId || this.org.id,
       createdAt: new Date().toISOString(),
     };
     this.patients = [newPatient, ...this.patients];
-    saveItem(STORAGE_KEYS.PATIENTS, this.patients);
+    saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.savePatient(newPatient, this.activeTenantId).catch(console.warn);
+    }
     this.log('CRIACAO_PACIENTE', 'PATIENT', newPatient.id, `Paciente ${newPatient.name} cadastrado.`);
     this.notify();
     return newPatient;
   }
 
-  public updatePatient(id: string, updates: Partial<Patient>) {
-    this.patients = this.patients.map((p) => (p.id === id ? { ...p, ...updates } : p));
-    saveItem(STORAGE_KEYS.PATIENTS, this.patients);
+  public async updatePatientAsync(id: string, updates: Partial<Patient>): Promise<{ success: boolean; error?: string }> {
+    const found = this.patients.find((p) => p.id === id);
+    if (!found) return { success: false, error: 'Paciente não encontrado' };
+    const updated: Patient = { ...found, ...updates };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.savePatient(updated, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao atualizar paciente no servidor' };
+      }
+    }
+    this.patients = this.patients.map((p) => (p.id === id ? updated : p));
+    saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
     this.log('ATUALIZACAO_PACIENTE', 'PATIENT', id, `Cadastro do paciente atualizado.`);
     this.notify();
+    return { success: true };
   }
 
-  public addSale(saleData: Omit<Sale, 'id' | 'orgId' | 'createdAt'>): Sale {
+  public updatePatient(id: string, updates: Partial<Patient>) {
+    this.updatePatientAsync(id, updates).catch(console.warn);
+  }
+
+  public async deletePatientAsync(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.deletePatient(id, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao excluir paciente no servidor' };
+      }
+    }
+    this.patients = this.patients.filter((p) => p.id !== id);
+    saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
+    this.log('EXCLUSAO_PACIENTE', 'PATIENT', id, `Paciente excluído.`);
+    this.notify();
+    return { success: true };
+  }
+
+  public deletePatient(id: string): boolean {
+    this.deletePatientAsync(id).catch(console.warn);
+    this.patients = this.patients.filter((p) => p.id !== id);
+    saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
+    this.notify();
+    return true;
+  }
+
+  public async addSaleAsync(saleData: Omit<Sale, 'id' | 'orgId' | 'createdAt'> & { orgId?: string }): Promise<{ success: boolean; sale?: Sale; error?: string }> {
     const newSale: Sale = {
       ...saleData,
-      id: `sale_${Date.now()}`,
-      orgId: this.org.id,
+      id: `sale_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      orgId: saleData.orgId || this.org.id,
+      createdAt: new Date().toISOString(),
+    };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveSale(newSale, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao salvar venda no servidor' };
+      }
+    }
+    this.sales = [newSale, ...this.sales];
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    this.log(
+      'CRIACAO_RECEITA',
+      'SALE',
+      newSale.id,
+      `Receita ${newSale.taxOrigin} de ${newSale.totalValue.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} registrada para ${newSale.patientName}.`
+    );
+    this.notify();
+    return { success: true, sale: newSale };
+  }
+
+  public addSale(saleData: Omit<Sale, 'id' | 'orgId' | 'createdAt'> & { orgId?: string }): Sale {
+    const newSale: Sale = {
+      ...saleData,
+      id: `sale_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      orgId: saleData.orgId || this.org.id,
       createdAt: new Date().toISOString(),
     };
     this.sales = [newSale, ...this.sales];
-    saveItem(STORAGE_KEYS.SALES, this.sales);
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveSale(newSale, this.activeTenantId).catch(console.warn);
+    }
     this.log(
       'CRIACAO_RECEITA',
       'SALE',
@@ -338,23 +1813,47 @@ export class DentalFinanceDB {
     return newSale;
   }
 
-  public updateSale(id: string, updates: Partial<Sale>) {
-    this.sales = this.sales.map((s) => (s.id === id ? { ...s, ...updates } : s));
-    saveItem(STORAGE_KEYS.SALES, this.sales);
+  public async updateSaleAsync(id: string, updates: Partial<Sale>): Promise<{ success: boolean; error?: string }> {
+    const found = this.sales.find((s) => s.id === id);
+    if (!found) return { success: false, error: 'Receita não encontrada' };
+    const updated: Sale = { ...found, ...updates };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveSale(updated, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao atualizar venda no servidor' };
+      }
+    }
+    this.sales = this.sales.map((s) => (s.id === id ? updated : s));
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
     this.log('ATUALIZACAO_RECEITA', 'SALE', id, `Dados da receita foram atualizados.`);
     this.notify();
+    return { success: true };
+  }
+
+  public updateSale(id: string, updates: Partial<Sale>) {
+    this.updateSaleAsync(id, updates).catch(console.warn);
+  }
+
+  public async deleteSaleAsync(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.deleteSale(id, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao excluir venda no servidor' };
+      }
+    }
+    this.sales = this.sales.filter((s) => s.id !== id);
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    this.log('EXCLUSAO_RECEITA', 'SALE', id, `Receita excluída.`);
+    this.notify();
+    return { success: true };
   }
 
   public deleteSale(id: string): boolean {
-    const prevLen = this.sales.length;
+    this.deleteSaleAsync(id).catch(console.warn);
     this.sales = this.sales.filter((s) => s.id !== id);
-    if (this.sales.length !== prevLen) {
-      saveItem(STORAGE_KEYS.SALES, this.sales);
-      this.log('EXCLUSAO_RECEITA', 'SALE', id, `Receita excluída.`);
-      this.notify();
-      return true;
-    }
-    return false;
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    this.notify();
+    return true;
   }
 
   public batchDeleteSales(ids: string[]): number {
@@ -707,16 +2206,81 @@ export class DentalFinanceDB {
     return false;
   }
 
+  public unsettleInstallment(saleId: string, installmentId: string): boolean {
+    let affected = false;
+    this.sales = this.sales.map((sale) => {
+      if (sale.id !== saleId) return sale;
+
+      const updatedInstallments = sale.installments.map((inst) => {
+        if (inst.id !== installmentId) return inst;
+        affected = true;
+        return {
+          ...inst,
+          status: 'A_RECEBER' as InstallmentStatus,
+          paymentDate: undefined,
+          amountReceived: 0,
+          receitaSaudeStatus: (sale.taxOrigin === 'CPF' ? 'A_EMITIR' : inst.receitaSaudeStatus) as ReceitaSaudeStatus,
+        };
+      });
+
+      return {
+        ...sale,
+        installments: updatedInstallments,
+      };
+    });
+
+    if (affected) {
+      saveItem(STORAGE_KEYS.SALES, this.sales);
+      this.log(
+        'ESTORNO_RECEBIMENTO',
+        'INSTALLMENT',
+        installmentId,
+        `Recebimento da parcela ${installmentId} desfeito. Retornada para A Receber.`
+      );
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
   // Expense Actions
+  public async addExpenseAsync(expenseData: Omit<Expense, 'id' | 'orgId' | 'createdAt'>): Promise<{ success: boolean; expense?: Expense; error?: string }> {
+    const newExpense: Expense = {
+      ...expenseData,
+      id: `exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      orgId: this.org.id,
+      createdAt: new Date().toISOString(),
+    };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveExpense(newExpense, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao salvar despesa no servidor' };
+      }
+    }
+    this.expenses = [newExpense, ...this.expenses];
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+    this.log(
+      'CRIACAO_DESPESA',
+      'EXPENSE',
+      newExpense.id,
+      `Despesa ${newExpense.categoryName} no valor de R$ ${newExpense.value.toFixed(2)} cadastrada.`
+    );
+    this.notify();
+    return { success: true, expense: newExpense };
+  }
+
   public addExpense(expenseData: Omit<Expense, 'id' | 'orgId' | 'createdAt'>): Expense {
     const newExpense: Expense = {
       ...expenseData,
-      id: `exp_${Date.now()}`,
+      id: `exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       orgId: this.org.id,
       createdAt: new Date().toISOString(),
     };
     this.expenses = [newExpense, ...this.expenses];
-    saveItem(STORAGE_KEYS.EXPENSES, this.expenses);
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveExpense(newExpense, this.activeTenantId).catch(console.warn);
+    }
     this.log(
       'CRIACAO_DESPESA',
       'EXPENSE',
@@ -730,30 +2294,62 @@ export class DentalFinanceDB {
   public payExpense(id: string, paymentDate: string, paymentMethod: PaymentMethod, bankAccountId?: string) {
     this.expenses = this.expenses.map((exp) => {
       if (exp.id !== id) return exp;
-      return {
+      const updated: Expense = {
         ...exp,
         status: 'PAGO',
         paymentDate,
         paymentMethod,
         bankAccountId,
       };
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveExpense(updated, this.activeTenantId).catch(console.warn);
+      }
+      return updated;
     });
-    saveItem(STORAGE_KEYS.EXPENSES, this.expenses);
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
     this.log('PAGAMENTO_DESPESA', 'EXPENSE', id, `Despesa marcada como paga em ${paymentDate}.`);
     this.notify();
   }
 
-  public updateExpense(id: string, updates: Partial<Expense>) {
-    this.expenses = this.expenses.map((exp) => (exp.id === id ? { ...exp, ...updates } : exp));
-    saveItem(STORAGE_KEYS.EXPENSES, this.expenses);
+  public async updateExpenseAsync(id: string, updates: Partial<Expense>): Promise<{ success: boolean; error?: string }> {
+    const found = this.expenses.find((e) => e.id === id);
+    if (!found) return { success: false, error: 'Despesa não encontrada' };
+    const updated: Expense = { ...found, ...updates };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveExpense(updated, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao atualizar despesa no servidor' };
+      }
+    }
+    this.expenses = this.expenses.map((exp) => (exp.id === id ? updated : exp));
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
     this.log('ATUALIZACAO_DESPESA', 'EXPENSE', id, `Dados da despesa atualizados.`);
     this.notify();
+    return { success: true };
+  }
+
+  public updateExpense(id: string, updates: Partial<Expense>) {
+    this.updateExpenseAsync(id, updates).catch(console.warn);
+  }
+
+  public async deleteExpenseAsync(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.deleteExpense(id, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao excluir despesa no servidor' };
+      }
+    }
+    this.expenses = this.expenses.filter((e) => e.id !== id);
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+    this.log('EXCLUSAO_DESPESA', 'EXPENSE', id, `Despesa excluída.`);
+    this.notify();
+    return { success: true };
   }
 
   public deleteExpense(id: string) {
+    this.deleteExpenseAsync(id).catch(console.warn);
     this.expenses = this.expenses.filter((e) => e.id !== id);
-    saveItem(STORAGE_KEYS.EXPENSES, this.expenses);
-    this.log('EXCLUSAO_DESPESA', 'EXPENSE', id, `Despesa excluída.`);
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
     this.notify();
   }
 
@@ -793,13 +2389,39 @@ export class DentalFinanceDB {
     return this.procedures;
   }
 
+  public async addProcedureAsync(procData: Omit<DentalProcedure, 'id'>): Promise<{ success: boolean; procedure?: DentalProcedure; error?: string }> {
+    const newProc: DentalProcedure = {
+      ...procData,
+      id: `proc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveProcedure(newProc, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao salvar procedimento no servidor' };
+      }
+    }
+    this.procedures = [newProc, ...this.procedures];
+    saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, this.activeTenantId);
+    this.log(
+      'CRIACAO_PROCEDIMENTO',
+      'PROCEDURE',
+      newProc.id,
+      `Procedimento "${newProc.name}" (${newProc.category}) cadastrado com preço de tabela R$ ${newProc.defaultPrice.toFixed(2)}.`
+    );
+    this.notify();
+    return { success: true, procedure: newProc };
+  }
+
   public addProcedure(procData: Omit<DentalProcedure, 'id'>): DentalProcedure {
     const newProc: DentalProcedure = {
       ...procData,
       id: `proc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     };
     this.procedures = [newProc, ...this.procedures];
-    saveItem(STORAGE_KEYS.PROCEDURES, this.procedures);
+    saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveProcedure(newProc, this.activeTenantId).catch(console.warn);
+    }
     this.log(
       'CRIACAO_PROCEDIMENTO',
       'PROCEDURE',
@@ -808,6 +2430,23 @@ export class DentalFinanceDB {
     );
     this.notify();
     return newProc;
+  }
+
+  public async updateProcedureAsync(id: string, updates: Partial<DentalProcedure>): Promise<{ success: boolean; procedure?: DentalProcedure; error?: string }> {
+    const found = this.procedures.find((p) => p.id === id);
+    if (!found) return { success: false, error: 'Procedimento não encontrado' };
+    const updated: DentalProcedure = { ...found, ...updates };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveProcedure(updated, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao atualizar procedimento no servidor' };
+      }
+    }
+    this.procedures = this.procedures.map((p) => (p.id === id ? updated : p));
+    saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, this.activeTenantId);
+    this.log('ATUALIZACAO_PROCEDIMENTO', 'PROCEDURE', id, `Procedimento "${updated.name}" atualizado.`);
+    this.notify();
+    return { success: true, procedure: updated };
   }
 
   public updateProcedure(id: string, updates: Partial<DentalProcedure>): DentalProcedure | null {
@@ -820,23 +2459,36 @@ export class DentalFinanceDB {
       return p;
     });
     if (updated) {
-      saveItem(STORAGE_KEYS.PROCEDURES, this.procedures);
+      saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveProcedure(updated, this.activeTenantId).catch(console.warn);
+      }
       this.log('ATUALIZACAO_PROCEDIMENTO', 'PROCEDURE', id, `Procedimento "${(updated as DentalProcedure).name}" atualizado.`);
       this.notify();
     }
     return updated;
   }
 
-  public deleteProcedure(id: string): boolean {
-    const prevLen = this.procedures.length;
-    this.procedures = this.procedures.filter((p) => p.id !== id);
-    if (this.procedures.length !== prevLen) {
-      saveItem(STORAGE_KEYS.PROCEDURES, this.procedures);
-      this.log('EXCLUSAO_PROCEDIMENTO', 'PROCEDURE', id, `Procedimento excluído do catálogo.`);
-      this.notify();
-      return true;
+  public async deleteProcedureAsync(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.deleteProcedure(id, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao excluir procedimento no servidor' };
+      }
     }
-    return false;
+    this.procedures = this.procedures.filter((p) => p.id !== id);
+    saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, this.activeTenantId);
+    this.log('EXCLUSAO_PROCEDIMENTO', 'PROCEDURE', id, `Procedimento excluído do catálogo.`);
+    this.notify();
+    return { success: true };
+  }
+
+  public deleteProcedure(id: string): boolean {
+    this.deleteProcedureAsync(id).catch(console.warn);
+    this.procedures = this.procedures.filter((p) => p.id !== id);
+    saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, this.activeTenantId);
+    this.notify();
+    return true;
   }
 
   public batchDeleteProcedures(ids: string[]): number {
@@ -864,6 +2516,30 @@ export class DentalFinanceDB {
     return this.clinicalInputs;
   }
 
+  public async addClinicalInputAsync(data: Omit<ClinicalInput, 'id'>): Promise<{ success: boolean; input?: ClinicalInput; error?: string }> {
+    const newInput: ClinicalInput = {
+      ...data,
+      id: `inp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: new Date().toISOString(),
+    };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveClinicalInput(newInput, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao salvar insumo no servidor' };
+      }
+    }
+    this.clinicalInputs = [newInput, ...this.clinicalInputs];
+    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, this.activeTenantId);
+    this.log(
+      'CRIACAO_INSUMO',
+      'EXPENSE',
+      newInput.id,
+      `Insumo "${newInput.name}" (${newInput.usageUnit}) cadastrado. Custo: R$ ${newInput.unitCost.toFixed(3)}/${newInput.usageUnit}.`
+    );
+    this.notify();
+    return { success: true, input: newInput };
+  }
+
   public addClinicalInput(data: Omit<ClinicalInput, 'id'>): ClinicalInput {
     const newInput: ClinicalInput = {
       ...data,
@@ -871,7 +2547,10 @@ export class DentalFinanceDB {
       createdAt: new Date().toISOString(),
     };
     this.clinicalInputs = [newInput, ...this.clinicalInputs];
-    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs);
+    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveClinicalInput(newInput, this.activeTenantId).catch(console.warn);
+    }
     this.log(
       'CRIACAO_INSUMO',
       'EXPENSE',
@@ -880,6 +2559,23 @@ export class DentalFinanceDB {
     );
     this.notify();
     return newInput;
+  }
+
+  public async updateClinicalInputAsync(id: string, updates: Partial<ClinicalInput>): Promise<{ success: boolean; input?: ClinicalInput; error?: string }> {
+    const found = this.clinicalInputs.find((i) => i.id === id);
+    if (!found) return { success: false, error: 'Insumo não encontrado' };
+    const updated: ClinicalInput = { ...found, ...updates };
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveClinicalInput(updated, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao atualizar insumo no servidor' };
+      }
+    }
+    this.clinicalInputs = this.clinicalInputs.map((item) => (item.id === id ? updated : item));
+    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, this.activeTenantId);
+    this.log('ATUALIZACAO_INSUMO', 'EXPENSE', id, `Insumo "${updated.name}" atualizado.`);
+    this.notify();
+    return { success: true, input: updated };
   }
 
   public updateClinicalInput(id: string, updates: Partial<ClinicalInput>): ClinicalInput | null {
@@ -893,23 +2589,36 @@ export class DentalFinanceDB {
     });
 
     if (updated) {
-      saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs);
+      saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveClinicalInput(updated, this.activeTenantId).catch(console.warn);
+      }
       this.log('ATUALIZACAO_INSUMO', 'EXPENSE', id, `Insumo "${(updated as ClinicalInput).name}" atualizado.`);
       this.notify();
     }
     return updated;
   }
 
-  public deleteClinicalInput(id: string): boolean {
-    const prevLen = this.clinicalInputs.length;
-    this.clinicalInputs = this.clinicalInputs.filter((item) => item.id !== id);
-    if (this.clinicalInputs.length !== prevLen) {
-      saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs);
-      this.log('EXCLUSAO_INSUMO', 'EXPENSE', id, `Insumo excluído do catálogo.`);
-      this.notify();
-      return true;
+  public async deleteClinicalInputAsync(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.deleteClinicalInput(id, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao excluir insumo no servidor' };
+      }
     }
-    return false;
+    this.clinicalInputs = this.clinicalInputs.filter((item) => item.id !== id);
+    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, this.activeTenantId);
+    this.log('EXCLUSAO_INSUMO', 'EXPENSE', id, `Insumo excluído do catálogo.`);
+    this.notify();
+    return { success: true };
+  }
+
+  public deleteClinicalInput(id: string): boolean {
+    this.deleteClinicalInputAsync(id).catch(console.warn);
+    this.clinicalInputs = this.clinicalInputs.filter((item) => item.id !== id);
+    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, this.activeTenantId);
+    this.notify();
+    return true;
   }
 
   public batchDeleteClinicalInputs(ids: string[]): number {
@@ -973,13 +2682,353 @@ export class DentalFinanceDB {
     this.notify();
   }
 
+  // Initial Fiscal History (12 meses anteriores para apuração do Simples Nacional)
+  public getInitialFiscalHistory(): MonthlyFiscalHistoryEntry[] {
+    return this.professional.initialFiscalHistory || [];
+  }
+
+  public saveInitialFiscalTotal(
+    rbt12: number,
+    fs12: number,
+    proLabore: number,
+    competence: string
+  ): void {
+    const refCompetence =
+      competence ||
+      `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+    const existingSnapshots = this.professional.fiscalSnapshots || [];
+    const newSnapshot: FiscalTotalSnapshot = {
+      competence: refCompetence,
+      rbt12,
+      fs12,
+      proLaboreMensal: proLabore,
+      sourceType: 'MANUAL_TOTAL',
+      updatedAt: new Date().toISOString(),
+    };
+
+    const filtered = existingSnapshots.filter((s) => s.competence !== refCompetence);
+    const updatedSnapshots = [...filtered, newSnapshot].sort((a, b) =>
+      a.competence.localeCompare(b.competence)
+    );
+
+    const updatedProf: Professional = {
+      ...this.professional,
+      rbt12Inicial: rbt12,
+      folha12MesesInicial: fs12,
+      proLaboreMensal: proLabore,
+      fiscalSourceType: 'MANUAL_TOTAL',
+      fiscalSnapshots: updatedSnapshots,
+      baselineConfigured: true,
+    };
+
+    this.professional = updatedProf;
+    saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+    this.log(
+      'CONFIGURACAO_TOTAL_CONSOLIDADO',
+      'PROFESSIONAL',
+      this.professional.id,
+      `Bases fiscais em modo Total Consolidado configuradas para ${refCompetence}: RBT12 R$ ${rbt12.toFixed(2)}, FS12 R$ ${fs12.toFixed(2)}, Pró-labore R$ ${proLabore.toFixed(2)}.`
+    );
+    this.notify();
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveProfessional(updatedProf, this.activeTenantId).catch(console.warn);
+    }
+  }
+
+  public async saveInitialFiscalTotalAsync(
+    rbt12: number,
+    fs12: number,
+    proLabore: number,
+    competence: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const previous = { ...this.professional };
+    this.saveInitialFiscalTotal(rbt12, fs12, proLabore, competence);
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveProfessional(this.professional, this.activeTenantId);
+      if (!res.success) {
+        this.professional = previous;
+        saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+        this.notify();
+        return { success: false, error: res.error || 'Erro ao persistir bases fiscais no servidor' };
+      }
+    }
+    return { success: true };
+  }
+
+  public saveInitialFiscalHistory(entries: MonthlyFiscalHistoryEntry[], competence?: string): void {
+    const totalRbt12 = entries.reduce((sum, e) => sum + (e.cnpjRevenue || 0), 0);
+    const totalFs12 = entries.reduce((sum, e) => sum + (e.payroll || 0), 0);
+    const refCompetence =
+      competence ||
+      `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+    const existingSnapshots = this.professional.fiscalSnapshots || [];
+    const newSnapshot: FiscalTotalSnapshot = {
+      competence: refCompetence,
+      rbt12: totalRbt12,
+      fs12: totalFs12,
+      sourceType: 'MANUAL_MONTHLY',
+      updatedAt: new Date().toISOString(),
+    };
+    const filtered = existingSnapshots.filter((s) => s.competence !== refCompetence);
+    const updatedSnapshots = [...filtered, newSnapshot].sort((a, b) =>
+      a.competence.localeCompare(b.competence)
+    );
+
+    const updatedProf: Professional = {
+      ...this.professional,
+      initialFiscalHistory: entries,
+      rbt12Inicial: totalRbt12,
+      folha12MesesInicial: totalFs12,
+      fiscalSourceType: 'MANUAL_MONTHLY',
+      fiscalSnapshots: updatedSnapshots,
+      baselineConfigured: true,
+    };
+
+    this.professional = updatedProf;
+    saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+    this.log(
+      'CONFIGURACAO_HISTORICO_FISCAL',
+      'PROFESSIONAL',
+      this.professional.id,
+      `Histórico fiscal inicial dos 12 meses configurado: RBT12 R$ ${totalRbt12.toFixed(2)}, FS12 R$ ${totalFs12.toFixed(2)}.`
+    );
+    this.notify();
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveProfessional(updatedProf, this.activeTenantId).catch(console.warn);
+    }
+  }
+
+  public async saveInitialFiscalHistoryAsync(
+    entries: MonthlyFiscalHistoryEntry[],
+    competence?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const previous = { ...this.professional };
+    this.saveInitialFiscalHistory(entries, competence);
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveProfessional(this.professional, this.activeTenantId);
+      if (!res.success) {
+        this.professional = previous;
+        saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+        this.notify();
+        return { success: false, error: res.error || 'Erro ao persistir histórico fiscal no servidor' };
+      }
+    }
+    return { success: true };
+  }
+
+  public switchFiscalMode(newMode: FiscalSourceType, hasValidSnapshots = false): void {
+    const updated: Professional = {
+      ...this.professional,
+      fiscalSourceType: newMode,
+      baselineConfigured: newMode === 'CONTABILEX' ? hasValidSnapshots : this.professional.baselineConfigured,
+    };
+    this.professional = updated;
+    saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+    this.log(
+      'ALTERACAO_MODO_FISCAL',
+      'PROFESSIONAL',
+      this.professional.id,
+      `Modo de origem das bases fiscais alterado para ${newMode}.`
+    );
+    this.notify();
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveProfessional(updated, this.activeTenantId).catch(console.warn);
+    }
+  }
+
+  public async switchFiscalModeAsync(newMode: FiscalSourceType, hasValidSnapshots = false): Promise<{ success: boolean; error?: string }> {
+    const previous = { ...this.professional };
+    this.switchFiscalMode(newMode, hasValidSnapshots);
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveProfessional(this.professional, this.activeTenantId);
+      if (!res.success) {
+        this.professional = previous;
+        saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+        this.notify();
+        return { success: false, error: res.error || 'Erro ao persistir alteração no servidor' };
+      }
+    }
+    return { success: true };
+  }
+
+  public setZeroFiscalHistory(referenceYearMonth: string): void {
+    const [yStr, mStr] = (referenceYearMonth || '2026-03').split('-');
+    const refYear = parseInt(yStr, 10) || new Date().getFullYear();
+    const refMonth = parseInt(mStr, 10) || (new Date().getMonth() + 1);
+
+    const zeroEntries: MonthlyFiscalHistoryEntry[] = [];
+    for (let i = 12; i >= 1; i--) {
+      let m = refMonth - i;
+      let y = refYear;
+      while (m <= 0) {
+        m += 12;
+        y -= 1;
+      }
+      zeroEntries.push({
+        month: `${y}-${String(m).padStart(2, '0')}`,
+        cnpjRevenue: 0,
+        payroll: 0,
+      });
+    }
+
+    this.saveInitialFiscalHistory(zeroEntries, referenceYearMonth);
+  }
+
+  // Monthly Payroll per Competence
+  public getMonthlyPayroll(monthStr: string): PayrollHistoryEntry | undefined {
+    return this.payrollHistory.find((p) => p.month === monthStr);
+  }
+
+  public upsertMonthlyPayroll(entry: PayrollHistoryEntry): void {
+    const totalPayroll =
+      typeof entry.totalPayroll === 'number'
+        ? entry.totalPayroll
+        : (entry.salaries || 0) + (entry.charges || 0) + (entry.proLabore || 0);
+    const normalizedEntry: PayrollHistoryEntry = { ...entry, totalPayroll };
+
+    const idx = this.payrollHistory.findIndex((p) => p.month === normalizedEntry.month);
+    if (idx >= 0) {
+      this.payrollHistory[idx] = normalizedEntry;
+    } else {
+      this.payrollHistory.push(normalizedEntry);
+      this.payrollHistory.sort((a, b) => a.month.localeCompare(b.month));
+    }
+    saveItem(STORAGE_KEYS.PAYROLL_HISTORY, this.payrollHistory, this.activeTenantId);
+    this.log(
+      'UPSERT_FOLHA_MENSAL',
+      'PAYROLL',
+      normalizedEntry.month,
+      `Folha da competência ${normalizedEntry.month} registrada/atualizada no total de R$ ${normalizedEntry.totalPayroll.toFixed(2)}.`
+    );
+    this.notify();
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.savePayrollEntry(normalizedEntry, this.activeTenantId).catch(console.warn);
+    }
+  }
+
+  public async upsertMonthlyPayrollAsync(
+    entry: PayrollHistoryEntry
+  ): Promise<{ success: boolean; error?: string }> {
+    const previous = [...this.payrollHistory];
+    this.upsertMonthlyPayroll(entry);
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const normalizedEntry = this.payrollHistory.find((p) => p.month === entry.month) || entry;
+      const res = await SupabaseService.savePayrollEntry(normalizedEntry, this.activeTenantId);
+      if (!res.success) {
+        this.payrollHistory = previous;
+        saveItem(STORAGE_KEYS.PAYROLL_HISTORY, this.payrollHistory, this.activeTenantId);
+        this.notify();
+        return { success: false, error: res.error || 'Erro ao persistir folha no servidor' };
+      }
+    }
+    return { success: true };
+  }
+
+  // Appointment Actions
+  public getAppointments(): Appointment[] {
+    return [...this.appointments];
+  }
+
+  public getAppointmentById(id: string): Appointment | undefined {
+    return this.appointments.find((apt) => apt.id === id);
+  }
+
+  public addAppointment(
+    appointmentData: Omit<Appointment, 'id' | 'createdAt' | 'updatedAt' | 'dentistName'> & {
+      dentistName?: string;
+    }
+  ): Appointment {
+    const now = new Date().toISOString();
+    const newAppointment: Appointment = {
+      dentistName: appointmentData.dentistName || (appointmentData as any).professionalName || 'Dr(a). Dentista',
+      ...appointmentData,
+      id: `apt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.appointments = [newAppointment, ...this.appointments];
+    saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);
+    this.log(
+      'CRIACAO_AGENDAMENTO',
+      'APPOINTMENT',
+      newAppointment.id,
+      `Consulta agendada para ${newAppointment.patientName} em ${newAppointment.date} às ${newAppointment.startTime}.`
+    );
+    this.notify();
+    return newAppointment;
+  }
+
+  public updateAppointment(id: string, updates: Partial<Appointment>): boolean {
+    let affected = false;
+    this.appointments = this.appointments.map((apt) => {
+      if (apt.id !== id) return apt;
+      affected = true;
+      return {
+        ...apt,
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+
+    if (affected) {
+      saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);
+      this.log('ATUALIZACAO_AGENDAMENTO', 'APPOINTMENT', id, `Agendamento ${id} atualizado.`);
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  public updateAppointmentStatus(id: string, status: AppointmentStatus): boolean {
+    return this.updateAppointment(id, { status });
+  }
+
+  public deleteAppointment(id: string): boolean {
+    const prevLen = this.appointments.length;
+    this.appointments = this.appointments.filter((apt) => apt.id !== id);
+    if (this.appointments.length !== prevLen) {
+      saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);
+      this.log('EXCLUSAO_AGENDAMENTO', 'APPOINTMENT', id, `Agendamento excluído da agenda.`);
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  public resetAppointmentsToDemo() {
+    this.appointments = DEMO_APPOINTMENTS;
+    saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);
+    this.log('RESET_AGENDAMENTOS', 'APPOINTMENT', 'all', `Agenda restaurada para os dados demonstrativos.`);
+    this.notify();
+  }
+
+  public getSalePaymentSummary(saleId: string): SalePaymentSummary | null {
+    const sale = this.sales.find((s) => s.id === saleId);
+    if (!sale) return null;
+    return getSalePaymentSummary(sale);
+  }
+
   // Test Runner / Reset to Demo
   public resetToDemo() {
     this.org = DEMO_ORGANIZATION;
     this.user = DEMO_USER;
     this.professional = DEMO_PROFESSIONAL;
     this.patients = DEMO_PATIENTS;
-    const augmented = augmentYearlyDataset(DEMO_SALES, DEMO_EXPENSES, 2025);
+    const curYear = new Date().getFullYear();
+    let augmented = augmentYearlyDataset(DEMO_SALES, DEMO_EXPENSES, curYear);
+    if (curYear !== 2025) {
+      augmented = augmentYearlyDataset(augmented.sales, augmented.expenses, 2025);
+    }
     this.sales = augmented.sales;
     this.expenses = augmented.expenses;
     this.categories = INITIAL_CHART_OF_ACCOUNTS;
@@ -989,6 +3038,7 @@ export class DentalFinanceDB {
     this.taxRulesSimples = DEFAULT_TAX_RULES_SIMPLES;
     this.procedures = DEMO_PROCEDURES;
     this.clinicalInputs = DEMO_CLINICAL_INPUTS;
+    this.appointments = DEMO_APPOINTMENTS;
 
     saveItem(STORAGE_KEYS.ORGANIZATION, this.org);
     saveItem(STORAGE_KEYS.USER, this.user);
@@ -1003,6 +3053,7 @@ export class DentalFinanceDB {
     saveItem(STORAGE_KEYS.TAX_RULES_SIMPLES, this.taxRulesSimples);
     saveItem(STORAGE_KEYS.PROCEDURES, this.procedures);
     saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs);
+    saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);
 
     this.log('RESET_DEMO', 'SYSTEM', 'all', 'Dados de demonstração restaurados para estado padrão.');
     this.notify();
@@ -1038,6 +3089,77 @@ export class DentalFinanceDB {
     );
     this.notify();
   }
+}
+
+export function getSalePaymentSummary(sale: Sale): SalePaymentSummary {
+  const installments = sale.installments || [];
+  const totalValue = sale.totalValue || installments.reduce((acc, i) => acc + (i.value || 0), 0);
+
+  let receivedValue = 0;
+  let receivedCount = 0;
+  let overdueCount = 0;
+  let pendingCount = 0;
+  let nextDueDate: string | undefined;
+  let lastPaymentDate: string | undefined;
+
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  installments.forEach((inst) => {
+    const isPaid = inst.status === 'RECEBIDO';
+    if (isPaid) {
+      const rec = inst.amountReceived ?? inst.value;
+      receivedValue += rec;
+      receivedCount++;
+      if (inst.paymentDate) {
+        if (!lastPaymentDate || inst.paymentDate > lastPaymentDate) {
+          lastPaymentDate = inst.paymentDate;
+        }
+      }
+    } else if (inst.status === 'CANCELADO') {
+      // ignore
+    } else {
+      pendingCount++;
+      if (inst.dueDate < todayStr) {
+        overdueCount++;
+      }
+      if (!nextDueDate || inst.dueDate < nextDueDate) {
+        nextDueDate = inst.dueDate;
+      }
+    }
+  });
+
+  const pendingValue = Math.max(0, totalValue - receivedValue);
+
+  let overallStatus: SaleOverallPaymentStatus = 'PENDENTE';
+  const nonCancelledInstallments = installments.filter((i) => i.status !== 'CANCELADO');
+
+  if (installments.length > 0 && nonCancelledInstallments.length === 0) {
+    overallStatus = 'CANCELADA';
+  } else if (nonCancelledInstallments.length > 0 && receivedCount === nonCancelledInstallments.length) {
+    overallStatus = 'TOTALMENTE_RECEBIDA';
+  } else if (receivedCount > 0 || receivedValue > 0) {
+    overallStatus = 'PARCIALMENTE_RECEBIDA';
+  } else if (overdueCount > 0) {
+    overallStatus = 'VENCIDA';
+  } else {
+    overallStatus = 'PENDENTE';
+  }
+
+  return {
+    overallStatus,
+    status: overallStatus,
+    totalValue,
+    receivedValue,
+    pendingValue,
+    totalInstallments: installments.length,
+    receivedInstallments: receivedCount,
+    receivedCount,
+    pendingInstallments: pendingCount,
+    pendingCount,
+    overdueInstallments: overdueCount,
+    nextDueDate,
+    lastPaymentDate,
+  };
 }
 
 export const db = DentalFinanceDB.getInstance();

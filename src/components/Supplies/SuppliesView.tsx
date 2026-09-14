@@ -21,9 +21,12 @@ import { formatCurrency } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { ClinicalInputModal } from '../Modals/ClinicalInputModal';
+import { CustomSelect, ConfirmDialog, useToast } from '../UI';
 
 interface SuppliesViewProps {
   onSelectInputForProcedure?: (input: ClinicalInput) => void;
+  initialOpenNewModal?: boolean;
+  onClearAction?: () => void;
 }
 
 const UNIT_LABELS: Record<InputUsageUnit, { label: string; color: string }> = {
@@ -35,15 +38,42 @@ const UNIT_LABELS: Record<InputUsageUnit, { label: string; color: string }> = {
   kit: { label: 'Kit', color: 'bg-teal-100 text-teal-800 border-teal-300' },
 };
 
-export const SuppliesView: React.FC<SuppliesViewProps> = () => {
+export const SuppliesView: React.FC<SuppliesViewProps> = ({
+  initialOpenNewModal = false,
+  onClearAction,
+}) => {
+  const toast = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedUnit, setSelectedUnit] = useState<string>('ALL');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Modal State
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(initialOpenNewModal);
   const [editingInput, setEditingInput] = useState<ClinicalInput | null>(null);
+
+  React.useEffect(() => {
+    if (initialOpenNewModal) {
+      setEditingInput(null);
+      setIsModalOpen(true);
+      if (onClearAction) onClearAction();
+    }
+  }, [initialOpenNewModal, onClearAction]);
+
+  // Confirm dialog state
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    variant?: 'danger' | 'warning' | 'primary';
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   // Sync with DB
   const inputs = db.getClinicalInputs();
@@ -57,23 +87,23 @@ export const SuppliesView: React.FC<SuppliesViewProps> = () => {
   // Filtered List
   const filteredInputs = useMemo(() => {
     return inputs.filter((item) => {
-      const matchesSearch =
+      const matchSearch =
         item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (item.brand && item.brand.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        item.brand.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.purchasePackageName.toLowerCase().includes(searchTerm.toLowerCase()) ||
         item.category.toLowerCase().includes(searchTerm.toLowerCase());
 
-      const matchesCat =
+      const matchCat =
         selectedCategory === 'ALL' || item.category === selectedCategory;
 
-      const matchesUnit =
+      const matchUnit =
         selectedUnit === 'ALL' || item.usageUnit === selectedUnit;
 
-      return matchesSearch && matchesCat && matchesUnit;
+      return matchSearch && matchCat && matchUnit;
     });
   }, [inputs, searchTerm, selectedCategory, selectedUnit]);
 
-  // Bulk Handlers
+  // Bulk Selection Handlers
   const handleSelectAll = () => {
     if (selectedIds.size === filteredInputs.length && filteredInputs.length > 0) {
       setSelectedIds(new Set());
@@ -97,25 +127,36 @@ export const SuppliesView: React.FC<SuppliesViewProps> = () => {
   const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
-    if (
-      confirm(
-        `ATENÇÃO: Deseja realmente excluir ${count} insumo(s) selecionado(s) do catálogo?`
-      )
-    ) {
-      db.batchDeleteClinicalInputs(Array.from(selectedIds));
-      setSelectedIds(new Set());
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Insumos Selecionados',
+      message: `ATENÇÃO: Deseja realmente excluir ${count} insumo(s) selecionado(s) do catálogo?`,
+      confirmLabel: 'Excluir Todos',
+      variant: 'danger',
+      onConfirm: () => {
+        db.batchDeleteClinicalInputs(Array.from(selectedIds));
+        setSelectedIds(new Set());
+      },
+    });
   };
 
   const handleDeleteSingle = (id: string, name: string) => {
-    if (confirm(`Deseja realmente excluir o insumo "${name}"?`)) {
-      db.deleteClinicalInput(id);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Insumo',
+      message: `Deseja realmente excluir o insumo "${name}"?`,
+      confirmLabel: 'Excluir',
+      variant: 'danger',
+      onConfirm: () => {
+        db.deleteClinicalInput(id);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        toast.success('Insumo excluído com sucesso.');
+      },
+    });
   };
 
   const handleOpenNew = () => {
@@ -131,20 +172,26 @@ export const SuppliesView: React.FC<SuppliesViewProps> = () => {
   const handleSaveModal = (data: Omit<ClinicalInput, 'id' | 'createdAt'>) => {
     if (editingInput) {
       db.updateClinicalInput(editingInput.id, data);
+      toast.success('Insumo atualizado com sucesso.');
     } else {
       db.addClinicalInput(data);
+      toast.success('Insumo cadastrado com sucesso.');
     }
   };
 
   const handleResetToDemo = () => {
-    if (
-      confirm(
-        'Deseja restaurar o catálogo de insumos para os padrões clínicos da clínica escola?'
-      )
-    ) {
-      db.resetClinicalInputsToDemo();
-      setSelectedIds(new Set());
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Restaurar Catálogo Padrão',
+      message: 'Deseja restaurar o catálogo de insumos para os padrões clínicos da clínica escola?',
+      confirmLabel: 'Restaurar',
+      variant: 'warning',
+      onConfirm: () => {
+        db.resetClinicalInputsToDemo();
+        setSelectedIds(new Set());
+        toast.success('Catálogo de insumos restaurado para o padrão.');
+      },
+    });
   };
 
   const handleExport = () => {
@@ -283,18 +330,17 @@ export const SuppliesView: React.FC<SuppliesViewProps> = () => {
         </div>
 
         {/* Category Filter */}
-        <select
-          value={selectedCategory}
-          onChange={(e) => setSelectedCategory(e.target.value)}
-          className="text-xs font-medium rounded-lg border border-slate-300 p-2 bg-slate-50 focus:ring-2 focus:ring-teal-500 focus:outline-none cursor-pointer"
-        >
-          <option value="ALL">Categoria: Todas</option>
-          {categories.map((cat) => (
-            <option key={cat} value={cat}>
-              {cat}
-            </option>
-          ))}
-        </select>
+        <div className="w-56">
+          <CustomSelect
+            value={selectedCategory}
+            onChange={(val) => setSelectedCategory(val)}
+            options={[
+              { value: 'ALL', label: 'Categoria: Todas' },
+              ...categories.map((cat) => ({ value: cat, label: cat })),
+            ]}
+            searchable
+          />
+        </div>
 
         {/* Unit Filter */}
         <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs overflow-x-auto">
@@ -474,10 +520,10 @@ export const SuppliesView: React.FC<SuppliesViewProps> = () => {
                       </td>
 
                       {/* Custo Unitário */}
-                      <td className="py-3.5 px-4 text-right font-black text-teal-800 font-mono text-sm">
-                        R$ {item.unitCost.toFixed(item.unitCost < 0.1 ? 3 : 2)}
-                        <span className="text-[10px] font-normal text-slate-500 ml-1">
-                          /{item.usageUnit}
+                      <td className="py-3.5 px-4 text-right font-bold text-teal-800 font-mono text-xs whitespace-nowrap tabular-nums">
+                        <span>R$ {item.unitCost.toFixed(item.unitCost < 0.1 ? 3 : 2).replace('.', ',')}</span>
+                        <span className="text-[11px] font-medium text-slate-500 ml-1">
+                          / {item.usageUnit}
                         </span>
                       </td>
 
@@ -517,6 +563,17 @@ export const SuppliesView: React.FC<SuppliesViewProps> = () => {
         onClose={() => setIsModalOpen(false)}
         onSave={handleSaveModal}
         initialData={editingInput}
+      />
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        confirmLabel={confirmState.confirmLabel}
+        variant={confirmState.variant}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
       />
     </div>
   );

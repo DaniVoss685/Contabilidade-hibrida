@@ -15,15 +15,24 @@ import { TaxesView } from './components/Taxes/TaxesView';
 import { ReportsView } from './components/Reports/ReportsView';
 import { SettingsView } from './components/Settings/SettingsView';
 import { FinancialDashboard } from './components/Financial/FinancialDashboard';
+import { FiscalSimulatorView } from './components/Simulator/FiscalSimulatorView';
+import { BankAccountsView } from './components/BankAccounts/BankAccountsView';
+import { AppointmentsView } from './components/Appointments/AppointmentsView';
+import { LoginView } from './components/Auth/LoginView';
+import { AppLoadingSkeleton } from './components/UI/AppLoadingSkeleton';
 
 import { NewSaleModal } from './components/Modals/NewSaleModal';
 import { NewExpenseModal } from './components/Modals/NewExpenseModal';
 import { SettlePaymentModal } from './components/Modals/SettlePaymentModal';
 import { AccountReceivableItem } from './types';
+import { ToastProvider, useToast } from './components/UI/ToastContext';
+import { ToastContainer } from './components/UI/Toast';
+import { ShieldAlert } from 'lucide-react';
 
-export default function App() {
+function AppContent() {
+  const toast = useToast();
   // Database state sync
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     const unsubscribe = db.subscribe(() => {
@@ -32,14 +41,43 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  const currentSession = db.getCurrentSession();
+  const isDemoMode = db.getIsDemoMode();
   // UI state
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!db.getCurrentSession());
+
+  useEffect(() => {
+    setIsAuthenticated(!!db.getCurrentSession());
+  }, [tick]);
+
+  const handleLogout = () => {
+    db.logout();
+    setIsAuthenticated(false);
+    toast.info('Sessão encerrada com sucesso.');
+  };
+
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+
+  const handleNavigateTab = (tab: NavTab, action?: string) => {
+    setCurrentTab(tab);
+    if (action) {
+      if (action === 'new_sale') {
+        setIsNewSaleOpen(true);
+      } else if (action === 'new_expense') {
+        setIsNewExpenseOpen(true);
+      } else {
+        setPendingAction(action);
+      }
+    }
+  };
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [maskCpf, setMaskCpf] = useState(true); // LGPD default: masked
 
-  // Global Period Filter State
-  const [selectedYear, setSelectedYear] = useState<number>(2025);
-  const [selectedMonth, setSelectedMonth] = useState<number | 'ALL'>(5); // Default Maio/2025 where dataset is populated
+  // Global Period Filter State - Dynamic real environment date
+  const [selectedYear, setSelectedYear] = useState<number>(() => new Date().getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState<number | 'ALL'>(() => new Date().getMonth() + 1);
 
   const handleChangePeriod = (year: number, month: number | 'ALL') => {
     setSelectedYear(year);
@@ -47,12 +85,14 @@ export default function App() {
   };
 
   const handleResetPeriod = () => {
-    setSelectedYear(2025);
-    setSelectedMonth('ALL');
+    const now = new Date();
+    setSelectedYear(now.getFullYear());
+    setSelectedMonth(now.getMonth() + 1);
   };
 
   // Modals state
   const [isNewSaleOpen, setIsNewSaleOpen] = useState(false);
+  const [newSalePatientId, setNewSalePatientId] = useState<string | undefined>(undefined);
   const [isNewExpenseOpen, setIsNewExpenseOpen] = useState(false);
   const [settleItem, setSettleItem] = useState<AccountReceivableItem | null>(null);
 
@@ -154,40 +194,88 @@ export default function App() {
         : 0;
     const targetAbove = currentFatorR < 0.28;
     db.setFatorRScenario(targetAbove);
+    toast.info(
+      targetAbove
+        ? 'Cenário Fator R ajustado para >= 28% (Anexo III).'
+        : 'Cenário Fator R ajustado para < 28% (Anexo V).'
+    );
   };
 
   const handleOpenNewSaleForPatient = (patientId: string) => {
+    setNewSalePatientId(patientId);
     setIsNewSaleOpen(true);
   };
 
-  return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 flex font-sans antialiased">
-      {/* Sidebar Navigation */}
-      <Sidebar
-        currentTab={currentTab}
-        onSelectTab={setCurrentTab}
-        pendingReceitaSaudeCount={pendingReceitaSaudeCount}
-        overdueReceivablesCount={overdueReceivablesCount}
-        overdueExpensesCount={overdueExpensesCount}
-        isOpenMobile={mobileMenuOpen}
-        onCloseMobile={() => setMobileMenuOpen(false)}
-      />
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <LoginView onLoginSuccess={() => setIsAuthenticated(true)} />
+        <ToastContainer />
+      </div>
+    );
+  }
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 lg:pl-64">
-        {/* Top Header */}
-        <Header
-          organization={organization}
-          professional={professional}
-          onOpenMobileMenu={() => setMobileMenuOpen(true)}
-          onOpenNewSale={() => setIsNewSaleOpen(true)}
-          onOpenNewExpense={() => setIsNewExpenseOpen(true)}
-          maskCpf={maskCpf}
-          onToggleMaskCpf={() => setMaskCpf(!maskCpf)}
+  const isHydrating = db.getIsHydrating();
+  if (isHydrating) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <AppLoadingSkeleton />
+        <ToastContainer />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased">
+      {/* Platform Admin Audited Support Session Banner */}
+      {currentSession?.supportSession && (
+        <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-xs sticky top-0 z-50">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
+            <span>
+              <strong>MODO SUPORTE ATIVO:</strong> Você está acessando a clínica <u>{currentSession.supportSession.targetTenantName || organization.name}</u> como suporte ({currentSession.supportSession.originalAdminName}). Motivo: "{currentSession.supportSession.reason}". Todas as ações são auditadas.
+            </span>
+          </div>
+          <button
+            onClick={() => {
+              db.endSupportSession();
+              toast.info('Sessão de suporte encerrada com sucesso.');
+            }}
+            className="px-3 py-1 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0 ml-4"
+          >
+            Sair do modo suporte
+          </button>
+        </div>
+      )}
+
+      <div className="flex-1 flex min-w-0">
+        {/* Sidebar Navigation */}
+        <Sidebar
+          currentTab={currentTab}
+          onSelectTab={handleNavigateTab}
           pendingReceitaSaudeCount={pendingReceitaSaudeCount}
-          onNavigateToTab={setCurrentTab}
-          onQuickToggleFatorR={handleQuickToggleFatorR}
+          overdueReceivablesCount={overdueReceivablesCount}
+          overdueExpensesCount={overdueExpensesCount}
+          isOpenMobile={mobileMenuOpen}
+          onCloseMobile={() => setMobileMenuOpen(false)}
+          onLogout={handleLogout}
         />
+
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col min-w-0 lg:pl-64">
+          {/* Top Header */}
+          <Header
+            organization={organization}
+            professional={professional}
+            onOpenMobileMenu={() => setMobileMenuOpen(true)}
+            onOpenNewSale={() => setIsNewSaleOpen(true)}
+            onOpenNewExpense={() => setIsNewExpenseOpen(true)}
+            pendingReceitaSaudeCount={pendingReceitaSaudeCount}
+            onNavigateToTab={handleNavigateTab}
+            onQuickToggleFatorR={handleQuickToggleFatorR}
+            isDemo={isDemoMode}
+            onLogout={handleLogout}
+          />
 
         {/* Global Period Filter Bar - Always active across all tabs */}
         <PeriodFilterBar
@@ -212,7 +300,7 @@ export default function App() {
               taxRulesPf={taxRulesPf}
               taxRulesSimples={taxRulesSimples}
               categories={categories}
-              onNavigateTab={setCurrentTab}
+              onNavigateTab={handleNavigateTab}
               onOpenNewSale={() => setIsNewSaleOpen(true)}
               onOpenNewExpense={() => setIsNewExpenseOpen(true)}
               selectedYear={selectedYear}
@@ -234,11 +322,18 @@ export default function App() {
           )}
 
           {currentTab === 'procedures' && (
-            <ProceduresView procedures={procedures} />
+            <ProceduresView
+              procedures={procedures}
+              initialOpenNewModal={pendingAction === 'new_procedure'}
+              onClearAction={() => setPendingAction(null)}
+            />
           )}
 
           {currentTab === 'supplies' && (
-            <SuppliesView />
+            <SuppliesView
+              initialOpenNewModal={pendingAction === 'new_supply'}
+              onClearAction={() => setPendingAction(null)}
+            />
           )}
 
           {currentTab === 'receivables' && (
@@ -269,12 +364,29 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'bank_accounts' && (
+            <BankAccountsView
+              bankAccounts={bankAccounts}
+              onRefreshData={() => setTick((t) => t + 1)}
+            />
+          )}
+
           {currentTab === 'patients' && (
             <PatientsView
               patients={patients}
               sales={filteredSales}
               maskCpf={maskCpf}
               onOpenNewSaleForPatient={handleOpenNewSaleForPatient}
+              initialOpenNewModal={pendingAction === 'new_patient'}
+              onClearAction={() => setPendingAction(null)}
+            />
+          )}
+
+          {currentTab === 'agenda' && (
+            <AppointmentsView
+              onLaunchSale={(appointment) => {
+                handleOpenNewSaleForPatient(appointment.patientId);
+              }}
             />
           )}
 
@@ -293,6 +405,20 @@ export default function App() {
               selectedYear={selectedYear}
               selectedMonth={selectedMonth}
               onChangePeriod={handleChangePeriod}
+              onNavigateTab={handleNavigateTab}
+              initialOpenBasesModal={pendingAction === 'configure_fiscal'}
+              onClearAction={() => setPendingAction(null)}
+            />
+          )}
+
+          {currentTab === 'fiscal_simulator' && (
+            <FiscalSimulatorView
+              professional={professional}
+              payrollHistory={payrollHistory}
+              sales={sales}
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              onNavigateTab={handleNavigateTab}
             />
           )}
 
@@ -322,16 +448,25 @@ export default function App() {
               auditLogs={auditLogs}
               maskCpf={maskCpf}
               onRefreshData={() => setTick((t) => t + 1)}
+              onNavigateTab={handleNavigateTab}
             />
           )}
         </main>
+      </div>
       </div>
 
       {/* Global Modals */}
       <NewSaleModal
         isOpen={isNewSaleOpen}
-        onClose={() => setIsNewSaleOpen(false)}
+        onClose={() => {
+          setIsNewSaleOpen(false);
+          setNewSalePatientId(undefined);
+        }}
         patients={patients}
+        initialPatientId={newSalePatientId}
+        onSaleCreated={() => {
+          setTick((t) => t + 1);
+        }}
       />
 
       <NewExpenseModal
@@ -339,6 +474,9 @@ export default function App() {
         onClose={() => setIsNewExpenseOpen(false)}
         categories={categories}
         bankAccounts={bankAccounts}
+        onExpenseCreated={() => {
+          setTick((t) => t + 1);
+        }}
       />
 
       <SettlePaymentModal
@@ -347,6 +485,17 @@ export default function App() {
         item={settleItem}
         bankAccounts={bankAccounts}
       />
+
+      {/* Global Toaster Mount */}
+      <ToastContainer />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 }

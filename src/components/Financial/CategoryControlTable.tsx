@@ -14,6 +14,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { CategoryAnnualControlItem } from '../../types/financial';
+import { CustomSelect } from '../UI';
 
 interface CategoryControlTableProps {
   categoriesData: CategoryAnnualControlItem[];
@@ -164,29 +165,33 @@ export const CategoryControlTable: React.FC<CategoryControlTableProps> = ({
           </div>
 
           {/* Group Filter */}
-          <select
-            value={selectedGroup}
-            onChange={(e) => setSelectedGroup(e.target.value)}
-            className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 bg-white"
-          >
-            <option value="ALL">Todos os Grupos Operacionais</option>
-            {groupsList.map((g) => (
-              <option key={g.code} value={g.code}>
-                {g.name.startsWith(g.code) ? g.name : `${g.code} - ${g.name}`}
-              </option>
-            ))}
-          </select>
+          <div className="w-56">
+            <CustomSelect
+              value={selectedGroup}
+              onChange={(val) => setSelectedGroup(val)}
+              options={[
+                { value: 'ALL', label: 'Todos os Grupos Operacionais' },
+                ...groupsList.map((g) => ({
+                  value: g.code,
+                  label: g.name.startsWith(g.code) ? g.name : `${g.code} - ${g.name}`,
+                })),
+              ]}
+              searchable
+            />
+          </div>
 
           {/* Transaction status filter */}
-          <select
-            value={filterType}
-            onChange={(e) => setFilterType(e.target.value as any)}
-            className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 bg-white"
-          >
-            <option value="ALL">Todas as Categorias Cadastradas</option>
-            <option value="WITH_TRANSACTIONS">Apenas com Movimentação no Ano</option>
-            <option value="PENDING_PAYMENT">Apenas com Valores a Pagar</option>
-          </select>
+          <div className="w-56">
+            <CustomSelect
+              value={filterType}
+              onChange={(val) => setFilterType(val as any)}
+              options={[
+                { value: 'ALL', label: 'Todas as Categorias Cadastradas' },
+                { value: 'WITH_TRANSACTIONS', label: 'Apenas com Movimentação no Ano' },
+                { value: 'PENDING_PAYMENT', label: 'Apenas com Valores a Pagar' },
+              ]}
+            />
+          </div>
         </div>
 
         <span className="text-xs text-slate-500 font-medium">

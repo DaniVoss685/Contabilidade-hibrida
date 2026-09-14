@@ -18,6 +18,7 @@ import {
   OPERATIONAL_EXPENSE_GROUPS,
   getOperationalGroup,
 } from '../../lib/chartOfAccountsData';
+import { CustomSelect, useToast } from '../UI';
 
 interface ChartOfAccountsViewProps {
   categories: ExpenseCategory[];
@@ -26,6 +27,7 @@ interface ChartOfAccountsViewProps {
 export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   categories,
 }) => {
+  const toast = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [groupFilter, setGroupFilter] = useState<string>('ALL');
   const [deductibleFilter, setDeductibleFilter] = useState<string>('ALL');
@@ -120,6 +122,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         noticeText: formNoticeText.trim() || undefined,
         active: true,
       });
+      toast.success('Categoria contábil cadastrada com sucesso.');
     } else if (editingCategory) {
       db.updateCategory(editingCategory.id, {
         code: formCode.trim(),
@@ -131,6 +134,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         despesaOperacionalPj: formDespesaOpPj,
         noticeText: formNoticeText.trim() || undefined,
       });
+      toast.success('Categoria contábil atualizada com sucesso.');
     }
 
     setEditingCategory(null);
@@ -140,10 +144,12 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
   const handleResetToStandard = () => {
     db.resetChartOfAccounts();
     setShowResetConfirm(false);
+    toast.success('Plano de contas restaurado com sucesso.');
   };
 
   const handleToggleActive = (cat: ExpenseCategory) => {
     db.updateCategory(cat.id, { active: !cat.active });
+    toast.info(!cat.active ? 'Categoria contábil ativada.' : 'Categoria contábil desativada.');
   };
 
   return (
@@ -227,41 +233,44 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         </div>
 
         {/* Group Filter */}
-        <select
-          value={groupFilter}
-          onChange={(e) => setGroupFilter(e.target.value)}
-          className="text-xs font-medium rounded-lg border border-slate-300 p-2 bg-slate-50 focus:ring-2 focus:ring-teal-500 focus:outline-none"
-        >
-          <option value="ALL">Todos os Grupos</option>
-          {uniqueGroups.map((g) => (
-            <option key={g} value={g}>
-              {g}
-            </option>
-          ))}
-        </select>
+        <div className="w-48">
+          <CustomSelect
+            value={groupFilter}
+            onChange={(val) => setGroupFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Todos os Grupos' },
+              ...uniqueGroups.map((g) => ({ value: g, label: g })),
+            ]}
+            searchable
+          />
+        </div>
 
         {/* Livro Caixa Filter */}
-        <select
-          value={deductibleFilter}
-          onChange={(e) => setDeductibleFilter(e.target.value)}
-          className="text-xs font-medium rounded-lg border border-slate-300 p-2 bg-slate-50 focus:ring-2 focus:ring-teal-500 focus:outline-none"
-        >
-          <option value="ALL">Livro Caixa: Todos</option>
-          <option value="SIM">Dedutível (SIM)</option>
-          <option value="CONDICIONAL">Condicional</option>
-          <option value="NAO">Não Dedutível</option>
-        </select>
+        <div className="w-48">
+          <CustomSelect
+            value={deductibleFilter}
+            onChange={(val) => setDeductibleFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Livro Caixa: Todos' },
+              { value: 'SIM', label: 'Dedutível (SIM)' },
+              { value: 'CONDICIONAL', label: 'Condicional' },
+              { value: 'NAO', label: 'Não Dedutível' },
+            ]}
+          />
+        </div>
 
         {/* Fator R Filter */}
-        <select
-          value={fatorRFilter}
-          onChange={(e) => setFatorRFilter(e.target.value)}
-          className="text-xs font-medium rounded-lg border border-slate-300 p-2 bg-slate-50 focus:ring-2 focus:ring-teal-500 focus:outline-none"
-        >
-          <option value="ALL">Fator R: Todos</option>
-          <option value="SIM">Impacta Fator R</option>
-          <option value="NAO">Não Impacta</option>
-        </select>
+        <div className="w-44">
+          <CustomSelect
+            value={fatorRFilter}
+            onChange={(val) => setFatorRFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Fator R: Todos' },
+              { value: 'SIM', label: 'Impacta Fator R' },
+              { value: 'NAO', label: 'Não Impacta' },
+            ]}
+          />
+        </div>
       </div>
 
       {/* Table */}
@@ -419,10 +428,10 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                 <label className="block text-xs font-bold text-slate-700 mb-1">
                   Grupo Operacional *
                 </label>
-                <select
+                <CustomSelect
                   value={formGroupCode}
-                  onChange={(e) => {
-                    const code = e.target.value;
+                  onChange={(val) => {
+                    const code = val;
                     const g = getOperationalGroup(code);
                     setFormGroupCode(code);
                     setFormGroupName(g.name);
@@ -433,15 +442,12 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                       setFormCode(`${code}.${count < 10 ? '0' : ''}${count}`);
                     }
                   }}
-                  className="w-full text-xs rounded border border-slate-300 p-2 font-medium bg-white"
-                  required
-                >
-                  {Object.entries(OPERATIONAL_EXPENSE_GROUPS).map(([code, g]) => (
-                    <option key={code} value={code}>
-                      {g.name}
-                    </option>
-                  ))}
-                </select>
+                  options={Object.entries(OPERATIONAL_EXPENSE_GROUPS).map(([code, g]) => ({
+                    value: code,
+                    label: g.name,
+                  }))}
+                  searchable
+                />
                 <p className="text-[11px] text-slate-500 mt-1">
                   {getOperationalGroup(formGroupCode).description}
                 </p>
@@ -457,43 +463,43 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">
                       Livro Caixa PF
                     </label>
-                    <select
+                    <CustomSelect
                       value={formDedutivelPf}
-                      onChange={(e) => setFormDedutivelPf(e.target.value as LivroCaixaPfDedutibilidade)}
-                      className="w-full text-xs rounded border border-slate-300 p-1.5"
-                    >
-                      <option value="SIM">SIM</option>
-                      <option value="CONDICIONAL">CONDICIONAL</option>
-                      <option value="NAO">NÃO</option>
-                    </select>
+                      onChange={(val) => setFormDedutivelPf(val as LivroCaixaPfDedutibilidade)}
+                      options={[
+                        { value: 'SIM', label: 'SIM' },
+                        { value: 'CONDICIONAL', label: 'CONDICIONAL' },
+                        { value: 'NAO', label: 'NÃO' },
+                      ]}
+                    />
                   </div>
 
                   <div>
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">
                       Fator R (PJ)
                     </label>
-                    <select
+                    <CustomSelect
                       value={formImpactaFatorR ? 'true' : 'false'}
-                      onChange={(e) => setFormImpactaFatorR(e.target.value === 'true')}
-                      className="w-full text-xs rounded border border-slate-300 p-1.5"
-                    >
-                      <option value="false">NÃO</option>
-                      <option value="true">SIM</option>
-                    </select>
+                      onChange={(val) => setFormImpactaFatorR(val === 'true')}
+                      options={[
+                        { value: 'false', label: 'NÃO' },
+                        { value: 'true', label: 'SIM' },
+                      ]}
+                    />
                   </div>
 
                   <div>
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">
                       Operacional PJ
                     </label>
-                    <select
+                    <CustomSelect
                       value={formDespesaOpPj ? 'true' : 'false'}
-                      onChange={(e) => setFormDespesaOpPj(e.target.value === 'true')}
-                      className="w-full text-xs rounded border border-slate-300 p-1.5"
-                    >
-                      <option value="true">SIM</option>
-                      <option value="false">NÃO</option>
-                    </select>
+                      onChange={(val) => setFormDespesaOpPj(val === 'true')}
+                      options={[
+                        { value: 'true', label: 'SIM' },
+                        { value: 'false', label: 'NÃO' },
+                      ]}
+                    />
                   </div>
                 </div>
               </div>

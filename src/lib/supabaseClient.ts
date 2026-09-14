@@ -1,0 +1,955 @@
+import {
+  ClinicTenant,
+  StoredUserAccount,
+  Professional,
+  PayrollHistoryEntry,
+  Patient,
+  Sale,
+  Expense,
+  DentalProcedure,
+  ClinicalInput,
+  BankAccount,
+  Appointment,
+  SystemPreferences,
+  AuditLog,
+} from '../types';
+
+export const SUPABASE_URL =
+  (import.meta.env.VITE_SUPABASE_URL as string) ||
+  'https://fbkouuvupdyffizwoiti.supabase.co';
+export const SUPABASE_ANON_KEY =
+  (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ||
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZia291dXZ1cGR5ZmZpendvaXRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyOTI2NDUsImV4cCI6MjA3MDg2ODY0NX0.9xN5BQug6yHm_k9H20v524XFuCbd1JzW2aRSQJWstfo';
+
+const REST_URL = `${SUPABASE_URL}/rest/v1`;
+
+interface RequestOptions {
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT';
+  headers?: Record<string, string>;
+  body?: any;
+  timeoutMs?: number;
+}
+
+async function supabaseFetch<T>(endpoint: string, options: RequestOptions = {}): Promise<{ data: T | null; error: string | null }> {
+  const { method = 'GET', headers = {}, body, timeoutMs = 8000 } = options;
+
+  let controller: AbortController | null = null;
+  let timeoutId: any = null;
+  if (typeof AbortController !== 'undefined') {
+    controller = new AbortController();
+    timeoutId = setTimeout(() => controller?.abort(), timeoutMs);
+  }
+
+  try {
+    const res = await fetch(`${REST_URL}/${endpoint}`, {
+      method,
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+        ...headers,
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller ? controller.signal : undefined,
+    });
+
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      if (import.meta.env.DEV || (typeof window !== 'undefined' && (window as any).__DF_DEBUG__)) {
+        console.error(`[Supabase Fetch Error] ${method} ${endpoint} => HTTP ${res.status}:`, errText || res.statusText);
+      }
+      return { data: null, error: `HTTP ${res.status}: ${errText || res.statusText}` };
+    }
+
+    if (res.status === 204) {
+      return { data: null, error: null };
+    }
+
+    const text = await res.text();
+    if (!text) {
+      return { data: null, error: null };
+    }
+
+    try {
+      const json = JSON.parse(text);
+      return { data: json as T, error: null };
+    } catch {
+      return { data: null, error: null };
+    }
+  } catch (err: any) {
+    if (timeoutId) clearTimeout(timeoutId);
+    return { data: null, error: err?.message || 'Erro de conexão com o banco de dados' };
+  }
+}
+
+// -------------------------------------------------------------
+// Type Mappers: Snake_case (Postgres) <-> CamelCase (Frontend)
+// -------------------------------------------------------------
+
+export function mapDbTenantToApp(db: any): ClinicTenant {
+  return {
+    id: db.id,
+    name: db.name,
+    tradeName: db.trade_name || db.name,
+    cnpj: db.cnpj || '',
+    cpfCnpj: db.cpf_cnpj || db.cnpj || '',
+    cro: db.cro || '',
+    croUf: db.cro_uf || db.uf || 'SP',
+    email: db.email || '',
+    phone: db.phone || '',
+    city: db.city || '',
+    uf: db.uf || 'SP',
+    isDemo: Boolean(db.is_demo),
+    isActive: Boolean(db.is_active ?? true),
+    createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppTenantToDb(app: ClinicTenant): any {
+  return {
+    id: app.id,
+    name: app.name,
+    trade_name: app.tradeName || app.name,
+    cnpj: app.cnpj || '',
+    cpf_cnpj: app.cpfCnpj || app.cnpj || '',
+    cro: app.cro || '',
+    cro_uf: app.croUf || app.uf || 'SP',
+    email: app.email || '',
+    phone: app.phone || '',
+    city: app.city || '',
+    uf: app.uf || 'SP',
+    is_demo: Boolean(app.isDemo),
+    is_active: app.isActive !== false,
+    created_at: app.createdAt || new Date().toISOString(),
+  };
+}
+
+export function mapDbUserToApp(db: any): StoredUserAccount {
+  return {
+    id: db.id,
+    clinicId: db.clinic_id,
+    email: db.email,
+    name: db.name,
+    role: db.role,
+    passwordHash: db.password_hash,
+    salt: db.salt,
+    isActive: db.is_active !== false,
+    createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppUserToDb(app: StoredUserAccount): any {
+  return {
+    id: app.id,
+    clinic_id: app.clinicId,
+    email: app.email.trim().toLowerCase(),
+    name: app.name,
+    role: app.role,
+    password_hash: app.passwordHash,
+    salt: app.salt || '',
+    is_active: app.isActive !== false,
+    created_at: app.createdAt || new Date().toISOString(),
+  };
+}
+
+export function mapDbProfessionalToApp(db: any, tenantId: string): Professional {
+  return {
+    id: db.id || `prof_${tenantId}`,
+    orgId: db.org_id || `org_${tenantId}`,
+    name: db.name || '',
+    cpf: db.cpf || '',
+    cro: db.cro || '',
+    croUf: db.cro_uf || db.uf || 'SP',
+    cnpj: db.cnpj || '',
+    razaoSocial: db.razao_social || db.name || '',
+    nomeFantasia: db.nome_fantasia || db.razao_social || '',
+    municipio: db.municipio || 'São Paulo - SP',
+    regimeTributario: db.regime_tributario || 'SIMPLES_NACIONAL',
+    optanteSimples: db.optante_simples !== false,
+    dataAbertura: db.data_abertura || '',
+    rbt12Inicial: Number(db.rbt12_inicial || 0),
+    folha12MesesInicial: Number(db.folha_12m_inicial || 0),
+    proLaboreMensal: Number(db.pro_labore_mensal || 0),
+    baselineConfigured: Boolean(db.baseline_configured),
+    fiscalSourceType: db.fiscal_source_type || 'MANUAL_TOTAL',
+    fiscalSnapshots: Array.isArray(db.fiscal_snapshots) ? db.fiscal_snapshots : [],
+    initialFiscalHistory: Array.isArray(db.initial_fiscal_history) ? db.initial_fiscal_history : [],
+    contabilexClientId: db.contabilex_client_id || undefined,
+    phone: db.phone || '',
+    email: db.email || '',
+    especialidade: db.especialidade || '',
+    anexoPadrao: db.anexo_padrao || 'III',
+    uf: db.uf || 'SP',
+    numDependentes: Number(db.num_dependentes || 0),
+    inssProprioMensal: Number(db.inss_proprio_mensal || 0),
+    outrosRendimentosTributaveis: Number(db.outros_rendimentos_tributaveis || 0),
+  };
+}
+
+export function mapAppProfessionalToDb(app: Professional, tenantId: string): any {
+  return {
+    tenant_id: tenantId,
+    id: app.id || `prof_${tenantId}`,
+    org_id: app.orgId || `org_${tenantId}`,
+    name: app.name || '',
+    cpf: app.cpf || '',
+    cro: app.cro || '',
+    cro_uf: app.croUf || app.uf || 'SP',
+    cnpj: app.cnpj || '',
+    razao_social: app.razaoSocial || app.name || '',
+    nome_fantasia: app.nomeFantasia || app.razaoSocial || '',
+    municipio: app.municipio || 'São Paulo - SP',
+    regime_tributario: app.regimeTributario || 'SIMPLES_NACIONAL',
+    optante_simples: app.optanteSimples !== false,
+    data_abertura: app.dataAbertura || '',
+    rbt12_inicial: Number(app.rbt12Inicial || 0),
+    folha_12m_inicial: Number(app.folha12MesesInicial || 0),
+    pro_labore_mensal: Number(app.proLaboreMensal || 0),
+    baseline_configured: Boolean(app.baselineConfigured),
+    fiscal_source_type: app.fiscalSourceType || 'MANUAL_TOTAL',
+    fiscal_snapshots: app.fiscalSnapshots || [],
+    initial_fiscal_history: app.initialFiscalHistory || [],
+    contabilex_client_id: app.contabilexClientId || null,
+    phone: app.phone || '',
+    email: app.email || '',
+    especialidade: app.especialidade || '',
+    anexo_padrao: app.anexoPadrao || 'III',
+    uf: app.uf || 'SP',
+    num_dependentes: Number(app.numDependentes || 0),
+    inss_proprio_mensal: Number(app.inssProprioMensal || 0),
+    outros_rendimentos_tributaveis: Number(app.outrosRendimentosTributaveis || 0),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function mapDbPayrollToApp(db: any): PayrollHistoryEntry {
+  return {
+    month: db.month,
+    salaries: Number(db.salaries || 0),
+    charges: Number(db.charges || 0),
+    proLabore: Number(db.pro_labore || 0),
+    totalPayroll: Number(db.total_payroll || 0),
+  };
+}
+
+export function mapAppPayrollToDb(app: PayrollHistoryEntry, tenantId: string): any {
+  return {
+    id: `${tenantId}_${app.month}`,
+    tenant_id: tenantId,
+    month: app.month,
+    salaries: Number(app.salaries || 0),
+    charges: Number(app.charges || 0),
+    pro_labore: Number(app.proLabore || 0),
+    total_payroll: Number(app.totalPayroll || 0),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function mapDbPatientToApp(db: any): Patient {
+  return {
+    id: db.id,
+    orgId: db.org_id,
+    name: db.name,
+    cpf: db.cpf || '',
+    email: db.email || '',
+    phone: db.phone || '',
+    birthDate: db.birth_date || '',
+    notes: db.notes || '',
+    createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppPatientToDb(app: Patient, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    org_id: app.orgId || `org_${tenantId}`,
+    name: app.name,
+    cpf: app.cpf || '',
+    email: app.email || '',
+    phone: app.phone || '',
+    birth_date: app.birthDate || '',
+    notes: app.notes || '',
+    created_at: app.createdAt || new Date().toISOString(),
+  };
+}
+
+export function mapDbSaleToApp(db: any): Sale {
+  return {
+    id: db.id,
+    orgId: db.org_id,
+    taxOrigin: db.tax_origin,
+    patientId: db.patient_id || '',
+    patientName: db.patient_name,
+    patientCpf: db.patient_cpf || '',
+    payerIsBeneficiary: db.payer_is_beneficiary !== false,
+    payerName: db.payer_name || '',
+    payerCpf: db.payer_cpf || '',
+    procedureId: db.procedure_id || '',
+    procedureName: db.procedure_name || '',
+    description: db.description || '',
+    totalValue: Number(db.total_value || 0),
+    serviceDate: db.service_date,
+    paymentMethod: db.payment_method,
+    installmentsCount: Number(db.installments_count || 1),
+    nfseStatus: db.nfse_status || undefined,
+    nfseNumber: db.nfse_number || undefined,
+    nfseVerificationCode: db.nfse_verification_code || undefined,
+    nfseEmittedAt: db.nfse_emitted_at || undefined,
+    installments: Array.isArray(db.installments) ? db.installments : [],
+    notes: db.notes || '',
+    createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppSaleToDb(app: Sale, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    org_id: app.orgId || `org_${tenantId}`,
+    tax_origin: app.taxOrigin,
+    patient_id: app.patientId || null,
+    patient_name: app.patientName,
+    patient_cpf: app.patientCpf || '',
+    payer_is_beneficiary: app.payerIsBeneficiary !== false,
+    payer_name: app.payerName || '',
+    payer_cpf: app.payerCpf || '',
+    procedure_id: app.procedureId || null,
+    procedure_name: app.procedureName || '',
+    description: app.description || '',
+    total_value: Number(app.totalValue || 0),
+    service_date: app.serviceDate,
+    payment_method: app.paymentMethod,
+    installments_count: Number(app.installmentsCount || 1),
+    nfse_status: app.nfseStatus || null,
+    nfse_number: app.nfseNumber || null,
+    nfse_verification_code: app.nfseVerificationCode || null,
+    nfse_emitted_at: app.nfseEmittedAt || null,
+    installments: app.installments || [],
+    notes: app.notes || '',
+    created_at: app.createdAt || new Date().toISOString(),
+  };
+}
+
+export function mapDbExpenseToApp(db: any): Expense {
+  return {
+    id: db.id,
+    orgId: db.org_id,
+    supplierName: db.supplier_name,
+    supplierCpfCnpj: db.supplier_cpf_cnpj || '',
+    description: db.description,
+    categoryId: db.category_id,
+    categoryCode: db.category_code || '',
+    categoryName: db.category_name || '',
+    groupCode: db.group_code || '',
+    groupName: db.group_name || '',
+    subCategory: db.sub_category || '',
+    value: Number(db.value || 0),
+    competenceDate: db.competence_date,
+    dueDate: db.due_date,
+    paymentDate: db.payment_date || undefined,
+    paymentMethod: db.payment_method || undefined,
+    bankAccountId: db.bank_account_id || undefined,
+    documentNumber: db.document_number || '',
+    attachmentName: db.attachment_name || undefined,
+    attachment: db.attachment || null,
+    notes: db.notes || '',
+    entity: db.entity || 'CPF',
+    splitPercentageCpf: Number(db.split_percentage_cpf ?? 100),
+    splitPercentageCnpj: Number(db.split_percentage_cnpj ?? 0),
+    dedutivelLivroCaixaPf: db.dedutivel_livro_caixa_pf || 'SIM',
+    impactaFatorRPj: Boolean(db.impacta_fator_r_pj),
+    despesaOperacionalPj: Boolean(db.despesa_operacional_pj ?? true),
+    isOverridden: Boolean(db.is_overridden),
+    overrideJustification: db.override_justification || '',
+    status: db.status || 'A_PAGAR',
+    createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppExpenseToDb(app: Expense, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    org_id: app.orgId || `org_${tenantId}`,
+    supplier_name: app.supplierName,
+    supplier_cpf_cnpj: app.supplierCpfCnpj || '',
+    description: app.description,
+    category_id: app.categoryId,
+    category_code: app.categoryCode || '',
+    category_name: app.categoryName || '',
+    group_code: app.groupCode || '',
+    group_name: app.groupName || '',
+    sub_category: app.subCategory || '',
+    value: Number(app.value || 0),
+    competence_date: app.competenceDate,
+    due_date: app.dueDate,
+    payment_date: app.paymentDate || null,
+    payment_method: app.paymentMethod || null,
+    bank_account_id: app.bankAccountId || null,
+    document_number: app.documentNumber || '',
+    attachment_name: app.attachmentName || null,
+    attachment: app.attachment || null,
+    notes: app.notes || '',
+    entity: app.entity || 'CPF',
+    split_percentage_cpf: Number(app.splitPercentageCpf ?? 100),
+    split_percentage_cnpj: Number(app.splitPercentageCnpj ?? 0),
+    dedutivel_livro_caixa_pf: app.dedutivelLivroCaixaPf || 'SIM',
+    impacta_fator_r_pj: Boolean(app.impactaFatorRPj),
+    despesa_operacional_pj: Boolean(app.despesaOperacionalPj ?? true),
+    isOverridden: Boolean(app.isOverridden),
+    override_justification: app.overrideJustification || null,
+    status: app.status || 'A_PAGAR',
+    created_at: app.createdAt || new Date().toISOString(),
+  };
+}
+
+export function mapDbProcedureToApp(db: any): DentalProcedure {
+  return {
+    id: db.id,
+    code: db.code || '',
+    name: db.name,
+    category: db.category,
+    description: db.description || '',
+    clinicalDurationMinutes: Number(db.clinical_duration_minutes || 30),
+    professionalHourlyRate: Number(db.professional_hourly_rate || 150),
+    professionalCost: Number(db.professional_cost || 75),
+    costProfessionalTime: Number(db.cost_professional_time || 75),
+    inputs: Array.isArray(db.inputs) ? db.inputs : [],
+    inputsCost: Number(db.inputs_cost || 0),
+    costInputsTotal: Number(db.cost_inputs_total || 0),
+    labCost: Number(db.lab_cost || 0),
+    otherCosts: Number(db.other_costs || 0),
+    otherDirectCosts: Number(db.other_direct_costs || 0),
+    totalCost: Number(db.total_cost || 75),
+    totalDirectCost: Number(db.total_direct_cost || 75),
+    targetMarginPercent: Number(db.target_margin_percent || 50),
+    suggestedMarginPercent: Number(db.suggested_margin_percent || 50),
+    estimatedTaxesPercent: Number(db.estimated_taxes_percent || 6),
+    suggestedPrice: Number(db.suggested_price || 150),
+    defaultPrice: Number(db.default_price || 150),
+    active: db.active !== false,
+    notes: db.notes || '',
+  };
+}
+
+export function mapAppProcedureToDb(app: DentalProcedure, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    code: app.code || '',
+    name: app.name,
+    category: app.category,
+    description: app.description || '',
+    clinical_duration_minutes: Number(app.clinicalDurationMinutes || 30),
+    professional_hourly_rate: Number(app.professionalHourlyRate || 150),
+    professional_cost: Number(app.professionalCost || 75),
+    cost_professional_time: Number(app.costProfessionalTime || 75),
+    inputs: app.inputs || [],
+    inputs_cost: Number(app.inputsCost || 0),
+    cost_inputs_total: Number(app.costInputsTotal || 0),
+    lab_cost: Number(app.labCost || 0),
+    other_costs: Number(app.otherCosts || 0),
+    other_direct_costs: Number(app.otherDirectCosts || 0),
+    total_cost: Number(app.totalCost || 75),
+    total_direct_cost: Number(app.totalDirectCost || 75),
+    target_margin_percent: Number(app.targetMarginPercent || 50),
+    suggested_margin_percent: Number(app.suggestedMarginPercent || 50),
+    estimated_taxes_percent: Number(app.estimatedTaxesPercent || 6),
+    suggested_price: Number(app.suggestedPrice || 150),
+    default_price: Number(app.defaultPrice || 150),
+    active: app.active !== false,
+    notes: app.notes || '',
+  };
+}
+
+export function mapDbClinicalInputToApp(db: any): ClinicalInput {
+  return {
+    id: db.id,
+    name: db.name,
+    brand: db.brand || '',
+    category: db.category,
+    purchasePackageName: db.purchase_package_name,
+    packageQuantity: Number(db.package_quantity || 1),
+    purchasePrice: Number(db.purchase_price || 0),
+    purchaseUnitType: db.purchase_unit_type || 'un',
+    usageUnit: db.usage_unit,
+    unitCost: Number(db.unit_cost || 0),
+    active: db.active !== false,
+    notes: db.notes || '',
+    createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppClinicalInputToDb(app: ClinicalInput, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    name: app.name,
+    brand: app.brand || '',
+    category: app.category,
+    purchase_package_name: app.purchasePackageName,
+    package_quantity: Number(app.packageQuantity || 1),
+    purchase_price: Number(app.purchasePrice || 0),
+    purchase_unit_type: app.purchaseUnitType || 'un',
+    usage_unit: app.usageUnit,
+    unit_cost: Number(app.unitCost || 0),
+    active: app.active !== false,
+    notes: app.notes || '',
+    created_at: app.createdAt || new Date().toISOString(),
+  };
+}
+
+export function mapDbAppointmentToApp(db: any): Appointment {
+  return {
+    id: db.id,
+    orgId: db.org_id,
+    patientId: db.patient_id,
+    patientName: db.patient_name,
+    patientPhone: db.patient_phone || '',
+    patientCpf: db.patient_cpf || '',
+    date: db.date,
+    startTime: db.start_time,
+    durationMinutes: Number(db.duration_minutes || 30),
+    endTime: db.end_time,
+    dentistName: db.dentist_name,
+    professionalId: db.professional_id || undefined,
+    professionalName: db.professional_name || undefined,
+    procedureName: db.procedure_name,
+    procedureId: db.procedure_id || undefined,
+    status: db.status || 'AGENDADA',
+    notes: db.notes || '',
+    sendWhatsappReminder: db.send_whatsapp_reminder !== false,
+    origin: db.origin || 'RECEPCAO',
+    saleId: db.sale_id || undefined,
+    createdAt: db.created_at || new Date().toISOString(),
+    updatedAt: db.updated_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppAppointmentToDb(app: Appointment, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    org_id: app.orgId || `org_${tenantId}`,
+    patient_id: app.patientId,
+    patient_name: app.patientName,
+    patient_phone: app.patientPhone || '',
+    patient_cpf: app.patientCpf || '',
+    date: app.date,
+    start_time: app.startTime,
+    duration_minutes: Number(app.durationMinutes || 30),
+    end_time: app.endTime,
+    dentist_name: app.dentistName,
+    professional_id: app.professionalId || null,
+    professional_name: app.professionalName || null,
+    procedure_name: app.procedureName,
+    procedure_id: app.procedureId || null,
+    status: app.status || 'AGENDADA',
+    notes: app.notes || '',
+    send_whatsapp_reminder: app.sendWhatsappReminder !== false,
+    origin: app.origin || 'RECEPCAO',
+    sale_id: app.saleId || null,
+    created_at: app.createdAt || new Date().toISOString(),
+    updated_at: app.updatedAt || new Date().toISOString(),
+  };
+}
+
+export function mapDbBankAccountToApp(db: any): BankAccount {
+  return {
+    id: db.id,
+    orgId: db.org_id,
+    name: db.name,
+    bankName: db.bank_name,
+    accountType: db.account_type,
+    initialBalance: Number(db.initial_balance || 0),
+    currentBalance: Number(db.current_balance || 0),
+    isActive: db.is_active !== false,
+  };
+}
+
+export function mapAppBankAccountToDb(app: BankAccount, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    org_id: app.orgId || `org_${tenantId}`,
+    name: app.name,
+    bank_name: app.bankName,
+    account_type: app.accountType,
+    initial_balance: Number(app.initialBalance || 0),
+    current_balance: Number(app.currentBalance || 0),
+    is_active: app.isActive !== false,
+  };
+}
+
+export function mapDbPreferencesToApp(db: any): SystemPreferences {
+  return {
+    hideCpf: Boolean(db.hide_cpf),
+    alertFatorR: db.alert_fator_r !== false,
+    alertDueDates: db.alert_due_dates !== false,
+    operationalReminders: db.operational_reminders !== false,
+  };
+}
+
+export function mapAppPreferencesToDb(app: SystemPreferences, tenantId: string): any {
+  return {
+    tenant_id: tenantId,
+    hide_cpf: Boolean(app.hideCpf),
+    alert_fator_r: app.alertFatorR !== false,
+    alert_due_dates: app.alertDueDates !== false,
+    operational_reminders: app.operationalReminders !== false,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function mapDbAuditLogToApp(db: any): AuditLog {
+  return {
+    id: db.id,
+    timestamp: db.timestamp || new Date().toISOString(),
+    userId: db.user_id,
+    userName: db.user_name,
+    action: db.action,
+    entityType: db.entity_type,
+    entityId: db.entity_id,
+    details: db.details,
+  };
+}
+
+export function mapAppAuditLogToDb(app: AuditLog, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    timestamp: app.timestamp || new Date().toISOString(),
+    user_id: app.userId,
+    user_name: app.userName,
+    action: app.action,
+    entity_type: app.entityType,
+    entity_id: app.entityId,
+    details: app.details,
+  };
+}
+
+// -------------------------------------------------------------
+// Supabase Data Access Service
+// -------------------------------------------------------------
+
+export const SupabaseService = {
+  // Clinicas e Usuários Globais
+  async getAllClinics(): Promise<ClinicTenant[]> {
+    const { data, error } = await supabaseFetch<any[]>('df_tenants?select=*');
+    if (error || !data) return [];
+    return data.map(mapDbTenantToApp);
+  },
+
+  async getAllUsers(): Promise<StoredUserAccount[]> {
+    const { data, error } = await supabaseFetch<any[]>('df_users?select=*');
+    if (error || !data) return [];
+    return data.map(mapDbUserToApp);
+  },
+
+  async saveClinic(clinic: ClinicTenant): Promise<{ success: boolean; error?: string }> {
+    const payload = mapAppTenantToDb(clinic);
+    const { error } = await supabaseFetch('df_tenants?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async saveUser(user: StoredUserAccount): Promise<{ success: boolean; error?: string }> {
+    const payload = mapAppUserToDb(user);
+    const { error } = await supabaseFetch('df_users?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async fetchProfessional(tenantId: string): Promise<Professional | null> {
+    const { data } = await supabaseFetch<any[]>(`df_professionals?tenant_id=eq.${tenantId}&select=*`);
+    if (!data || data.length === 0) return null;
+    return mapDbProfessionalToApp(data[0], tenantId);
+  },
+
+  async fetchPayrollHistory(tenantId: string): Promise<PayrollHistoryEntry[]> {
+    const { data } = await supabaseFetch<any[]>(`df_payroll_history?tenant_id=eq.${tenantId}&order=month.asc&select=*`);
+    if (!data) return [];
+    return data.map(mapDbPayrollToApp);
+  },
+
+  // Dados do Tenant Específico (Clínica)
+  async getTenantData(tenantId: string): Promise<{
+    professional: Professional | null;
+    payrollHistory: PayrollHistoryEntry[];
+    patients: Patient[];
+    sales: Sale[];
+    expenses: Expense[];
+    procedures: DentalProcedure[];
+    clinicalInputs: ClinicalInput[];
+    bankAccounts: BankAccount[];
+    appointments: Appointment[];
+    preferences: SystemPreferences | null;
+    auditLogs: AuditLog[];
+    error: string | null;
+  }> {
+    const [
+      profRes,
+      payrollRes,
+      patientsRes,
+      salesRes,
+      expensesRes,
+      proceduresRes,
+      inputsRes,
+      banksRes,
+      apptsRes,
+      prefsRes,
+      logsRes,
+    ] = await Promise.all([
+      supabaseFetch<any[]>(`df_professionals?tenant_id=eq.${tenantId}&select=*`),
+      supabaseFetch<any[]>(`df_payroll_history?tenant_id=eq.${tenantId}&order=month.asc&select=*`),
+      supabaseFetch<any[]>(`df_patients?tenant_id=eq.${tenantId}&order=created_at.desc&select=*`),
+      supabaseFetch<any[]>(`df_sales?tenant_id=eq.${tenantId}&order=service_date.desc&select=*`),
+      supabaseFetch<any[]>(`df_expenses?tenant_id=eq.${tenantId}&order=competence_date.desc&select=*`),
+      supabaseFetch<any[]>(`df_procedures?tenant_id=eq.${tenantId}&order=name.asc&select=*`),
+      supabaseFetch<any[]>(`df_clinical_inputs?tenant_id=eq.${tenantId}&order=name.asc&select=*`),
+      supabaseFetch<any[]>(`df_bank_accounts?tenant_id=eq.${tenantId}&select=*`),
+      supabaseFetch<any[]>(`df_appointments?tenant_id=eq.${tenantId}&order=date.asc&select=*`),
+      supabaseFetch<any[]>(`df_system_preferences?tenant_id=eq.${tenantId}&select=*`),
+      supabaseFetch<any[]>(`df_audit_logs?tenant_id=eq.${tenantId}&order=timestamp.desc&limit=50&select=*`),
+    ]);
+
+    const error =
+      profRes.error ||
+      payrollRes.error ||
+      patientsRes.error ||
+      salesRes.error ||
+      expensesRes.error ||
+      proceduresRes.error ||
+      inputsRes.error;
+
+    return {
+      professional: profRes.data && profRes.data.length > 0 ? mapDbProfessionalToApp(profRes.data[0], tenantId) : null,
+      payrollHistory: (payrollRes.data || []).map(mapDbPayrollToApp),
+      patients: (patientsRes.data || []).map(mapDbPatientToApp),
+      sales: (salesRes.data || []).map(mapDbSaleToApp),
+      expenses: (expensesRes.data || []).map(mapDbExpenseToApp),
+      procedures: (proceduresRes.data || []).map(mapDbProcedureToApp),
+      clinicalInputs: (inputsRes.data || []).map(mapDbClinicalInputToApp),
+      bankAccounts: (banksRes.data || []).map(mapDbBankAccountToApp),
+      appointments: (apptsRes.data || []).map(mapDbAppointmentToApp),
+      preferences: prefsRes.data && prefsRes.data.length > 0 ? mapDbPreferencesToApp(prefsRes.data[0]) : null,
+      auditLogs: (logsRes.data || []).map(mapDbAuditLogToApp),
+      error,
+    };
+  },
+
+  // Garantia Atômica de Existência do Tenant Pai (evita 23503 / 409 Conflict)
+  async ensureTenantExists(
+    tenantId: string,
+    fallback?: Partial<ClinicTenant>
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!tenantId) return { success: false, error: 'tenant_id é obrigatório' };
+
+    const payload: any = {
+      id: tenantId,
+      name: fallback?.name || fallback?.tradeName || 'Clínica Odontológica',
+      trade_name: fallback?.tradeName || fallback?.name || 'Clínica Odontológica',
+      cnpj: fallback?.cnpj || '',
+      cpf_cnpj: fallback?.cpfCnpj || fallback?.cnpj || '',
+      cro: fallback?.cro || '',
+      cro_uf: fallback?.croUf || fallback?.uf || 'SP',
+      email: fallback?.email || '',
+      phone: fallback?.phone || '',
+      city: fallback?.city || 'São Paulo - SP',
+      uf: fallback?.uf || 'SP',
+      is_demo: fallback?.isDemo ?? (tenantId === 'tenant_demo'),
+      is_active: fallback?.isActive ?? true,
+      created_at: fallback?.createdAt || new Date().toISOString(),
+    };
+
+    const { error } = await supabaseFetch('df_tenants?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+
+    if (error) {
+      console.warn(`[SupabaseService] Aviso ao assegurar tenant ${tenantId}:`, error);
+      return { success: false, error };
+    }
+    return { success: true };
+  },
+
+  // Gravações no PostgreSQL por Tenant com Proteção de FK
+  async saveProfessional(prof: Professional, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId, {
+      name: prof.razaoSocial || prof.name || 'Clínica Dental Finance',
+      tradeName: prof.nomeFantasia || prof.razaoSocial || prof.name || 'Clínica Odontológica',
+      cnpj: prof.cnpj || '',
+      cro: prof.cro || '',
+      croUf: prof.croUf || prof.uf || 'SP',
+      uf: prof.uf || 'SP',
+      email: prof.email || '',
+      phone: prof.phone || '',
+      city: prof.municipio || 'São Paulo - SP',
+      isDemo: tenantId === 'tenant_demo',
+    });
+
+    const payload = mapAppProfessionalToDb(prof, tenantId);
+    const { error } = await supabaseFetch('df_professionals?on_conflict=tenant_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async savePayrollEntry(entry: PayrollHistoryEntry, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppPayrollToDb(entry, tenantId);
+    const { error } = await supabaseFetch('df_payroll_history?on_conflict=tenant_id,month', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async savePatient(patient: Patient, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppPatientToDb(patient, tenantId);
+    const { error } = await supabaseFetch('df_patients?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deletePatient(patientId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_patients?id=eq.${patientId}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async saveSale(sale: Sale, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppSaleToDb(sale, tenantId);
+    const { error } = await supabaseFetch('df_sales?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteSale(saleId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_sales?id=eq.${saleId}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async saveExpense(expense: Expense, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppExpenseToDb(expense, tenantId);
+    const { error } = await supabaseFetch('df_expenses?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteExpense(expenseId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_expenses?id=eq.${expenseId}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async saveProcedure(proc: DentalProcedure, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppProcedureToDb(proc, tenantId);
+    const { error } = await supabaseFetch('df_procedures?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteProcedure(procId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_procedures?id=eq.${procId}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async saveClinicalInput(input: ClinicalInput, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppClinicalInputToDb(input, tenantId);
+    const { error } = await supabaseFetch('df_clinical_inputs?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteClinicalInput(inputId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_clinical_inputs?id=eq.${inputId}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async saveAppointment(appt: Appointment, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppAppointmentToDb(appt, tenantId);
+    const { error } = await supabaseFetch('df_appointments?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteAppointment(apptId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_appointments?id=eq.${apptId}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async savePreferences(prefs: SystemPreferences, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppPreferencesToDb(prefs, tenantId);
+    const { error } = await supabaseFetch('df_system_preferences?on_conflict=tenant_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async logAudit(log: AuditLog, tenantId: string): Promise<{ success: boolean }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppAuditLogToDb(log, tenantId);
+    const { error } = await supabaseFetch('df_audit_logs', {
+      method: 'POST',
+      body: payload,
+    });
+    return { success: !error };
+  },
+};
+
+export const supabaseClient = SupabaseService;
+export default SupabaseService;
+

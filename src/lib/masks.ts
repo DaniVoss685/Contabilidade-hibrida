@@ -1,7 +1,7 @@
 // Masking and Formatting utilities for Brazilian Dental Finance
 
 export function formatCurrency(value: number | undefined | null): string {
-  if (value === undefined || value === null || isNaN(value)) {
+  if (value === undefined || value === null || isNaN(value) || !isFinite(value)) {
     return 'R$ 0,00';
   }
   return new Intl.NumberFormat('pt-BR', {
@@ -12,11 +12,11 @@ export function formatCurrency(value: number | undefined | null): string {
   }).format(value);
 }
 
-export function formatPercent(value: number | undefined | null, decimals = 2): string {
-  if (value === undefined || value === null || isNaN(value)) {
-    return '0,00%';
+export function formatPercent(value: number | undefined | null, decimals = 1, fallback = '—'): string {
+  if (value === undefined || value === null || isNaN(value) || !isFinite(value)) {
+    return fallback;
   }
-  return `${(value * 100).toFixed(decimals).replace('.', ',')}%`;
+  return `${value.toFixed(decimals).replace('.', ',')}%`;
 }
 
 export function formatCpf(cpf: string, masked = false): string {
@@ -37,6 +37,18 @@ export function formatCnpj(cnpj: string): string {
   return `${clean.slice(0, 2)}.${clean.slice(2, 5)}.${clean.slice(5, 8)}/${clean.slice(8, 12)}-${clean.slice(12, 14)}`;
 }
 
+export function formatPhone(phone: string | undefined | null): string {
+  if (!phone) return '';
+  const clean = phone.replace(/\D/g, '');
+  if (clean.length === 11) {
+    return `(${clean.slice(0, 2)}) ${clean.slice(2, 7)}-${clean.slice(7)}`;
+  }
+  if (clean.length === 10) {
+    return `(${clean.slice(0, 2)}) ${clean.slice(2, 6)}-${clean.slice(6)}`;
+  }
+  return phone;
+}
+
 export function formatCpfOrCnpj(doc: string, masked = false): string {
   const clean = (doc || '').replace(/\D/g, '');
   if (clean.length === 11) return formatCpf(clean, masked);
@@ -44,8 +56,12 @@ export function formatCpfOrCnpj(doc: string, masked = false): string {
   return doc || '';
 }
 
+export function cleanCpfCnpj(value: string = ''): string {
+  return (value || '').replace(/\D/g, '');
+}
+
 export function formatDateBr(dateStr: string | undefined | null): string {
-  if (!dateStr) return '-';
+  if (!dateStr) return '—';
   // Handles YYYY-MM-DD or ISO string
   const clean = dateStr.split('T')[0];
   const parts = clean.split('-');
@@ -55,21 +71,189 @@ export function formatDateBr(dateStr: string | undefined | null): string {
   return dateStr;
 }
 
+/**
+ * Converte data ISO ou YYYY-MM-DD em formato brasileiro DD/MM/AAAA.
+ * Nunca retorna formato ISO ao usuário final.
+ */
+export function formatDate(dateStr: string | undefined | null): string {
+  if (!dateStr) return '—';
+  const clean = dateStr.split('T')[0].trim();
+  const parts = clean.split('-');
+  if (parts.length === 3) {
+    const [year, month, day] = parts;
+    if (year.length === 4) {
+      return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`;
+    }
+  }
+  return formatDateBr(dateStr);
+}
+
 export function formatMonthYearBr(monthStr: string): string {
-  // input: "2025-05" -> "Maio / 2025"
+  // input: "2025-05" -> "Maio de 2025"
+  return formatMonthYear(monthStr);
+}
+
+/**
+ * Converte competência YYYY-MM em formato extenso (ex: "Setembro de 2026").
+ * Utilizado em títulos, cabeçalhos, seletores e cards executivos.
+ */
+export function formatMonthYear(monthStr: string | undefined | null): string {
   if (!monthStr) return '';
-  const [year, month] = monthStr.split('-');
+  const clean = monthStr.trim();
+  const parts = clean.split('-');
+  if (parts.length < 2) return clean;
+  const [year, month] = parts;
   const monthNames = [
     'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
     'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
   ];
   const idx = parseInt(month, 10) - 1;
-  return `${monthNames[idx] || month} de ${year}`;
+  const name = monthNames[idx] || month;
+  return `${name} de ${year}`;
+}
+
+/**
+ * Converte competência YYYY-MM em formato compacto MM/AAAA com dois dígitos (ex: "09/2026").
+ * Utilizado na janela móvel de 12 meses e em tabelas compactas.
+ * NUNCA exibe "2026-09" ou "9-2026".
+ */
+export function formatMonthYearShort(monthStr: string | undefined | null): string {
+  if (!monthStr) return '';
+  const clean = monthStr.trim();
+  const parts = clean.split('-');
+  if (parts.length < 2) return clean;
+  const [year, month] = parts;
+  const paddedMonth = month.padStart(2, '0');
+  return `${paddedMonth}/${year}`;
 }
 
 export function parseBrlInput(str: string): number {
   if (!str) return 0;
   const clean = str.replace(/[R$\s.]/g, '').replace(',', '.');
   const num = parseFloat(clean);
-  return isNaN(num) ? 0 : num;
+  return isNaN(num) || !isFinite(num) ? 0 : num;
 }
+
+export function normalizeSearchText(text: string | undefined | null): string {
+  if (!text) return '';
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+export function matchDocumentSearch(doc: string | undefined | null, searchInput: string): boolean {
+  if (!doc) return false;
+  const cleanSearchDigits = searchInput.replace(/\D/g, '');
+  if (cleanSearchDigits.length < 3) return false;
+  const cleanDoc = doc.replace(/\D/g, '');
+  return cleanDoc.includes(cleanSearchDigits);
+}
+
+export function matchSearch(query: string, ...targets: (string | undefined | null)[]): boolean {
+  const normQuery = normalizeSearchText(query);
+  if (!normQuery) return true;
+  return targets.some((target) => normalizeSearchText(target).includes(normQuery));
+}
+
+/**
+ * Validação algorítmica canônica de CPF (Receita Federal do Brasil)
+ * Rejeita tamanhos inválidos, sequências de dígitos iguais e valida os dois dígitos verificadores.
+ */
+export function isValidCpf(cpf: string | undefined | null): boolean {
+  if (!cpf) return false;
+  const clean = cpf.replace(/\D/g, '');
+  if (clean.length !== 11) return false;
+
+  // Rejeita sequências de dígitos idênticos conhecidas (000... a 999...)
+  if (/^(\d)\1{10}$/.test(clean)) return false;
+
+  // Primeiro dígito verificador
+  let sum1 = 0;
+  for (let i = 0; i < 9; i++) {
+    sum1 += parseInt(clean.charAt(i), 10) * (10 - i);
+  }
+  let rem1 = (sum1 * 10) % 11;
+  if (rem1 === 10 || rem1 === 11) rem1 = 0;
+  if (rem1 !== parseInt(clean.charAt(9), 10)) return false;
+
+  // Segundo dígito verificador
+  let sum2 = 0;
+  for (let i = 0; i < 10; i++) {
+    sum2 += parseInt(clean.charAt(i), 10) * (11 - i);
+  }
+  let rem2 = (sum2 * 10) % 11;
+  if (rem2 === 10 || rem2 === 11) rem2 = 0;
+  if (rem2 !== parseInt(clean.charAt(10), 10)) return false;
+
+  return true;
+}
+
+/**
+ * Validação simplificada e segura de e-mail
+ */
+export function isValidEmail(email: string | undefined | null): boolean {
+  if (!email || !email.trim()) return true; // se opcional e vazio, é considerado válido
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+/**
+ * Validação algorítmica de CNPJ (Receita Federal do Brasil)
+ */
+export function isValidCnpj(cnpj: string | undefined | null): boolean {
+  if (!cnpj) return false;
+  const clean = cnpj.replace(/\D/g, '');
+  if (clean.length !== 14) return false;
+
+  // Rejeita sequências de dígitos idênticos conhecidas
+  if (/^(\d)\1{13}$/.test(clean)) return false;
+
+  // Primeiro dígito verificador
+  const weights1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  let sum1 = 0;
+  for (let i = 0; i < 12; i++) {
+    sum1 += parseInt(clean.charAt(i), 10) * weights1[i];
+  }
+  let rem1 = sum1 % 11;
+  const digit1 = rem1 < 2 ? 0 : 11 - rem1;
+  if (digit1 !== parseInt(clean.charAt(12), 10)) return false;
+
+  // Segundo dígito verificador
+  const weights2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  let sum2 = 0;
+  for (let i = 0; i < 13; i++) {
+    sum2 += parseInt(clean.charAt(i), 10) * weights2[i];
+  }
+  let rem2 = sum2 % 11;
+  const digit2 = rem2 < 2 ? 0 : 11 - rem2;
+  if (digit2 !== parseInt(clean.charAt(13), 10)) return false;
+
+  return true;
+}
+
+/**
+ * Máscara dinâmica durante a digitação de CPF (###.###.###-##)
+ */
+export function maskCpfInput(value: string): string {
+  if (!value) return '';
+  const digits = value.replace(/\D/g, '').slice(0, 11);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
+  if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9, 11)}`;
+}
+
+/**
+ * Máscara dinâmica durante a digitação de CNPJ (##.###.###/####-##)
+ */
+export function maskCnpjInput(value: string): string {
+  if (!value) return '';
+  const digits = value.replace(/\D/g, '').slice(0, 14);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 5) return `${digits.slice(0, 2)}.${digits.slice(2)}`;
+  if (digits.length <= 8) return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5)}`;
+  if (digits.length <= 12) return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8)}`;
+  return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12, 14)}`;
+}
+

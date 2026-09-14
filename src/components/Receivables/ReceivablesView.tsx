@@ -17,13 +17,15 @@ import {
   CheckCircle2,
   X,
   CreditCard,
+  RotateCcw,
 } from 'lucide-react';
 import { AccountReceivableItem, TaxOrigin, PaymentMethod, InstallmentStatus, Sale } from '../../types';
-import { formatCurrency, formatDateBr } from '../../lib/masks';
+import { formatCurrency, formatDateBr, normalizeSearchText } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { EditReceivableModal } from '../Modals/EditReceivableModal';
 import { NewSaleModal } from '../Modals/NewSaleModal';
+import { CustomSelect, DatePicker, ConfirmDialog, useToast } from '../UI';
 
 const MONTH_NAMES = [
   '',
@@ -56,6 +58,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
   selectedMonth,
   onResetPeriod,
 }) => {
+  const toast = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [taxOriginFilter, setTaxOriginFilter] = useState<'ALL' | TaxOrigin>('ALL');
@@ -78,40 +81,47 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
   const [batchPaymentMethod, setBatchPaymentMethod] = useState<PaymentMethod>('PIX');
   const [batchBankAccountId, setBatchBankAccountId] = useState<string>('bank_01');
 
+  // Confirm dialog state
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    variant?: 'danger' | 'warning' | 'primary';
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
+
   const bankAccounts = db.getBankAccounts();
 
   const filteredItems = useMemo(() => {
+    const trimmed = searchTerm.trim();
+    const normQuery = normalizeSearchText(trimmed);
+
     return items.filter((item) => {
-      const matchesSearch =
-        item.patientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.procedureName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.documentSummary.toLowerCase().includes(searchTerm.toLowerCase());
+      let matchesSearch = true;
+      if (trimmed) {
+        matchesSearch =
+          normalizeSearchText(item.patientName).includes(normQuery) ||
+          normalizeSearchText(item.procedureName).includes(normQuery) ||
+          normalizeSearchText(item.documentSummary).includes(normQuery);
+      }
 
       const matchesOrigin =
         taxOriginFilter === 'ALL' || item.taxOrigin === taxOriginFilter;
 
-      let matchesStatus = true;
-      if (statusFilter !== 'ALL') {
-        matchesStatus = item.status === statusFilter;
-      }
+      const matchesStatus =
+        statusFilter === 'ALL' || item.status === statusFilter;
 
       return matchesSearch && matchesOrigin && matchesStatus;
     });
-  }, [items, searchTerm, statusFilter, taxOriginFilter]);
+  }, [items, searchTerm, taxOriginFilter, statusFilter]);
 
-  // Bulk handlers
-  const handleToggleSelect = (installmentId: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(installmentId)) {
-        next.delete(installmentId);
-      } else {
-        next.add(installmentId);
-      }
-      return next;
-    });
-  };
-
+  // Bulk Selection Handlers
   const handleSelectAll = () => {
     if (selectedIds.size === filteredItems.length && filteredItems.length > 0) {
       setSelectedIds(new Set());
@@ -120,32 +130,52 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     }
   };
 
+  const handleToggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
   const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
     const count = selectedIds.size;
-    if (
-      confirm(
-        `ATENÇÃO: Deseja realmente excluir permanentemente as ${count} parcelas de contas a receber selecionadas?`
-      )
-    ) {
-      db.batchDeleteReceivables(Array.from(selectedIds));
-      setSelectedIds(new Set());
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Parcelas em Lote',
+      message: `Tem certeza que deseja excluir ${count} parcela(s) selecionada(s)? Esta ação cancelará os lançamentos correspondentes.`,
+      confirmLabel: 'Excluir Parcelas',
+      variant: 'danger',
+      onConfirm: () => {
+        const deleted = db.batchDeleteReceivables(Array.from(selectedIds));
+        setSelectedIds(new Set());
+        toast.success(`${deleted} parcela(s) excluída(s) com sucesso.`);
+      },
+    });
   };
 
   const handleDeleteSingle = (installmentId: string, patientName: string, procName: string) => {
-    if (
-      confirm(
-        `Deseja realmente excluir esta parcela a receber de "${patientName}" (${procName})?`
-      )
-    ) {
-      db.deleteReceivableInstallment(installmentId);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(installmentId);
-        return next;
-      });
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Excluir Parcela',
+      message: `Deseja realmente excluir esta parcela a receber de "${patientName}" (${procName})?`,
+      confirmLabel: 'Excluir',
+      variant: 'danger',
+      onConfirm: () => {
+        db.deleteReceivableInstallment(installmentId);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(installmentId);
+          return next;
+        });
+        toast.success('Parcela excluída com sucesso.');
+      },
+    });
   };
 
   const handleOpenBatchEdit = (type: 'EDIT_FIELDS' | 'SETTLE_ALL') => {
@@ -164,6 +194,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
         paymentMethod: batchPaymentMethod,
         bankAccountId: batchBankAccountId,
       });
+      toast.success('Parcelas liquidadas com sucesso.');
     } else {
       const updates: any = {};
       if (batchDueDate) updates.dueDate = batchDueDate;
@@ -171,6 +202,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
 
       if (Object.keys(updates).length > 0) {
         db.batchUpdateReceivables(Array.from(selectedIds), updates);
+        toast.success('Parcelas atualizadas com sucesso.');
       }
     }
 
@@ -178,20 +210,29 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     setSelectedIds(new Set());
   };
 
-  // Totals
-  const totalToReceive = items
+  const handleUnsettle = (saleId: string, installmentId: string, patientName: string) => {
+    db.unsettleInstallment(saleId, installmentId);
+    toast.success(`Recebimento da parcela de ${patientName} desfeito com sucesso.`);
+  };
+
+  // Totals scoped by taxOriginFilter
+  const originScopedItems = useMemo(() => {
+    return items.filter((i) => taxOriginFilter === 'ALL' || i.taxOrigin === taxOriginFilter);
+  }, [items, taxOriginFilter]);
+
+  const totalToReceive = originScopedItems
     .filter((i) => i.status === 'A_VENCER')
     .reduce((sum, i) => sum + i.balance, 0);
 
-  const totalOverdue = items
+  const totalOverdue = originScopedItems
     .filter((i) => i.status === 'VENCIDO')
     .reduce((sum, i) => sum + i.balance, 0);
 
-  const totalReceived = items
+  const totalReceived = originScopedItems
     .filter((i) => i.status === 'RECEBIDO' || i.amountReceived > 0)
     .reduce((sum, i) => sum + i.amountReceived, 0);
 
-  const pendingReceitaSaudeItems = items.filter(
+  const pendingReceitaSaudeItems = originScopedItems.filter(
     (i) => i.taxOrigin === 'CPF' && i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO'
   );
 
@@ -353,7 +394,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
               taxOriginFilter === 'CPF' ? 'bg-emerald-600 text-white shadow-xs' : 'text-emerald-800'
             }`}
           >
-            CPF
+            Pessoa Física (CPF)
           </button>
           <button
             onClick={() => setTaxOriginFilter('CNPJ')}
@@ -361,21 +402,23 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
               taxOriginFilter === 'CNPJ' ? 'bg-blue-600 text-white shadow-xs' : 'text-blue-800'
             }`}
           >
-            CNPJ
+            Pessoa Jurídica (CNPJ)
           </button>
         </div>
 
         {/* Status Filter */}
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="text-xs font-medium rounded-lg border border-slate-300 p-2 bg-slate-50 focus:ring-2 focus:ring-teal-500 focus:outline-none cursor-pointer"
-        >
-          <option value="ALL">Status: Todos</option>
-          <option value="A_VENCER">A Vencer</option>
-          <option value="VENCIDO">Vencidas</option>
-          <option value="RECEBIDO">Recebidas (Liquidadas)</option>
-        </select>
+        <div className="w-52">
+          <CustomSelect
+            value={statusFilter}
+            onChange={(val) => setStatusFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Status: Todos' },
+              { value: 'A_VENCER', label: 'A Vencer' },
+              { value: 'VENCIDO', label: 'Vencidas' },
+              { value: 'RECEBIDO', label: 'Recebidas (Liquidadas)' },
+            ]}
+          />
+        </div>
       </div>
 
       {/* Floating Bulk Action Bar */}
@@ -450,19 +493,20 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                   </button>
                 </th>
                 <th className="py-3 px-4">Vencimento</th>
+                <th className="py-3 px-4">Recebimento</th>
                 <th className="py-3 px-4">Origem</th>
                 <th className="py-3 px-4">Paciente</th>
                 <th className="py-3 px-4">Procedimento / Parcela</th>
                 <th className="py-3 px-4">Documento Vinculado</th>
                 <th className="py-3 px-4 text-right">Valor Parcela</th>
-                <th className="py-3 px-4 text-center">Status</th>
+                <th className="py-3 px-4 text-center min-w-[110px] whitespace-nowrap">Status</th>
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-400">
+                  <td colSpan={10} className="py-8 text-center text-slate-400">
                     Nenhuma parcela encontrada.
                   </td>
                 </tr>
@@ -502,8 +546,16 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                         </button>
                       </td>
 
-                      <td className="py-3.5 px-4 font-mono font-medium">
+                      <td className="py-3.5 px-4 font-mono font-medium text-slate-900">
                         {formatDateBr(item.dueDate)}
+                      </td>
+
+                      <td className="py-3.5 px-4 font-mono text-slate-600">
+                        {item.paymentDate ? (
+                          <span className="text-emerald-700 font-semibold">{formatDateBr(item.paymentDate)}</span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </td>
 
                       <td className="py-3.5 px-4">
@@ -546,9 +598,9 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                         {formatCurrency(item.value)}
                       </td>
 
-                      <td className="py-3.5 px-4 text-center">
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
                         <span
-                          className={`inline-block px-2.5 py-1 rounded-full font-bold text-[10px] ${
+                          className={`inline-flex items-center justify-center min-w-[85px] whitespace-nowrap px-2.5 py-1 rounded-full font-bold text-[10px] ${
                             isReceived
                               ? 'bg-emerald-100 text-emerald-800'
                               : isOverdue
@@ -570,9 +622,19 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                               Receber
                             </button>
                           ) : (
-                            <span className="text-[11px] text-emerald-700 font-semibold flex items-center justify-center gap-1">
-                              <CheckCircle className="w-3.5 h-3.5" /> Liquidada
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[11px] text-emerald-700 font-semibold flex items-center justify-center gap-1">
+                                <CheckCircle className="w-3.5 h-3.5" /> Liquidada
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleUnsettle(item.saleId, item.installmentId, item.patientName)}
+                                title="Desfazer recebimento da parcela (estorno)"
+                                className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           )}
 
                           {/* Edit single button */}
@@ -652,12 +714,9 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       Data do Recebimento
                     </label>
-                    <input
-                      type="date"
+                    <DatePicker
                       value={batchPaymentDate}
-                      onChange={(e) => setBatchPaymentDate(e.target.value)}
-                      className="w-full text-xs font-semibold rounded-lg border border-slate-300 p-2.5 bg-white"
-                      required
+                      onChange={setBatchPaymentDate}
                     />
                   </div>
 
@@ -665,35 +724,32 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       Forma de Pagamento
                     </label>
-                    <select
+                    <CustomSelect
                       value={batchPaymentMethod}
-                      onChange={(e) => setBatchPaymentMethod(e.target.value as PaymentMethod)}
-                      className="w-full text-xs font-semibold rounded-lg border border-slate-300 p-2.5 bg-white"
-                    >
-                      <option value="PIX">PIX (Instantâneo)</option>
-                      <option value="CARTAO_CREDITO">Cartão de Crédito</option>
-                      <option value="CARTAO_DEBITO">Cartão de Débito</option>
-                      <option value="DINHEIRO">Dinheiro em Espécie</option>
-                      <option value="TRANSFERENCIA">Transferência / TED</option>
-                      <option value="BOLETO">Boleto Bancário</option>
-                    </select>
+                      onChange={(val) => setBatchPaymentMethod(val as PaymentMethod)}
+                      options={[
+                        { value: 'PIX', label: 'PIX (Instantâneo)' },
+                        { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
+                        { value: 'CARTAO_DEBITO', label: 'Cartão de Débito' },
+                        { value: 'DINHEIRO', label: 'Dinheiro em Espécie' },
+                        { value: 'TRANSFERENCIA', label: 'Transferência / TED' },
+                        { value: 'BOLETO', label: 'Boleto Bancário' },
+                      ]}
+                    />
                   </div>
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       Conta Bancária de Destino
                     </label>
-                    <select
+                    <CustomSelect
                       value={batchBankAccountId}
-                      onChange={(e) => setBatchBankAccountId(e.target.value)}
-                      className="w-full text-xs font-semibold rounded-lg border border-slate-300 p-2.5 bg-white"
-                    >
-                      {bankAccounts.map((acc) => (
-                        <option key={acc.id} value={acc.id}>
-                          {acc.name} ({acc.accountType === 'CORRENTE_PF' ? 'PF' : 'PJ'})
-                        </option>
-                      ))}
-                    </select>
+                      onChange={setBatchBankAccountId}
+                      options={bankAccounts.map((acc) => ({
+                        value: acc.id,
+                        label: `${acc.name} (${acc.accountType === 'CORRENTE_PF' ? 'PF' : 'PJ'})`,
+                      }))}
+                    />
                   </div>
                 </>
               ) : (
@@ -706,11 +762,9 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       Nova Data de Vencimento (Opcional)
                     </label>
-                    <input
-                      type="date"
+                    <DatePicker
                       value={batchDueDate}
-                      onChange={(e) => setBatchDueDate(e.target.value)}
-                      className="w-full text-xs font-semibold rounded-lg border border-slate-300 p-2.5 bg-white"
+                      onChange={setBatchDueDate}
                     />
                     <p className="text-[10px] text-slate-500 mt-1">
                       Deixe em branco se não desejar alterar o vencimento.
@@ -721,15 +775,15 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       Alterar Origem Tributária (Opcional)
                     </label>
-                    <select
+                    <CustomSelect
                       value={batchTaxOrigin}
-                      onChange={(e) => setBatchTaxOrigin(e.target.value as TaxOrigin | '')}
-                      className="w-full text-xs font-semibold rounded-lg border border-slate-300 p-2.5 bg-white"
-                    >
-                      <option value="">Manter origem original</option>
-                      <option value="CPF">Pessoa Física (CPF / Carnê-Leão)</option>
-                      <option value="CNPJ">Pessoa Jurídica (CNPJ / Simples Nacional)</option>
-                    </select>
+                      onChange={(val) => setBatchTaxOrigin(val as TaxOrigin | '')}
+                      options={[
+                        { value: '', label: 'Manter origem original' },
+                        { value: 'CPF', label: 'Pessoa Física (CPF / Carnê-Leão)' },
+                        { value: 'CNPJ', label: 'Pessoa Jurídica (CNPJ / Simples Nacional)' },
+                      ]}
+                    />
                   </div>
                 </>
               )}
@@ -777,6 +831,17 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
           saleToEdit={saleToEdit}
         />
       )}
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        confirmLabel={confirmState.confirmLabel}
+        variant={confirmState.variant}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 };

@@ -7,8 +7,95 @@ import {
   Expense,
   Professional,
   PayrollHistoryEntry,
+  MonthlyFiscalHistoryEntry,
   SimplesAnnexRange,
 } from '../types';
+
+import {
+  getOfficialMinimumWage as getMinWageCentral,
+  getMinimumWageParameter,
+  checkUpcomingYearWageReview,
+  INITIAL_OFFICIAL_FISCAL_PARAMETERS,
+} from './fiscalParameters';
+
+export {
+  getMinimumWageParameter,
+  checkUpcomingYearWageReview,
+};
+
+// ==========================================
+// 0. OFFICIAL MINIMUM WAGE & ROLLING WINDOW
+// ==========================================
+
+export const OFFICIAL_MINIMUM_WAGE_BY_YEAR: Record<number, number> = {
+  2024: 1412.0,
+  2025: 1518.0,
+  2026: 1621.0,
+};
+
+export function getOfficialMinimumWage(yearOrDate: number | string = 2026): number {
+  return getMinWageCentral(yearOrDate);
+}
+
+/**
+ * Recalcula a janela dos últimos 12 meses (RBT12) incorporando a competência simulada.
+ * Substitui o mês homólogo que sai da janela pelo faturamento simulado.
+ */
+export function calculateRollingRbt12(
+  sales: Sale[],
+  simulatedYearMonth: string,
+  simulatedMonthlyRevenue: number,
+  initialRbt12Base = 0
+) {
+  const [yearStr, monthStr] = (simulatedYearMonth || '2025-05').split('-');
+  const simYear = parseInt(yearStr, 10) || 2025;
+  const simMonth = parseInt(monthStr, 10) || 5;
+
+  const windowMonths: string[] = [];
+  for (let i = 12; i >= 1; i--) {
+    let m = simMonth - i;
+    let y = simYear;
+    while (m <= 0) {
+      m += 12;
+      y -= 1;
+    }
+    windowMonths.push(`${y}-${String(m).padStart(2, '0')}`);
+  }
+
+  let systemRecorded12m = 0;
+  for (const s of sales) {
+    if (s.taxOrigin !== 'CNPJ') continue;
+    const saleYM = (s.serviceDate || '').substring(0, 7);
+    if (windowMonths.includes(saleYM)) {
+      systemRecorded12m += s.totalValue;
+    }
+  }
+
+  const oldestMonth = windowMonths[0];
+  let oldestMonthRevenue = 0;
+  for (const s of sales) {
+    if (s.taxOrigin !== 'CNPJ') continue;
+    if ((s.serviceDate || '').startsWith(oldestMonth)) {
+      oldestMonthRevenue += s.totalValue;
+    }
+  }
+
+  if (oldestMonthRevenue === 0 && initialRbt12Base > 0) {
+    oldestMonthRevenue = initialRbt12Base / 12;
+  }
+
+  const baseRbt12 = initialRbt12Base > 0 ? initialRbt12Base : systemRecorded12m;
+  const newRbt12 = Math.max(0, baseRbt12 - oldestMonthRevenue + simulatedMonthlyRevenue);
+
+  return {
+    baseRbt12,
+    systemRecorded12m,
+    oldestMonth,
+    replacedMonthRevenue: oldestMonthRevenue,
+    newRbt12,
+    windowMonths,
+  };
+}
 
 // ==========================================
 // 1. DEFAULT PARAMETRIZED TAX RULES BY YEAR
@@ -291,7 +378,7 @@ export function calculateMonthlyPjTax(
 
   // 2. RBT12 (Receita Bruta Acumulada dos últimos 12 meses anteriores ao período de apuração)
   // Base inicial de cadastro + soma de vendas CNPJ dos 12 meses anteriores
-  const rbt12 = professional.rbt12Inicial > 0 ? professional.rbt12Inicial : 240000;
+  const rbt12 = professional.rbt12Inicial || 0;
 
   // 3. FS12 (Folha de Salários Acumulada dos últimos 12 meses, incluindo encargos e pró-labore)
   let calculatedFs12 = 0;
@@ -300,7 +387,7 @@ export function calculateMonthlyPjTax(
     const last12 = payrollHistory.slice(-12);
     calculatedFs12 = last12.reduce((acc, curr) => acc + curr.totalPayroll, 0);
   }
-  const fs12 = calculatedFs12 > 0 ? calculatedFs12 : professional.folha12MesesInicial || 75000;
+  const fs12 = calculatedFs12 > 0 ? calculatedFs12 : (professional.folha12MesesInicial || 0);
 
   // 4. FATOR R = FS12 / RBT12
   const fatorR = rbt12 > 0 ? (fs12 / rbt12) : 0;
@@ -471,42 +558,27 @@ export function calculateCpfMonthlyTax(
   };
 }
 
-export function calculateSimplesNacionalMonthlyTax(
-  sales: Sale[],
-  yearMonth: string,
-  year: number,
-  customRules?: TaxRulesSimples,
-  payrollHistory?: PayrollHistoryEntry[],
-  rbt12Initial = 280000,
-  folha12MesesInicial = 84000
+export function calculateSimplesForParameters(
+  rbt12: number,
+  fs12: number,
+  monthlyRevenueNfse: number,
+  year = 2025,
+  customRules?: TaxRulesSimples
 ) {
   const rules =
     (customRules && (customRules.annexIII || customRules.anexoIII) ? customRules : null) ||
     DEFAULT_TAX_RULES_SIMPLES[year] ||
     DEFAULT_TAX_RULES_SIMPLES[2025];
 
-  // Monthly Revenue CNPJ
-  let monthlyRevenueNfse = 0;
-  for (const sale of sales) {
-    if (sale.taxOrigin !== 'CNPJ') continue;
-    if (sale.serviceDate.startsWith(yearMonth)) {
-      monthlyRevenueNfse += sale.totalValue;
-    }
-  }
-
-  // RBT12 & FS12
-  const rbt12 = rbt12Initial > 0 ? rbt12Initial : 280000;
-  let calculatedFs12 = 0;
-  if (payrollHistory && payrollHistory.length > 0) {
-    const last12 = payrollHistory.slice(-12);
-    calculatedFs12 = last12.reduce((acc, curr) => acc + curr.totalPayroll, 0);
-  }
-  const fs12 = calculatedFs12 > 0 ? calculatedFs12 : folha12MesesInicial || 84000;
+  const safeRbt12 = Math.max(0, rbt12);
+  const safeFs12 = Math.max(0, fs12);
+  const safeRevenue = Math.max(0, monthlyRevenueNfse);
 
   // Fator R = FS12 / RBT12
-  const fatorR = rbt12 > 0 ? fs12 / rbt12 : 0;
+  const fatorR = safeRbt12 > 0 ? safeFs12 / safeRbt12 : 0;
   const fatorRPercent = fatorR * 100;
-  const isAnexoIII = fatorR >= rules.fatorRThreshold;
+  const threshold = typeof rules.fatorRThreshold === 'number' ? rules.fatorRThreshold : 0.28;
+  const isAnexoIII = fatorR >= threshold;
   const effectiveAnnex: 'ANEXO_III' | 'ANEXO_V' = isAnexoIII ? 'ANEXO_III' : 'ANEXO_V';
   const rawRanges = isAnexoIII ? (rules.annexIII || rules.anexoIII) : (rules.annexV || rules.anexoV);
   const tableRanges =
@@ -521,7 +593,7 @@ export function calculateSimplesNacionalMonthlyTax(
   let selectedRange = tableRanges[0];
   for (let i = 0; i < tableRanges.length; i++) {
     const r = tableRanges[i];
-    if (rbt12 >= r.rangeStart && rbt12 <= r.rangeEnd) {
+    if (safeRbt12 >= r.rangeStart && safeRbt12 <= r.rangeEnd) {
       selectedRange = r;
       bracketNumber = i + 1;
       break;
@@ -530,20 +602,46 @@ export function calculateSimplesNacionalMonthlyTax(
 
   // Effective Rate Formula: (RBT12 × Aliquota Nominal - Parcela a Deduzir) / RBT12
   let effectiveTaxRateDecimal = 0;
-  if (rbt12 > 0) {
-    effectiveTaxRateDecimal = (rbt12 * selectedRange.nominalRate - selectedRange.deduction) / rbt12;
+  if (safeRbt12 > 0) {
+    effectiveTaxRateDecimal = (safeRbt12 * selectedRange.nominalRate - selectedRange.deduction) / safeRbt12;
     if (effectiveTaxRateDecimal < 0) effectiveTaxRateDecimal = selectedRange.nominalRate;
   } else {
     effectiveTaxRateDecimal = selectedRange.nominalRate;
   }
 
   const effectiveTaxRate = effectiveTaxRateDecimal * 100;
-  const dasEstimated = monthlyRevenueNfse * effectiveTaxRateDecimal;
+  const dasEstimated = safeRevenue * effectiveTaxRateDecimal;
+
+  // Cálculo alternativo no outro anexo para medir a economia potencial:
+  const rawAltRanges = isAnexoIII ? (rules.annexV || rules.anexoV) : (rules.annexIII || rules.anexoIII);
+  const alternativeRanges =
+    Array.isArray(rawAltRanges) && rawAltRanges.length > 0
+      ? rawAltRanges
+      : isAnexoIII
+      ? DEFAULT_SIMPLES_ANNEX_V
+      : DEFAULT_SIMPLES_ANNEX_III;
+
+  let altRange = alternativeRanges[0];
+  for (let i = 0; i < alternativeRanges.length; i++) {
+    const r = alternativeRanges[i];
+    if (safeRbt12 >= r.rangeStart && safeRbt12 <= r.rangeEnd) {
+      altRange = r;
+      break;
+    }
+  }
+
+  let altEffectiveRateDecimal = safeRbt12 > 0 ? (safeRbt12 * altRange.nominalRate - altRange.deduction) / safeRbt12 : altRange.nominalRate;
+  if (altEffectiveRateDecimal < 0) altEffectiveRateDecimal = altRange.nominalRate;
+  const altDasEstimated = safeRevenue * altEffectiveRateDecimal;
+
+  const potentialMonthlySavings = isAnexoIII
+    ? Math.max(0, altDasEstimated - dasEstimated)
+    : Math.max(0, dasEstimated - altDasEstimated);
 
   return {
-    monthlyRevenueNfse,
-    rbt12,
-    fs12,
+    monthlyRevenueNfse: safeRevenue,
+    rbt12: safeRbt12,
+    fs12: safeFs12,
     fatorR,
     fatorRPercent,
     isAnexoIII,
@@ -553,7 +651,193 @@ export function calculateSimplesNacionalMonthlyTax(
     deductionAmount: selectedRange.deduction,
     effectiveTaxRate,
     dasEstimated,
+    potentialMonthlySavings,
   };
+}
+
+/**
+ * Retorna os 12 meses anteriores à competência informada (do mais antigo para o mais recente).
+ * Ex: Se referenceYearMonth = '2026-03', retorna ['2025-03', '2025-04', ..., '2026-02'].
+ */
+export function getRolling12Months(referenceYearMonth: string): string[] {
+  const [yStr, mStr] = (referenceYearMonth || '2026-03').split('-');
+  const refYear = parseInt(yStr, 10) || 2026;
+  const refMonth = parseInt(mStr, 10) || 3;
+
+  const months: string[] = [];
+  for (let i = 12; i >= 1; i--) {
+    let m = refMonth - i;
+    let y = refYear;
+    while (m <= 0) {
+      m += 12;
+      y -= 1;
+    }
+    months.push(`${y}-${String(m).padStart(2, '0')}`);
+  }
+  return months;
+}
+
+export interface RollingMonthDetail {
+  month: string;
+  cnpjRevenue: number;
+  revenueSource: 'SISTEMA' | 'HISTORICO' | 'ESTIMADO' | 'ZERADO';
+  payroll: number;
+  payrollSource: 'SISTEMA' | 'HISTORICO' | 'ESTIMADO' | 'ZERADO';
+}
+
+export interface Rolling12MonthsComputation {
+  months: RollingMonthDetail[];
+  totalRbt12: number;
+  totalFs12: number;
+  fatorR: number;
+  fatorRPercent: number;
+  isConsolidatedTotal: boolean;
+}
+
+export function computeRolling12MonthsData(
+  sales: Sale[],
+  referenceYearMonth: string,
+  payrollHistory?: PayrollHistoryEntry[],
+  initialFiscalHistory?: MonthlyFiscalHistoryEntry[],
+  rbt12Initial = 0,
+  folha12MesesInicial = 0,
+  forceConsolidated?: boolean
+): Rolling12MonthsComputation {
+  const isConsolidated =
+    forceConsolidated ??
+    (!initialFiscalHistory || initialFiscalHistory.length === 0);
+
+  // MODO TOTAL CONSOLIDADO:
+  // Utiliza estritamente os totais acumulados informados, SEM inventar divisão mensal artificial (RBT12 / 12).
+  if (isConsolidated) {
+    const totalRbt12 = Math.max(0, rbt12Initial);
+    const totalFs12 = Math.max(0, folha12MesesInicial);
+    const fatorR = totalRbt12 > 0 ? totalFs12 / totalRbt12 : 0;
+
+    return {
+      months: [], // Composição mês a mês não disponível neste modo
+      totalRbt12,
+      totalFs12,
+      fatorR,
+      fatorRPercent: fatorR * 100,
+      isConsolidatedTotal: true,
+    };
+  }
+
+  // MODO DETALHADO MÊS A MÊS:
+  // Calcula a composição dos 12 meses anteriores com janela móvel.
+  const windowMonths = getRolling12Months(referenceYearMonth);
+  const initialMap = new Map<string, MonthlyFiscalHistoryEntry>();
+  if (initialFiscalHistory && initialFiscalHistory.length > 0) {
+    for (const item of initialFiscalHistory) {
+      initialMap.set(item.month, item);
+    }
+  }
+
+  const payrollMap = new Map<string, PayrollHistoryEntry>();
+  if (payrollHistory && payrollHistory.length > 0) {
+    for (const item of payrollHistory) {
+      payrollMap.set(item.month, item);
+    }
+  }
+
+  const salesMap = new Map<string, number>();
+  for (const s of sales) {
+    if (s.taxOrigin !== 'CNPJ') continue;
+    const m = (s.serviceDate || '').substring(0, 7);
+    if (m) {
+      salesMap.set(m, (salesMap.get(m) || 0) + s.totalValue);
+    }
+  }
+
+  const details: RollingMonthDetail[] = [];
+  let totalRbt12 = 0;
+  let totalFs12 = 0;
+
+  for (const month of windowMonths) {
+    let cnpjRevenue = 0;
+    let revenueSource: RollingMonthDetail['revenueSource'] = 'ZERADO';
+
+    if (salesMap.has(month)) {
+      cnpjRevenue = salesMap.get(month)!;
+      revenueSource = 'SISTEMA';
+    } else if (initialMap.has(month)) {
+      cnpjRevenue = initialMap.get(month)!.cnpjRevenue || 0;
+      revenueSource = 'HISTORICO';
+    }
+
+    let payroll = 0;
+    let payrollSource: RollingMonthDetail['payrollSource'] = 'ZERADO';
+
+    if (payrollMap.has(month)) {
+      payroll = payrollMap.get(month)!.totalPayroll;
+      payrollSource = 'SISTEMA';
+    } else if (initialMap.has(month)) {
+      payroll = initialMap.get(month)!.payroll || 0;
+      payrollSource = 'HISTORICO';
+    }
+
+    totalRbt12 += cnpjRevenue;
+    totalFs12 += payroll;
+
+    details.push({
+      month,
+      cnpjRevenue,
+      revenueSource,
+      payroll,
+      payrollSource,
+    });
+  }
+
+  const fatorR = totalRbt12 > 0 ? totalFs12 / totalRbt12 : 0;
+  const fatorRPercent = fatorR * 100;
+
+  return {
+    months: details,
+    totalRbt12,
+    totalFs12,
+    fatorR,
+    fatorRPercent,
+    isConsolidatedTotal: false,
+  };
+}
+
+export function calculateSimplesNacionalMonthlyTax(
+  sales: Sale[],
+  yearMonth: string,
+  year: number,
+  customRules?: TaxRulesSimples,
+  payrollHistory?: PayrollHistoryEntry[],
+  rbt12Initial = 0,
+  folha12MesesInicial = 0,
+  initialFiscalHistory?: MonthlyFiscalHistoryEntry[],
+  isConsolidated?: boolean
+) {
+  let monthlyRevenueNfse = 0;
+  for (const sale of sales) {
+    if (sale.taxOrigin !== 'CNPJ') continue;
+    if (sale.serviceDate.startsWith(yearMonth)) {
+      monthlyRevenueNfse += sale.totalValue;
+    }
+  }
+
+  const rolling = computeRolling12MonthsData(
+    sales,
+    yearMonth,
+    payrollHistory,
+    initialFiscalHistory,
+    rbt12Initial,
+    folha12MesesInicial,
+    isConsolidated
+  );
+
+  return calculateSimplesForParameters(
+    rolling.totalRbt12,
+    rolling.totalFs12,
+    monthlyRevenueNfse,
+    year,
+    customRules
+  );
 }
 
 export function getMonthlyReceivablesSummary(sales: Sale[], yearMonth: string) {
@@ -562,10 +846,13 @@ export function getMonthlyReceivablesSummary(sales: Sale[], yearMonth: string) {
   let cnpjReceived = 0;
   let totalPending = 0;
   let totalOverdue = 0;
+  let installmentsCount = 0;
+  const salesInPeriod = new Set<string>();
 
   const todayStr = new Date().toISOString().split('T')[0];
 
   for (const s of sales) {
+    let hasPeriodInstallment = false;
     for (const inst of s.installments) {
       if (inst.status === 'RECEBIDO') {
         if (inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
@@ -573,6 +860,8 @@ export function getMonthlyReceivablesSummary(sales: Sale[], yearMonth: string) {
           totalReceived += val;
           if (s.taxOrigin === 'CPF') cpfReceived += val;
           else cnpjReceived += val;
+          hasPeriodInstallment = true;
+          installmentsCount++;
         }
       } else if (inst.status !== 'CANCELADO') {
         if (inst.dueDate.startsWith(yearMonth)) {
@@ -580,10 +869,17 @@ export function getMonthlyReceivablesSummary(sales: Sale[], yearMonth: string) {
           if (inst.dueDate < todayStr) {
             totalOverdue += inst.value;
           }
+          hasPeriodInstallment = true;
+          installmentsCount++;
         }
       }
     }
+    if (hasPeriodInstallment || (s.serviceDate && s.serviceDate.startsWith(yearMonth))) {
+      salesInPeriod.add(s.id);
+    }
   }
+
+  const countTotal = salesInPeriod.size;
 
   return {
     totalReceived,
@@ -591,6 +887,9 @@ export function getMonthlyReceivablesSummary(sales: Sale[], yearMonth: string) {
     cnpjReceived,
     totalPending,
     totalOverdue,
+    countTotal,
+    salesCount: countTotal,
+    installmentsCount,
   };
 }
 
