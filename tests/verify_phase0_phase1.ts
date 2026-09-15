@@ -1,11 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const SUPABASE_URL = 'https://fbkouuvupdyffizwoiti.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZia291dXZ1cGR5ZmZpendvaXRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyOTI2NDUsImV4cCI6MjA3MDg2ODY0NX0.9xN5BQug6yHm_k9H20v524XFuCbd1JzW2aRSQJWstfo';
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false }
-});
+import { supabase, SupabaseService } from '../src/lib/supabaseClient';
 
 async function runTests() {
   const results: Record<string, { pass: boolean; details: string }> = {};
@@ -74,6 +67,10 @@ async function runTests() {
   // TESTE AUTH-05: Monitoramento de payload: Ausência de password_hash e salt na busca de perfil
   try {
     const { SupabaseService } = await import('../src/lib/supabaseClient');
+    await supabase.auth.signInWithPassword({
+      email: 'danielricardoarantes@gmail.com',
+      password: 'Daniel@2026'
+    });
     const profile = await SupabaseService.fetchUserProfileByAuthId('ffe678ce-609f-4348-922c-9cd12ea02244');
     if (profile && profile.passwordHash === undefined && profile.salt === undefined) {
       results['AUTH-05'] = { pass: true, details: `Perfil recuperado com sucesso: [id=${profile.id}, email=${profile.email}, clinicId=${profile.clinicId}]. passwordHash e salt estão estritamente undefined.` };
@@ -126,6 +123,10 @@ async function runTests() {
   // TESTE AUTH-14: Teste específico Daniel Ricardo Arantes
   try {
     const { SupabaseService } = await import('../src/lib/supabaseClient');
+    await supabase.auth.signInWithPassword({
+      email: 'danielricardoarantes@gmail.com',
+      password: 'Daniel@2026'
+    });
     // 1. Perfil
     const profile = await SupabaseService.fetchUserProfileByAuthId('ffe678ce-609f-4348-922c-9cd12ea02244');
     // 2. Dados do tenant
@@ -150,6 +151,10 @@ async function runTests() {
   // TESTE AUTH-15: Teste específico Leonardo Ricardo Arantes
   try {
     const { SupabaseService } = await import('../src/lib/supabaseClient');
+    await supabase.auth.signInWithPassword({
+      email: 'leonardoricardoarantes@gmail.com',
+      password: 'Leonardo@2026'
+    });
     const profile = await SupabaseService.fetchUserProfileByAuthId('b06c9529-95b8-41dc-a4d7-9c90fb05fd40');
     results['AUTH-15'] = {
       pass: !!profile && profile.clinicId === 'clinic_1789405023533_phq5',
@@ -173,6 +178,10 @@ async function runTests() {
   console.log('\n================================================================');
   console.log(`STATUS GERAL: ${allPass ? 'TODOS OS 15 TESTES PASSARAM COM SUCESSO!' : 'FALHAS DETECTADAS'}`);
   console.log('================================================================');
+  process.exit(allPass ? 0 : 1);
 }
 
-runTests();
+runTests().catch((err) => {
+  console.error('Erro inesperado no teste:', err);
+  process.exit(1);
+});

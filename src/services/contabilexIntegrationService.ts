@@ -6,7 +6,7 @@
  * Blindagem total: não consome senhas ou dados fiscais confidenciais de outras tabelas.
  */
 
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../lib/supabaseClient';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, supabase } from '../lib/supabaseClient';
 import {
   IntegrationClientLink,
   ContabilexSnapshotPayload,
@@ -33,11 +33,22 @@ async function apiFetch<T>(endpoint: string, options: {
   const { method = 'GET', headers = {}, body } = options;
 
   try {
+    let authHeader = headers.Authorization;
+    if (!authHeader) {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData?.session?.access_token;
+        authHeader = token ? `Bearer ${token}` : `Bearer ${SUPABASE_ANON_KEY}`;
+      } catch {
+        authHeader = `Bearer ${SUPABASE_ANON_KEY}`;
+      }
+    }
+
     const res = await fetch(`${REST_URL}/${endpoint}`, {
       method,
       headers: {
         apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        Authorization: authHeader,
         'Content-Type': 'application/json',
         Prefer: 'return=representation',
         ...headers,

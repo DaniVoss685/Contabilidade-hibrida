@@ -52,11 +52,22 @@ async function supabaseFetch<T>(endpoint: string, options: RequestOptions = {}):
   }
 
   try {
+    let authHeader = headers.Authorization;
+    if (!authHeader) {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData?.session?.access_token;
+        authHeader = token ? `Bearer ${token}` : `Bearer ${SUPABASE_ANON_KEY}`;
+      } catch {
+        authHeader = `Bearer ${SUPABASE_ANON_KEY}`;
+      }
+    }
+
     const res = await fetch(`${REST_URL}/${endpoint}`, {
       method,
       headers: {
         apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        Authorization: authHeader,
         'Content-Type': 'application/json',
         Prefer: 'return=representation',
         ...headers,

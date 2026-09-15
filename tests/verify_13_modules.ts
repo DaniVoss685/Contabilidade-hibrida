@@ -1,7 +1,12 @@
-import { SupabaseService } from '../src/lib/supabaseClient';
+import { SupabaseService, supabase } from '../src/lib/supabaseClient';
 
 async function test13Modules() {
   console.log('--- VALIDANDO MATRIZ DE NÃO-REGRESSÃO DOS 13 MÓDULOS ---');
+  // Autenticar como Daniel para carregar os dados protegidos por RLS
+  await supabase.auth.signInWithPassword({
+    email: 'danielricardoarantes@gmail.com',
+    password: 'Daniel@2026'
+  });
   const tenantId = 'clinic_1789153962617_gpw1';
   const data = await SupabaseService.getTenantData(tenantId);
 
@@ -29,6 +34,10 @@ async function test13Modules() {
   }
 
   console.log('\nStatus da Matriz: ' + (allPass ? '100% HOMOLOGADO SEM REGRESSÕES' : 'FALHA'));
+  process.exit(allPass ? 0 : 1);
 }
 
-test13Modules();
+test13Modules().catch((err) => {
+  console.error('Erro inesperado na regressão:', err);
+  process.exit(1);
+});
