@@ -52,11 +52,12 @@ export interface StoredUserAccount {
   email: string;
   name: string;
   role: UserRole;
-  passwordHash: string; // PBKDF2/SHA-256 derived hex
-  passwordSalt?: string; // 16 bytes hex salt
+  passwordHash?: string; // Optional: Supabase Auth handles password hashes
+  passwordSalt?: string;
   salt?: string;
   clinicId: string;
   clinicName?: string;
+  authUserId?: string; // UUID in auth.users
   emailVerified?: boolean;
   isActive?: boolean;
   createdAt: string;
@@ -88,6 +89,7 @@ export interface AuthSession {
   user: User;
   clinic: ClinicTenant;
   tenantId?: string;
+  authUserId?: string;
   isDemo: boolean;
   createdAt?: string;
   expiresAt?: string;

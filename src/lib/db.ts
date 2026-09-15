@@ -61,7 +61,7 @@ import {
 import { augmentYearlyDataset } from './annualFinanceData';
 import { hashPassword, verifyPassword, generateSalt } from './authCrypto';
 import { isValidEmail } from './masks';
-import { SupabaseService } from './supabaseClient';
+import { SupabaseService, supabase } from './supabaseClient';
 
 export const GLOBAL_STORAGE_KEYS = {
   ACTIVE_TENANT: 'df_active_tenant_v1',
@@ -96,22 +96,9 @@ export const PRESEEDED_USERS: StoredUserAccount[] = [
     email: 'carlos@mendesodonto.com.br',
     name: 'Dr. Carlos Eduardo Mendes',
     salt: 'a1b2c3d4e5f607182938475610293847',
-    // Pre-calculated PBKDF2 HMAC-SHA-256 (100,000 iters) for 'Dental@2026'
     passwordHash: '792a1306d905e867fb71cb0a8923f738bfda34e8db645f341da473146988685c',
     clinicId: 'tenant_demo',
     role: 'OWNER',
-    createdAt: '2025-01-01T00:00:00.000Z',
-    isActive: true,
-  },
-  {
-    id: 'usr_platform_admin_01',
-    email: 'suporte@dentalfinance.com.br',
-    name: 'Suporte Técnico Dental Finance',
-    salt: 'f1e2d3c4b5a607182938475610293847',
-    // Pre-calculated PBKDF2 HMAC-SHA-256 (100,000 iters) for 'Admin@2026'
-    passwordHash: '3b84555b6099c8ba00f9bf74b94f7e4a96bea6bc23c43087c632a2b8c19370f7',
-    clinicId: 'tenant_platform',
-    role: 'PLATFORM_ADMIN',
     createdAt: '2025-01-01T00:00:00.000Z',
     isActive: true,
   },
@@ -352,9 +339,19 @@ export class DentalFinanceDB {
   private fiscalParameters!: FiscalParameter[];
   private listeners: (() => void)[] = [];
   private isHydrating: boolean = false;
+  private isPasswordRecoveryMode: boolean = false;
 
   public getIsHydrating(): boolean {
     return this.isHydrating;
+  }
+
+  public getIsPasswordRecovery(): boolean {
+    return this.isPasswordRecoveryMode;
+  }
+
+  public setIsPasswordRecovery(val: boolean): void {
+    this.isPasswordRecoveryMode = val;
+    this.notify();
   }
 
   private constructor() {
@@ -398,6 +395,99 @@ export class DentalFinanceDB {
       this.hydrateTenantAsync(initialTenant).catch((err) => {
         console.warn('Initial tenant hydration background error:', err);
       });
+    }
+
+    // Inicializar sincronização reativa com Supabase Auth
+    this.setupSupabaseAuthListener();
+  }
+
+  private setupSupabaseAuthListener(): void {
+    // 1. Escuta eventos oficiais de autenticação
+    supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        this.isPasswordRecoveryMode = true;
+        this.notify();
+        return;
+      }
+
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        if (session?.user && (!this.currentSession || !this.currentSession.isDemo)) {
+          await this.syncSessionFromSupabase(session);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        if (this.currentSession && !this.currentSession.isDemo) {
+          this.currentSession = null;
+          try {
+            localStorage.removeItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION);
+          } catch (e) {}
+          this.loadTenant('tenant_demo', true);
+          this.notify();
+        }
+      }
+    });
+
+    // 2. No carregamento (F5), restaura sessão oficial se existir
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session?.user && (!this.currentSession || !this.currentSession.isDemo)) {
+        await this.syncSessionFromSupabase(session);
+      }
+    }).catch((err) => {
+      console.warn('[Supabase Auth] Erro ao recuperar sessão no boot:', err);
+    });
+  }
+
+  private async syncSessionFromSupabase(session: any): Promise<void> {
+    try {
+      const userProfile = await SupabaseService.fetchUserProfileByAuthId(session.user.id, session.user.email);
+      if (!userProfile) return;
+
+      const tenantId = userProfile.clinicId;
+      let clinic = this.registeredClinics.find((c) => c.id === tenantId);
+      if (!clinic) {
+        clinic = (await SupabaseService.getClinic(tenantId)) || undefined;
+        if (clinic) {
+          this.registeredClinics.push(clinic);
+          saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+        }
+      }
+
+      const sessionClinic: ClinicTenant = clinic || {
+        id: tenantId,
+        name: userProfile.clinicName || 'Minha Clínica',
+        cro: '00000',
+        croUf: 'SP',
+        cpfCnpj: '00.000.000/0001-00',
+        isDemo: false,
+        createdAt: new Date().toISOString(),
+      };
+
+      const authSession: AuthSession = {
+        token: session.access_token,
+        authUserId: session.user.id,
+        user: {
+          id: userProfile.id,
+          orgId: `org_${tenantId}`,
+          name: userProfile.name || session.user.email?.split('@')[0] || 'Dentista',
+          email: userProfile.email || session.user.email || '',
+          role: userProfile.role,
+        },
+        clinic: sessionClinic,
+        tenantId,
+        isDemo: false,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(session.expires_at ? session.expires_at * 1000 : Date.now() + 3600 * 1000).toISOString(),
+      };
+
+      this.currentSession = authSession;
+      saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, authSession);
+
+      if (this.activeTenantId !== tenantId) {
+        this.loadTenant(tenantId, false);
+        await this.hydrateTenantAsync(tenantId);
+      }
+      this.notify();
+    } catch (e) {
+      console.error('[Supabase Auth] Erro ao sincronizar sessão:', e);
     }
   }
 
@@ -774,7 +864,7 @@ export class DentalFinanceDB {
     return this.storedUsers;
   }
 
-  // Authentication Flow
+  // Authentication Flow via Supabase Auth Oficial
   public async authenticate(
     identifier: string,
     secret: string
@@ -786,101 +876,96 @@ export class DentalFinanceDB {
       return { success: false, error: 'Por favor, informe suas credenciais completas.' };
     }
 
-    let user = this.storedUsers.find((u) => u.email.toLowerCase() === cleanId);
-    if (!user) {
-      try {
-        const remoteUsers = await SupabaseService.getAllUsers();
-        const remoteClinics = await SupabaseService.getAllClinics();
-        if (remoteUsers.length > 0) {
-          this.storedUsers = remoteUsers;
-          saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
-        }
-        if (remoteClinics.length > 0) {
-          this.registeredClinics = remoteClinics;
-          saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
-        }
-        user = this.storedUsers.find((u) => u.email.toLowerCase() === cleanId);
-      } catch (e) {
-        console.warn('Erro ao consultar usuários no Supabase:', e);
+    // 1. Suporte exclusivo para conta de Demonstração local (em memória)
+    if (cleanId === 'carlos@mendesodonto.com.br') {
+      if (cleanSecret === 'Dental@2025' || cleanSecret === 'Dental@2026') {
+        const demoSession = this.loginDemo();
+        return { success: true, session: demoSession };
       }
-    }
-
-    if (!user) {
-      this.log('LOGIN_FALHA', 'AUTH', cleanId, `Tentativa de login falha: usuário ${cleanId} não encontrado.`);
       return {
         success: false,
         error: 'E-mail ou senha inválidos. Por favor, verifique suas credenciais.',
       };
     }
 
-    // Special compatibility check for demo doctor: accept 'Dental@2025' or 'Dental@2026'
-    let isValid = false;
-    if (user.clinicId === 'tenant_demo' && (cleanSecret === 'Dental@2025' || cleanSecret === 'Dental@2026')) {
-      isValid = true;
-    } else {
-      isValid = await verifyPassword(cleanSecret, user.passwordHash, user.salt);
-    }
+    // 2. Autenticação REAL e Segura via Supabase Auth Oficial
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanId,
+        password: cleanSecret,
+      });
 
-    if (!isValid) {
-      this.log('LOGIN_FALHA', 'AUTH', user.id, `Tentativa de login falha: senha incorreta para ${user.email}.`);
+      if (error || !data.user || !data.session) {
+        this.log('LOGIN_FALHA', 'AUTH', cleanId, `Falha de autenticação via Supabase Auth: ${error?.message || 'Credenciais inválidas'}`);
+        return {
+          success: false,
+          error: 'E-mail ou senha inválidos. Por favor, verifique suas credenciais.',
+        };
+      }
+
+      // Buscar perfil mapeado na df_users
+      const userProfile = await SupabaseService.fetchUserProfileByAuthId(data.user.id, data.user.email);
+      if (!userProfile) {
+        this.log('LOGIN_FALHA', 'AUTH', data.user.id, `Usuário autenticado no Supabase Auth mas sem perfil mapeado na df_users.`);
+        return {
+          success: false,
+          error: 'Perfil de clínica não configurado para este usuário. Entre em contato com o suporte.',
+        };
+      }
+
+      const tenantId = userProfile.clinicId;
+      let clinic = this.registeredClinics.find((c) => c.id === tenantId);
+      if (!clinic) {
+        clinic = (await SupabaseService.getClinic(tenantId)) || undefined;
+        if (clinic) {
+          this.registeredClinics.push(clinic);
+          saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+        }
+      }
+
+      const sessionClinic: ClinicTenant = clinic || {
+        id: tenantId,
+        name: userProfile.clinicName || 'Minha Clínica',
+        cro: '00000',
+        croUf: 'SP',
+        cpfCnpj: '00.000.000/0001-00',
+        isDemo: false,
+        createdAt: new Date().toISOString(),
+      };
+
+      const session: AuthSession = {
+        token: data.session.access_token,
+        authUserId: data.user.id,
+        user: {
+          id: userProfile.id,
+          orgId: `org_${tenantId}`,
+          name: userProfile.name || cleanId.split('@')[0],
+          email: userProfile.email || cleanId,
+          role: userProfile.role,
+        },
+        clinic: sessionClinic,
+        tenantId,
+        isDemo: false,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(data.session.expires_at ? data.session.expires_at * 1000 : Date.now() + 3600 * 1000).toISOString(),
+      };
+
+      this.currentSession = session;
+      saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
+      this.loadTenant(tenantId, false);
+      await this.hydrateTenantAsync(tenantId);
+
+      this.log('LOGIN_SUCESSO', 'AUTH', userProfile.id, `Usuário ${userProfile.email} autenticado com sucesso via Supabase Auth.`);
+      this.notify();
+
+      return { success: true, session };
+    } catch (err: any) {
+      console.error('[Auth Error]', err);
       return {
         success: false,
-        error: 'E-mail ou senha inválidos. Por favor, verifique suas credenciais.',
+        error: 'Erro de comunicação com o servidor de autenticação.',
       };
     }
-
-    let clinic = this.registeredClinics.find((c) => c.id === user.clinicId);
-    if (!clinic && user.clinicId !== 'tenant_demo' && user.clinicId !== 'tenant_platform') {
-      try {
-        const remoteClinics = await SupabaseService.getAllClinics();
-        if (remoteClinics.length > 0) {
-          this.registeredClinics = remoteClinics;
-          saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
-          clinic = this.registeredClinics.find((c) => c.id === user.clinicId);
-        }
-      } catch (e) {
-        console.warn('Erro ao consultar clínicas no Supabase:', e);
-      }
-    }
-
-    const sessionClinic: ClinicTenant = clinic || {
-      id: user.clinicId,
-      name: user.clinicName || 'Minha Clínica',
-      cro: '00000',
-      croUf: 'SP',
-      cpfCnpj: '00.000.000/0001-00',
-      isDemo: user.clinicId === 'tenant_demo',
-      createdAt: new Date().toISOString(),
-    };
-
-    const session: AuthSession = {
-      token: `sess_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`,
-      user: {
-        id: user.id,
-        orgId: `org_${user.clinicId}`,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
-      clinic: sessionClinic,
-      tenantId: user.clinicId,
-      isDemo: user.clinicId === 'tenant_demo',
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
-    };
-
-    this.currentSession = session;
-    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
-    this.loadTenant(user.clinicId, session.isDemo);
-
-    if (!session.isDemo) {
-      await this.hydrateTenantAsync(user.clinicId);
-    }
-
-    this.log('LOGIN_SUCESSO', 'AUTH', user.id, `Usuário ${user.email} realizou login com sucesso.`);
-    this.notify();
-
-    return { success: true, session };
   }
 
   // Instant Demo Access
@@ -913,10 +998,17 @@ export class DentalFinanceDB {
     return session;
   }
 
-  // Logout
-  public logout(): void {
+  // Logout Oficial com Supabase Auth
+  public async logout(): Promise<void> {
     if (this.currentSession) {
       this.log('LOGOUT', 'AUTH', this.currentSession.user.id, `Logout efetuado por ${this.currentSession.user.email}.`);
+    }
+    try {
+      if (this.currentSession && !this.currentSession.isDemo) {
+        await supabase.auth.signOut();
+      }
+    } catch (e) {
+      console.warn('Erro ao deslogar no Supabase Auth:', e);
     }
     this.currentSession = null;
     this.activeTenantId = 'tenant_demo';
@@ -930,7 +1022,7 @@ export class DentalFinanceDB {
     this.notify();
   }
 
-  // Create Access Account (Credentials Only — Rodada 11)
+  // Create Access Account (Supabase Auth Oficial)
   public async createAccount(params: {
     email: string;
     password: string;
@@ -948,151 +1040,158 @@ export class DentalFinanceDB {
       return { success: false, error: 'É necessário concordar com os Termos de Uso e Política de Privacidade.' };
     }
 
-    if (this.storedUsers.some((u) => u.email.toLowerCase() === normalizedEmail)) {
-      return { success: false, error: 'Este e-mail já está cadastrado no Dental Finance.' };
-    }
+    try {
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: normalizedEmail,
+        password: params.password,
+      });
 
-    const salt = generateSalt();
-    const passwordHash = await hashPassword(params.password, salt);
-    const tenantId = `clinic_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const userId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      if (authError) {
+        return { success: false, error: authError.message };
+      }
 
-    const newClinic: ClinicTenant = {
-      id: tenantId,
-      name: 'Minha Clínica',
-      tradeName: 'Minha Clínica Odontológica',
-      cnpj: '',
-      cro: '',
-      croUf: 'SP',
-      uf: 'SP',
-      email: normalizedEmail,
-      phone: '',
-      createdAt: new Date().toISOString(),
-      isActive: true,
-      isDemo: false,
-    };
+      const authUserId = authData.user?.id;
+      const tenantId = `clinic_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const userId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-    const newUser: StoredUserAccount = {
-      id: userId,
-      email: normalizedEmail,
-      passwordHash,
-      salt,
-      name: normalizedEmail.split('@')[0],
-      role: 'OWNER',
-      clinicId: tenantId,
-      createdAt: new Date().toISOString(),
-      isActive: true,
-    };
+      const newClinic: ClinicTenant = {
+        id: tenantId,
+        name: 'Minha Clínica',
+        tradeName: 'Minha Clínica Odontológica',
+        cnpj: '',
+        cro: '',
+        croUf: 'SP',
+        uf: 'SP',
+        email: normalizedEmail,
+        phone: '',
+        createdAt: new Date().toISOString(),
+        isActive: true,
+        isDemo: false,
+      };
 
-    this.registeredClinics.push(newClinic);
-    saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
-
-    this.storedUsers.push(newUser);
-    saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
-
-    // Initialize clean partitions for this new real tenant
-    saveItem(STORAGE_KEYS.ORGANIZATION, {
-      id: `org_${tenantId}`,
-      name: newClinic.name,
-      tradeName: newClinic.tradeName,
-      createdAt: newClinic.createdAt,
-    }, tenantId);
-
-    saveItem(STORAGE_KEYS.USER, {
-      id: userId,
-      name: newUser.name,
-      email: newUser.email,
-      role: 'ADMIN',
-      orgId: `org_${tenantId}`,
-    }, tenantId);
-
-    saveItem(STORAGE_KEYS.PROFESSIONAL, {
-      id: `prof_${tenantId}`,
-      orgId: `org_${tenantId}`,
-      name: '',
-      cpf: '',
-      cro: '',
-      croUf: 'SP',
-      cnpj: '',
-      razaoSocial: '',
-      nomeFantasia: '',
-      municipio: 'São Paulo - SP',
-      uf: 'SP',
-      phone: '',
-      regimeTributario: 'SIMPLES_NACIONAL',
-      optanteSimples: true,
-      dataAbertura: newClinic.createdAt.split('T')[0],
-      rbt12Inicial: 0,
-      folha12MesesInicial: 0,
-      proLaboreMensal: 0,
-      baselineConfigured: false, // FLAG EXPLÍCITO: bases ainda não configuradas
-      fiscalSourceType: undefined,
-      fiscalSnapshots: [],
-      initialFiscalHistory: [],
-      numDependentes: 0,
-      inssProprioMensal: 0,
-      outrosRendimentosTributaveis: 0,
-    }, tenantId);
-
-    saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, {
-      hideCpf: false, // CPF visível por padrão
-      alertFatorR: true,
-      alertDueDates: true,
-      operationalReminders: true,
-    }, tenantId);
-
-    // Operational collections start strictly EMPTY
-    saveItem(STORAGE_KEYS.PATIENTS, [], tenantId);
-    saveItem(STORAGE_KEYS.SALES, [], tenantId);
-    saveItem(STORAGE_KEYS.EXPENSES, [], tenantId);
-    saveItem(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
-    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, [], tenantId);
-    saveItem(STORAGE_KEYS.PAYROLL_HISTORY, [], tenantId);
-    saveItem(STORAGE_KEYS.PROCEDURES, [], tenantId);
-    saveItem(STORAGE_KEYS.CLINICAL_INPUTS, [], tenantId);
-    saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, [], tenantId);
-    saveItem(STORAGE_KEYS.APPOINTMENTS, [], tenantId);
-    saveItem(STORAGE_KEYS.AUDIT_LOGS, [
-      {
-        id: `log_${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        userId,
-        userName: newUser.name,
-        action: 'CONTA_CRIADA',
-        entityType: 'USER',
-        entityId: userId,
-        details: `Conta criada com credenciais puras para ${newUser.email}. Workspace limpo inicializado.`,
-      },
-    ], tenantId);
-
-    const session: AuthSession = {
-      token: `sess_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`,
-      user: {
+      const newUser: StoredUserAccount = {
         id: userId,
-        orgId: `org_${tenantId}`,
+        email: normalizedEmail,
+        authUserId,
+        name: normalizedEmail.split('@')[0],
+        role: 'OWNER',
+        clinicId: tenantId,
+        createdAt: new Date().toISOString(),
+        isActive: true,
+      };
+
+      this.registeredClinics.push(newClinic);
+      saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+
+      this.storedUsers.push(newUser);
+      saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
+
+      // Initialize clean partitions for this new real tenant
+      saveItem(STORAGE_KEYS.ORGANIZATION, {
+        id: `org_${tenantId}`,
+        name: newClinic.name,
+        tradeName: newClinic.tradeName,
+        createdAt: newClinic.createdAt,
+      }, tenantId);
+
+      saveItem(STORAGE_KEYS.USER, {
+        id: userId,
         name: newUser.name,
         email: newUser.email,
-        role: newUser.role,
-      },
-      clinic: { ...newClinic },
-      tenantId,
-      isDemo: false,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
-    };
+        role: 'ADMIN',
+        orgId: `org_${tenantId}`,
+      }, tenantId);
 
-    this.currentSession = session;
-    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
-    this.loadTenant(tenantId, false);
+      saveItem(STORAGE_KEYS.PROFESSIONAL, {
+        id: `prof_${tenantId}`,
+        orgId: `org_${tenantId}`,
+        name: '',
+        cpf: '',
+        cro: '',
+        croUf: 'SP',
+        cnpj: '',
+        razaoSocial: '',
+        nomeFantasia: '',
+        municipio: 'São Paulo - SP',
+        uf: 'SP',
+        phone: '',
+        regimeTributario: 'SIMPLES_NACIONAL',
+        optanteSimples: true,
+        dataAbertura: newClinic.createdAt.split('T')[0],
+        rbt12Inicial: 0,
+        folha12MesesInicial: 0,
+        proLaboreMensal: 0,
+        baselineConfigured: false,
+        fiscalSourceType: undefined,
+        fiscalSnapshots: [],
+        initialFiscalHistory: [],
+        numDependentes: 0,
+        inssProprioMensal: 0,
+        outrosRendimentosTributaveis: 0,
+      }, tenantId);
 
-    await SupabaseService.saveClinic(newClinic);
-    await SupabaseService.saveUser(newUser);
-    await SupabaseService.saveProfessional(this.professional, tenantId);
-    await SupabaseService.savePreferences(this.preferences, tenantId);
+      saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, {
+        hideCpf: false,
+        alertFatorR: true,
+        alertDueDates: true,
+        operationalReminders: true,
+      }, tenantId);
 
-    this.notify();
+      saveItem(STORAGE_KEYS.PATIENTS, [], tenantId);
+      saveItem(STORAGE_KEYS.SALES, [], tenantId);
+      saveItem(STORAGE_KEYS.EXPENSES, [], tenantId);
+      saveItem(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
+      saveItem(STORAGE_KEYS.BANK_ACCOUNTS, [], tenantId);
+      saveItem(STORAGE_KEYS.PAYROLL_HISTORY, [], tenantId);
+      saveItem(STORAGE_KEYS.PROCEDURES, [], tenantId);
+      saveItem(STORAGE_KEYS.CLINICAL_INPUTS, [], tenantId);
+      saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, [], tenantId);
+      saveItem(STORAGE_KEYS.APPOINTMENTS, [], tenantId);
+      saveItem(STORAGE_KEYS.AUDIT_LOGS, [
+        {
+          id: `log_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          userId,
+          userName: newUser.name,
+          action: 'CONTA_CRIADA',
+          entityType: 'USER',
+          entityId: userId,
+          details: `Conta criada via Supabase Auth para ${newUser.email}.`,
+        },
+      ], tenantId);
 
-    return { success: true, session };
+      const session: AuthSession = {
+        token: authData.session?.access_token || `sess_${Date.now()}`,
+        authUserId,
+        user: {
+          id: userId,
+          orgId: `org_${tenantId}`,
+          name: newUser.name,
+          email: newUser.email,
+          role: newUser.role,
+        },
+        clinic: { ...newClinic },
+        tenantId,
+        isDemo: false,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(authData.session?.expires_at ? authData.session.expires_at * 1000 : Date.now() + 3600 * 1000).toISOString(),
+      };
+
+      this.currentSession = session;
+      saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
+      this.loadTenant(tenantId, false);
+
+      await SupabaseService.saveClinic(newClinic);
+      await SupabaseService.saveUser(newUser);
+      await SupabaseService.saveProfessional(this.professional, tenantId);
+      await SupabaseService.savePreferences(this.preferences, tenantId);
+
+      this.notify();
+
+      return { success: true, session };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao criar conta no Supabase Auth.' };
+    }
   }
 
   // Legacy & Programmatic Clinic Account Creation
@@ -1261,81 +1360,57 @@ export class DentalFinanceDB {
     return { success: true, session };
   }
 
-  // Password Recovery Flow
-  public requestPasswordReset(
+  // Password Recovery Flow via Supabase Auth Oficial
+  public async requestPasswordReset(
     email: string
-  ): { success: boolean; message: string; token?: string } {
+  ): Promise<{ success: boolean; message: string; token?: string }> {
     const cleanEmail = email.trim().toLowerCase();
-    const user = this.storedUsers.find((u) => u.email.toLowerCase() === cleanEmail);
 
-    if (!user) {
-      return {
-        success: true,
-        message: 'Se o e-mail informado estiver cadastrado em nosso sistema, as instruções para redefinição foram emitidas.',
-      };
+    try {
+      await supabase.auth.resetPasswordForEmail(cleanEmail, {
+        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+      });
+    } catch (err) {
+      console.warn('[Supabase Auth] Erro na solicitação de reset de senha:', err);
     }
-
-    const token = `RST-${Math.floor(100000 + Math.random() * 900000)}`;
-    (user as any).resetToken = token;
-    (user as any).resetExpires = Date.now() + 15 * 60 * 1000; // 15 min
-    saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
 
     this.log(
       'PASSWORD_RESET_REQUESTED',
       'AUTH',
-      user.id,
-      `Token de redefinição de senha solicitado para ${user.email}.`
+      cleanEmail,
+      `Solicitação de recuperação de senha disparada para ${cleanEmail}.`
     );
 
+    // Mensagem neutra anti-enumeração (não expõe existência de e-mail e não emite tokens em tela)
     return {
       success: true,
-      message: 'Código de redefinição emitido com sucesso (válido por 15 minutos).',
-      token,
+      message: 'Se o e-mail informado estiver cadastrado em nosso sistema, as instruções para redefinição de senha foram enviadas para sua caixa de entrada.',
     };
   }
 
-  public async resetPasswordWithToken(
-    email: string,
-    token: string,
-    newPassword: string
-  ): Promise<{ success: boolean; error?: string }> {
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanToken = token.trim().toUpperCase();
-
+  public async updatePassword(newPassword: string): Promise<{ success: boolean; error?: string }> {
     if (!newPassword || newPassword.length < 6) {
       return { success: false, error: 'A nova senha deve ter no mínimo 6 caracteres.' };
     }
-
-    const user = this.storedUsers.find((u) => u.email.toLowerCase() === cleanEmail);
-    if (!user) {
-      return { success: false, error: 'Usuário não encontrado.' };
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) {
+        return { success: false, error: error.message };
+      }
+      this.isPasswordRecoveryMode = false;
+      this.notify();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Erro ao atualizar senha no servidor.' };
     }
+  }
 
-    const userObj = user as any;
-    if (!userObj.resetToken || userObj.resetToken !== cleanToken) {
-      return { success: false, error: 'Código de redefinição inválido ou incorreto.' };
-    }
-
-    if (userObj.resetExpires && Date.now() > userObj.resetExpires) {
-      return { success: false, error: 'Código de redefinição expirado. Solicite um novo código.' };
-    }
-
-    const salt = generateSalt();
-    const passwordHash = await hashPassword(newPassword, salt);
-    user.salt = salt;
-    user.passwordHash = passwordHash;
-    delete userObj.resetToken;
-    delete userObj.resetExpires;
-
-    saveItem(GLOBAL_STORAGE_KEYS.STORED_USERS, this.storedUsers);
-    this.log(
-      'SENHA_REDEFINIDA',
-      'AUTH',
-      user.id,
-      `Senha redefinida com sucesso para o usuário ${user.email}.`
-    );
-
-    return { success: true };
+  public async resetPasswordWithToken(
+    _email: string,
+    _token: string,
+    newPassword: string
+  ): Promise<{ success: boolean; error?: string }> {
+    return this.updatePassword(newPassword);
   }
 
   // Audited Support Session Management (Platform Admin)

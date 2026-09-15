@@ -51,10 +51,20 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
 
   // Password Recovery form states
   const [recoveryEmail, setRecoveryEmail] = useState('');
-  const [recoveryToken, setRecoveryToken] = useState('');
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false);
+  const [forceResetMode, setForceResetMode] = useState(false);
+
+  React.useEffect(() => {
+    const isRecovery = db.getIsPasswordRecovery();
+    const hash = typeof window !== 'undefined' ? window.location.hash : '';
+    if (isRecovery || hash.includes('type=recovery')) {
+      setMode('recovery');
+      setForceResetMode(true);
+    }
+  }, []);
 
   // Support Mode form states
   const [supportEmail, setSupportEmail] = useState('suporte@dentalfinance.com.br');
@@ -155,8 +165,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  // 4. Handle Password Recovery Token Request
-  const handleRequestRecoveryToken = (e: React.FormEvent) => {
+  // 4. Handle Password Recovery Email Request (Supabase Auth)
+  const handleRequestRecoveryToken = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
@@ -166,25 +176,22 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
       return;
     }
 
-    const res = db.requestPasswordReset(recoveryEmail);
-    if (res.token) {
-      setIssuedToken(res.token);
-      setRecoveryToken(res.token);
-      setSuccessMsg(`Código de recuperação emitido: ${res.token}. Utilize-o no formulário abaixo.`);
-    } else {
+    setIsLoading(true);
+    try {
+      const res = await db.requestPasswordReset(recoveryEmail);
+      setIsLoading(false);
       setSuccessMsg(res.message);
+    } catch (err: any) {
+      setIsLoading(false);
+      setErrorMsg(err.message || 'Erro ao processar solicitação de recuperação.');
     }
   };
 
-  // 5. Handle Password Reset Execution
+  // 5. Handle Password Reset Execution (Supabase Auth updateUser)
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
 
-    if (!recoveryToken.trim()) {
-      setErrorMsg('Por favor, informe o código de recuperação.');
-      return;
-    }
     if (!newPassword || newPassword.length < 6) {
       setErrorMsg('A nova senha deve possuir no mínimo 6 caracteres.');
       return;
@@ -196,7 +203,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
 
     setIsLoading(true);
     try {
-      const res = await db.resetPasswordWithToken(recoveryEmail, recoveryToken, newPassword);
+      const res = await db.updatePassword(newPassword);
       setIsLoading(false);
 
       if (!res.success) {
@@ -206,6 +213,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
 
       toast.success('Senha redefinida com sucesso! Você já pode entrar com a nova senha.');
       setMode('login');
+      setForceResetMode(false);
       setIdentifier(recoveryEmail);
       setPassword(newPassword);
     } catch (err: any) {
@@ -695,7 +703,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
                 </div>
               </div>
 
-              {!issuedToken ? (
+              {!forceResetMode ? (
                 <form onSubmit={handleRequestRecoveryToken} className="space-y-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
@@ -708,7 +716,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
                         required
                         value={recoveryEmail}
                         onChange={(e) => setRecoveryEmail(e.target.value)}
-                        placeholder="dr.carlos@mendesodonto.com.br"
+                        placeholder="seu.email@clinica.com.br"
                         className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
                       />
                     </div>
@@ -716,54 +724,76 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
 
                   <button
                     type="submit"
-                    className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    disabled={isLoading}
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                   >
                     <KeyRound className="w-4 h-4" />
-                    <span>Emitir Código de Redefinição</span>
+                    <span>{isLoading ? 'Enviando...' : 'Enviar Link de Recuperação'}</span>
                   </button>
+
+                  <div className="text-center pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setForceResetMode(true)}
+                      className="text-[11px] text-slate-500 hover:text-emerald-700 underline cursor-pointer"
+                    >
+                      Já recebi o link por e-mail? Cadastrar nova senha
+                    </button>
+                  </div>
                 </form>
               ) : (
                 <form onSubmit={handleResetPassword} className="space-y-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                      Código de Recuperação
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={recoveryToken}
-                      onChange={(e) => setRecoveryToken(e.target.value)}
-                      placeholder="RST-XXXXXX"
-                      className="w-full px-3 py-2 text-sm font-mono border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                      Nova Senha (mínimo 6 caracteres)
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                    />
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                        Nova Senha
+                      </label>
+                      <span className="text-[11px] text-slate-400 font-medium">Mínimo 6 caracteres</span>
+                    </div>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type={showNewPassword ? 'text' : 'password'}
+                        required
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        placeholder="••••••••"
+                        minLength={6}
+                        className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPassword(!showNewPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                      >
+                        {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                       Confirmar Nova Senha
                     </label>
-                    <input
-                      type="password"
-                      required
-                      value={confirmNewPassword}
-                      onChange={(e) => setConfirmNewPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                    />
+                    <div className="relative">
+                      <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type={showConfirmNewPassword ? 'text' : 'password'}
+                        required
+                        value={confirmNewPassword}
+                        onChange={(e) => setConfirmNewPassword(e.target.value)}
+                        placeholder="••••••••"
+                        minLength={6}
+                        className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmNewPassword(!showConfirmNewPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                      >
+                        {showConfirmNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
 
                   <button
@@ -771,8 +801,18 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
                     disabled={isLoading}
                     className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                   >
-                    <span>Salvar Nova Senha & Entrar</span>
+                    <span>{isLoading ? 'Salvando...' : 'Salvar Nova Senha & Entrar'}</span>
                   </button>
+
+                  <div className="text-center pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setForceResetMode(false)}
+                      className="text-[11px] text-slate-500 hover:text-slate-700 underline cursor-pointer"
+                    >
+                      Voltar para solicitação de link
+                    </button>
+                  </div>
                 </form>
               )}
 

@@ -1,3 +1,4 @@
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
   ClinicTenant,
   StoredUserAccount,
@@ -22,6 +23,14 @@ export const SUPABASE_ANON_KEY =
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SUPABASE_ANON_KEY) ||
   (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZia291dXZ1cGR5ZmZpendvaXRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyOTI2NDUsImV4cCI6MjA3MDg2ODY0NX0.9xN5BQug6yHm_k9H20v524XFuCbd1JzW2aRSQJWstfo';
+
+export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+});
 
 const REST_URL = `${SUPABASE_URL}/rest/v1`;
 
@@ -136,8 +145,9 @@ export function mapDbUserToApp(db: any): StoredUserAccount {
     email: db.email,
     name: db.name,
     role: db.role,
-    passwordHash: db.password_hash,
-    salt: db.salt,
+    authUserId: db.auth_user_id || undefined,
+    passwordHash: db.password_hash || undefined,
+    salt: db.salt || undefined,
     isActive: db.is_active !== false,
     createdAt: db.created_at || new Date().toISOString(),
   };
@@ -150,8 +160,9 @@ export function mapAppUserToDb(app: StoredUserAccount): any {
     email: app.email.trim().toLowerCase(),
     name: app.name,
     role: app.role,
-    password_hash: app.passwordHash,
-    salt: app.salt || '',
+    auth_user_id: app.authUserId || null,
+    password_hash: app.passwordHash || null,
+    salt: app.salt || null,
     is_active: app.isActive !== false,
     created_at: app.createdAt || new Date().toISOString(),
   };
@@ -691,10 +702,78 @@ export const SupabaseService = {
     return data.map(mapDbTenantToApp);
   },
 
+  /**
+   * @deprecated ELIMINADO POR SEGURANÇA (Fase 1).
+   * Nunca mais consultar df_users sem escopo nem baixar hashes de senha para o frontend.
+   */
   async getAllUsers(): Promise<StoredUserAccount[]> {
-    const { data, error } = await supabaseFetch<any[]>('df_users?select=*');
-    if (error || !data) return [];
-    return data.map(mapDbUserToApp);
+    console.warn('[SECURITY] getAllUsers() foi permanentemente desativado na migração para Supabase Auth.');
+    return [];
+  },
+
+  /**
+   * Busca com segurança o perfil do usuário autenticado a partir do seu UID do Supabase Auth.
+   * Não baixa senhas, hashes nem salts para o cliente.
+   */
+  async fetchUserProfileByAuthId(authUserId: string, email?: string): Promise<StoredUserAccount | null> {
+    try {
+      // 1. Tenta buscar pelo auth_user_id vinculado
+      if (authUserId) {
+        const { data, error } = await supabase
+          .from('df_users')
+          .select('id, clinic_id, email, name, role, is_active, auth_user_id, created_at')
+          .eq('auth_user_id', authUserId)
+          .maybeSingle();
+
+        if (data && !error) {
+          return mapDbUserToApp(data);
+        }
+      }
+
+      // 2. Fallback por e-mail para vinculação automática do auth_user_id no primeiro login
+      if (email) {
+        const cleanEmail = email.trim().toLowerCase();
+        const { data, error } = await supabase
+          .from('df_users')
+          .select('id, clinic_id, email, name, role, is_active, auth_user_id, created_at')
+          .eq('email', cleanEmail)
+          .maybeSingle();
+
+        if (data && !error) {
+          if (authUserId && !data.auth_user_id) {
+            await supabase
+              .from('df_users')
+              .update({ auth_user_id: authUserId })
+              .eq('id', data.id);
+            data.auth_user_id = authUserId;
+          }
+          return mapDbUserToApp(data);
+        }
+      }
+
+      return null;
+    } catch (err) {
+      console.error('[SupabaseService] Erro ao buscar perfil do usuário:', err);
+      return null;
+    }
+  },
+
+  async getClinic(clinicId: string): Promise<ClinicTenant | null> {
+    try {
+      const { data, error } = await supabase
+        .from('df_tenants')
+        .select('*')
+        .eq('id', clinicId)
+        .maybeSingle();
+
+      if (data && !error) {
+        return mapDbTenantToApp(data);
+      }
+      return null;
+    } catch (err) {
+      console.error('[SupabaseService] Erro ao buscar clínica:', err);
+      return null;
+    }
   },
 
   async saveClinic(clinic: ClinicTenant): Promise<{ success: boolean; error?: string }> {
