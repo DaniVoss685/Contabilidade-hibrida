@@ -224,7 +224,8 @@ function AppContent() {
   }
 
   const isHydrating = db.getIsHydrating();
-  if (isHydrating) {
+  const isAuthReady = db.getIsAuthReady();
+  if (isHydrating || !isAuthReady) {
     return (
       <div className="min-h-screen bg-slate-50">
         <AppLoadingSkeleton />

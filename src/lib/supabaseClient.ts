@@ -56,7 +56,18 @@ async function supabaseFetch<T>(endpoint: string, options: RequestOptions = {}):
     if (!authHeader) {
       try {
         const { data: sessionData } = await supabase.auth.getSession();
-        const token = sessionData?.session?.access_token;
+        let token = sessionData?.session?.access_token;
+        if (!token && typeof localStorage !== 'undefined') {
+          try {
+            const rawAuth = localStorage.getItem('df_auth_session_v1');
+            if (rawAuth) {
+              const parsed = JSON.parse(rawAuth);
+              if (parsed?.token && !parsed?.isDemo) {
+                token = parsed.token;
+              }
+            }
+          } catch {}
+        }
         authHeader = token ? `Bearer ${token}` : `Bearer ${SUPABASE_ANON_KEY}`;
       } catch {
         authHeader = `Bearer ${SUPABASE_ANON_KEY}`;

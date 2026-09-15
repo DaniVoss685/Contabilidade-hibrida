@@ -339,10 +339,17 @@ export class DentalFinanceDB {
   private fiscalParameters!: FiscalParameter[];
   private listeners: (() => void)[] = [];
   private isHydrating: boolean = false;
+  private isAuthReady: boolean = false;
+  private hydratePromise: Promise<void> | null = null;
+  private hasHydratedWithAuth: boolean = false;
   private isPasswordRecoveryMode: boolean = false;
 
   public getIsHydrating(): boolean {
     return this.isHydrating;
+  }
+
+  public getIsAuthReady(): boolean {
+    return this.isAuthReady;
   }
 
   public getIsPasswordRecovery(): boolean {
@@ -392,9 +399,11 @@ export class DentalFinanceDB {
     this.loadTenant(initialTenant, isDemo);
 
     if (this.currentSession && !isDemo && initialTenant !== 'tenant_demo') {
-      this.hydrateTenantAsync(initialTenant).catch((err) => {
-        console.warn('Initial tenant hydration background error:', err);
-      });
+      // Barreira de hidratação: indica carregamento até restauração da sessão oficial Supabase Auth
+      this.isHydrating = true;
+      this.isAuthReady = false;
+    } else {
+      this.isAuthReady = true;
     }
 
     // Inicializar sincronização reativa com Supabase Auth
@@ -421,22 +430,37 @@ export class DentalFinanceDB {
             localStorage.removeItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION);
           } catch (e) {}
           this.loadTenant('tenant_demo', true);
+          this.isHydrating = false;
+          this.isAuthReady = true;
           this.notify();
         }
       }
     });
 
     // 2. No carregamento (F5), restaura sessão oficial se existir
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session }, error }) => {
+      if (error) {
+        console.warn('[Supabase Auth] Erro ao recuperar sessão no boot:', error);
+      }
       if (session?.user && (!this.currentSession || !this.currentSession.isDemo)) {
-        await this.syncSessionFromSupabase(session);
+        await this.syncSessionFromSupabase(session, true /* forceHydrate */);
+      } else if (!session?.user && this.currentSession && !this.currentSession.isDemo) {
+        this.currentSession = null;
+        try {
+          localStorage.removeItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION);
+        } catch (e) {}
+        this.loadTenant('tenant_demo', true);
       }
     }).catch((err) => {
       console.warn('[Supabase Auth] Erro ao recuperar sessão no boot:', err);
+    }).finally(() => {
+      this.isAuthReady = true;
+      this.isHydrating = false;
+      this.notify();
     });
   }
 
-  private async syncSessionFromSupabase(session: any): Promise<void> {
+  private async syncSessionFromSupabase(session: any, forceHydrate: boolean = false): Promise<void> {
     try {
       const userProfile = await SupabaseService.fetchUserProfileByAuthId(session.user.id, session.user.email);
       if (!userProfile) return;
@@ -483,6 +507,10 @@ export class DentalFinanceDB {
 
       if (this.activeTenantId !== tenantId) {
         this.loadTenant(tenantId, false);
+      }
+
+      if (forceHydrate || !this.hasHydratedWithAuth || this.activeTenantId !== tenantId) {
+        this.hasHydratedWithAuth = true;
         await this.hydrateTenantAsync(tenantId);
       }
       this.notify();
@@ -498,68 +526,84 @@ export class DentalFinanceDB {
       return;
     }
 
+    if (this.hydratePromise) {
+      return this.hydratePromise;
+    }
+
     this.isHydrating = true;
     this.notify();
 
-    try {
-      const res = await SupabaseService.getTenantData(tenantId);
-      if (res.professional) {
-        this.professional = res.professional;
-        saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, tenantId);
+    this.hydratePromise = (async () => {
+      try {
+        const res = await SupabaseService.getTenantData(tenantId);
+        if (res.error) {
+          console.warn(`[Supabase] Erro ao buscar dados do tenant ${tenantId} (${res.error}). Preservando estado.`);
+          return;
+        }
+
+        if (res.professional) {
+          this.professional = res.professional;
+          saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, tenantId);
+        }
+        if (res.payrollHistory && res.payrollHistory.length > 0) {
+          this.payrollHistory = res.payrollHistory;
+          saveItem(STORAGE_KEYS.PAYROLL_HISTORY, this.payrollHistory, tenantId);
+        }
+        if (res.patients) {
+          this.patients = res.patients;
+          saveItem(STORAGE_KEYS.PATIENTS, this.patients, tenantId);
+        }
+        if (res.sales) {
+          this.sales = res.sales;
+          saveItem(STORAGE_KEYS.SALES, this.sales, tenantId);
+        }
+        if (res.expenses) {
+          this.expenses = res.expenses;
+          saveItem(STORAGE_KEYS.EXPENSES, this.expenses, tenantId);
+        }
+        if (res.procedures && res.procedures.length > 0) {
+          this.procedures = res.procedures;
+          saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, tenantId);
+        } else if (res.procedures && res.procedures.length === 0 && this.procedures.length > 0) {
+          this.procedures.forEach((p) => SupabaseService.saveProcedure(p, tenantId).catch(console.warn));
+        }
+        if (res.clinicalInputs && res.clinicalInputs.length > 0) {
+          this.clinicalInputs = res.clinicalInputs;
+          saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, tenantId);
+        } else if (res.clinicalInputs && res.clinicalInputs.length === 0 && this.clinicalInputs.length > 0) {
+          this.clinicalInputs.forEach((i) => SupabaseService.saveClinicalInput(i, tenantId).catch(console.warn));
+        }
+        if (res.bankAccounts && res.bankAccounts.length > 0) {
+          this.bankAccounts = res.bankAccounts;
+          saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, tenantId);
+        } else if (!res.error && res.bankAccounts && res.bankAccounts.length === 0) {
+          const banksToSync = this.getBankAccounts();
+          if (banksToSync.length > 0) {
+            SupabaseService.saveBankAccountsBulk(banksToSync, tenantId).catch(console.warn);
+          }
+        }
+        if (res.appointments) {
+          this.appointments = res.appointments;
+          saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, tenantId);
+        }
+        if (res.preferences) {
+          this.preferences = res.preferences;
+          saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, this.preferences, tenantId);
+        }
+        if (res.auditLogs && res.auditLogs.length > 0) {
+          this.auditLogs = res.auditLogs;
+          saveItem(STORAGE_KEYS.AUDIT_LOGS, this.auditLogs, tenantId);
+        }
+      } catch (err) {
+        console.warn(`Erro ao hidratar tenant ${tenantId} do banco de dados:`, err);
+      } finally {
+        this.isHydrating = false;
+        this.hydratePromise = null;
+        this.notify();
       }
-      if (res.payrollHistory && res.payrollHistory.length > 0) {
-        this.payrollHistory = res.payrollHistory;
-        saveItem(STORAGE_KEYS.PAYROLL_HISTORY, this.payrollHistory, tenantId);
-      }
-      if (res.patients) {
-        this.patients = res.patients;
-        saveItem(STORAGE_KEYS.PATIENTS, this.patients, tenantId);
-      }
-      if (res.sales) {
-        this.sales = res.sales;
-        saveItem(STORAGE_KEYS.SALES, this.sales, tenantId);
-      }
-      if (res.expenses) {
-        this.expenses = res.expenses;
-        saveItem(STORAGE_KEYS.EXPENSES, this.expenses, tenantId);
-      }
-      if (res.procedures && res.procedures.length > 0) {
-        this.procedures = res.procedures;
-        saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, tenantId);
-      } else if (res.procedures && res.procedures.length === 0 && this.procedures.length > 0) {
-        this.procedures.forEach((p) => SupabaseService.saveProcedure(p, tenantId).catch(console.warn));
-      }
-      if (res.clinicalInputs && res.clinicalInputs.length > 0) {
-        this.clinicalInputs = res.clinicalInputs;
-        saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, tenantId);
-      } else if (res.clinicalInputs && res.clinicalInputs.length === 0 && this.clinicalInputs.length > 0) {
-        this.clinicalInputs.forEach((i) => SupabaseService.saveClinicalInput(i, tenantId).catch(console.warn));
-      }
-      if (res.bankAccounts && res.bankAccounts.length > 0) {
-        this.bankAccounts = res.bankAccounts;
-        saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, tenantId);
-      } else {
-        const banksToSync = this.getBankAccounts();
-        SupabaseService.saveBankAccountsBulk(banksToSync, tenantId).catch(console.warn);
-      }
-      if (res.appointments) {
-        this.appointments = res.appointments;
-        saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, tenantId);
-      }
-      if (res.preferences) {
-        this.preferences = res.preferences;
-        saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, this.preferences, tenantId);
-      }
-      if (res.auditLogs && res.auditLogs.length > 0) {
-        this.auditLogs = res.auditLogs;
-        saveItem(STORAGE_KEYS.AUDIT_LOGS, this.auditLogs, tenantId);
-      }
-    } catch (err) {
-      console.warn(`Erro ao hidratar tenant ${tenantId} do banco de dados:`, err);
-    } finally {
-      this.isHydrating = false;
-      this.notify();
-    }
+    })();
+
+    return this.hydratePromise;
   }
 
   public loadTenant(tenantId: string, isDemo: boolean = false): void {
@@ -953,6 +997,8 @@ export class DentalFinanceDB {
       this.currentSession = session;
       saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
       this.loadTenant(tenantId, false);
+      this.hasHydratedWithAuth = true;
+      this.isAuthReady = true;
       await this.hydrateTenantAsync(tenantId);
 
       this.log('LOGIN_SUCESSO', 'AUTH', userProfile.id, `Usuário ${userProfile.email} autenticado com sucesso via Supabase Auth.`);
