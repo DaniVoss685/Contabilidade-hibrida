@@ -18,6 +18,7 @@ import {
   Wallet,
   Calendar,
   LogOut,
+  Repeat,
 } from 'lucide-react';
 
 export type NavTab =
@@ -27,6 +28,7 @@ export type NavTab =
   | 'supplies'
   | 'receivables'
   | 'expenses'
+  | 'recurrent_expenses'
   | 'financial'
   | 'bank_accounts'
   | 'patients'
@@ -110,6 +112,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: TrendingDown,
           badge: overdueExpensesCount > 0 ? overdueExpensesCount : undefined,
           badgeColor: 'bg-rose-100 text-rose-800 border border-rose-200',
+        },
+        {
+          id: 'recurrent_expenses',
+          label: 'Despesas Recorrentes',
+          icon: Repeat,
         },
       ],
     },

@@ -190,6 +190,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   const [reviewNotes, setReviewNotes] = useState('');
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [isConfirmCompetencyDialogOpen, setIsConfirmCompetencyDialogOpen] = useState(false);
+  const [isIrpfMemoryModalOpen, setIsIrpfMemoryModalOpen] = useState(false);
 
   const loadContabilexData = async (tenantId: string) => {
     if (!tenantId || tenantId === 'tenant_demo') return;
@@ -1316,29 +1317,55 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center justify-between py-1.5 text-slate-600">
-                <div className="flex items-center gap-2 pl-2">
-                  <span className="w-5 h-5 rounded-md bg-rose-50 text-rose-600 font-mono font-bold text-xs flex items-center justify-center">
-                    −
-                  </span>
-                  <span>Dedução de Dependentes ({cpfTax.dependentCount}):</span>
+              {/* Deduções Pessoais: Comparativo Legal vs Simplificado */}
+              {cpfTax.deductionOptionUsed === 'SIMPLIFICADO' ? (
+                <div className="py-2 px-2.5 bg-emerald-50/50 rounded-xl border border-emerald-200/60 space-y-1">
+                  <div className="flex items-center justify-between text-slate-700">
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-md bg-emerald-100 text-emerald-800 font-mono font-bold text-xs flex items-center justify-center">
+                        −
+                      </span>
+                      <span className="font-semibold text-emerald-950">
+                        Desconto Simplificado Mensal (Mais Vantajoso):
+                      </span>
+                    </div>
+                    <span className="font-mono font-bold text-emerald-800">
+                      {formatCurrency(cpfTax.simplifiedDiscountAmount)}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-emerald-700 pl-7">
+                    Supera as deduções legais (INSS: {formatCurrency(cpfTax.inssDeductionTotal)} + Dependentes: {formatCurrency(cpfTax.dependentDeductionTotal)} = {formatCurrency(cpfTax.inssDeductionTotal + cpfTax.dependentDeductionTotal)}) gerando menor imposto.
+                  </div>
                 </div>
-                <span className="font-mono font-medium text-rose-600">
-                  {formatCurrency(cpfTax.dependentDeductionTotal)}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between py-1.5 text-slate-600">
-                <div className="flex items-center gap-2 pl-2">
-                  <span className="w-5 h-5 rounded-md bg-rose-50 text-rose-600 font-mono font-bold text-xs flex items-center justify-center">
-                    −
-                  </span>
-                  <span>INSS Próprio Recolhido:</span>
+              ) : (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between py-1.5 text-slate-600">
+                    <div className="flex items-center gap-2 pl-2">
+                      <span className="w-5 h-5 rounded-md bg-rose-50 text-rose-600 font-mono font-bold text-xs flex items-center justify-center">
+                        −
+                      </span>
+                      <span>Dedução de Dependentes ({cpfTax.dependentCount}):</span>
+                    </div>
+                    <span className="font-mono font-medium text-rose-600">
+                      {formatCurrency(cpfTax.dependentDeductionTotal)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between py-1.5 text-slate-600">
+                    <div className="flex items-center gap-2 pl-2">
+                      <span className="w-5 h-5 rounded-md bg-rose-50 text-rose-600 font-mono font-bold text-xs flex items-center justify-center">
+                        −
+                      </span>
+                      <span>INSS Próprio Recolhido:</span>
+                    </div>
+                    <span className="font-mono font-medium text-rose-600">
+                      {formatCurrency(cpfTax.inssDeductionTotal)}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 pl-9">
+                    Deduções legais ({formatCurrency(cpfTax.inssDeductionTotal + cpfTax.dependentDeductionTotal)}) superam o desconto simplificado ({formatCurrency(cpfTax.simplifiedDiscountAmount)}).
+                  </div>
                 </div>
-                <span className="font-mono font-medium text-rose-600">
-                  {formatCurrency(cpfTax.inssDeductionTotal)}
-                </span>
-              </div>
+              )}
 
               <div className="flex items-center justify-between py-2 border-t border-slate-100 text-slate-800">
                 <div className="flex items-center gap-2">
@@ -1376,6 +1403,41 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                 </span>
               </div>
 
+              {/* Imposto Apurado antes de Reduções */}
+              <div className="flex items-center justify-between py-1.5 text-slate-600">
+                <div className="flex items-center gap-2 pl-2">
+                  <span className="w-5 h-5 rounded-md bg-slate-100 text-slate-700 font-mono font-bold text-xs flex items-center justify-center">
+                    =
+                  </span>
+                  <span>Imposto Apurado na Tabela:</span>
+                </div>
+                <span className="font-mono font-semibold text-slate-800">
+                  {formatCurrency(cpfTax.taxBeforeReduction ?? Math.max(0, cpfTax.taxBase * cpfTax.nominalRate - cpfTax.deductionAmount))}
+                </span>
+              </div>
+
+              {/* Redução Adicional 2026 (Lei 15.191/2025) */}
+              {(cpfTax.additionalReduction || 0) > 0 && (
+                <div className="flex items-center justify-between py-2 px-2.5 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-950">
+                  <div className="flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-md bg-emerald-200 text-emerald-900 font-mono font-bold text-xs flex items-center justify-center">
+                      −
+                    </span>
+                    <div>
+                      <span className="font-bold text-xs">Redução Especial Lei 15.191/2025:</span>
+                      <span className="block text-[10px] text-emerald-700">
+                        {cpfTax.grossRevenueReceived <= 5000
+                          ? 'Isenção total até R$ 5.000,00 (redução zera o imposto)'
+                          : 'Redução decrescente para faixa até R$ 7.350,00'}
+                      </span>
+                    </div>
+                  </div>
+                  <span className="font-mono font-bold text-emerald-800">
+                    − {formatCurrency(cpfTax.additionalReduction || 0)}
+                  </span>
+                </div>
+              )}
+
               {/* Final IRPF */}
               <div className="flex items-center justify-between py-3 px-3.5 bg-emerald-50/90 text-emerald-950 border border-emerald-200/80 rounded-xl font-bold mt-2 shadow-2xs">
                 <div className="flex items-center gap-2.5">
@@ -1384,7 +1446,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                   </span>
                   <div>
                     <span className="block text-xs text-emerald-900 font-bold">
-                      Imposto Carnê-Leão Estimado:
+                      Imposto Carnê-Leão a Recolher:
                     </span>
                     <span className="text-[10px] text-emerald-700 font-normal">
                       Alíquota Efetiva: {formatPercent(cpfTax.effectiveTaxRate)}
@@ -1395,6 +1457,16 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                   {formatCurrency(cpfTax.carneLeaoEstimated)}
                 </span>
               </div>
+
+              {/* Botão para Memória de Cálculo & Fontes Oficiais */}
+              <button
+                type="button"
+                onClick={() => setIsIrpfMemoryModalOpen(true)}
+                className="w-full mt-2.5 py-2 px-3 bg-slate-50 hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-slate-700 hover:text-emerald-900 font-bold text-xs rounded-xl shadow-2xs transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Ver Memória de Cálculo & Fontes Oficiais 2026</span>
+              </button>
             </div>
           </div>
 
@@ -2367,6 +2439,284 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>{isSubmittingReview ? 'Gravando Confirmação...' : 'Revisar e Confirmar Competência'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 8. MODAL: Memória de Cálculo & Fontes Oficiais — IRPF / Carnê-Leão 2026 */}
+      {isIrpfMemoryModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-3xl w-full shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] flex flex-col">
+            
+            {/* Header */}
+            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center font-bold">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>Memória de Cálculo Oficial — Carnê-Leão {effectiveYear}</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      Tabela Oficial 2026
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-300">
+                    Competência: {formatMonthYear(competenceStr)} • Regime de Caixa PF
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsIrpfMemoryModalOpen(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Scrollable Body */}
+            <div className="p-6 overflow-y-auto space-y-6 text-slate-700 text-xs leading-relaxed">
+              
+              {/* 1. Resumo da Apuração do Mês */}
+              <div className="p-4 bg-emerald-50/60 rounded-2xl border border-emerald-200/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-emerald-950 text-sm flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    Demonstração Sintética do Mês ({formatMonthYear(competenceStr)})
+                  </span>
+                  <span className="font-mono font-bold text-emerald-900 text-sm">
+                    DARF a Pagar: {formatCurrency(cpfTax.carneLeaoEstimated)}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-mono text-center">
+                  <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
+                    <span className="block text-[10px] text-slate-500 font-sans">Receita Bruta PF</span>
+                    <span className="font-bold text-slate-900">{formatCurrency(cpfTax.grossRevenueReceived)}</span>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
+                    <span className="block text-[10px] text-slate-500 font-sans">(-) Livro Caixa</span>
+                    <span className="font-bold text-rose-600">− {formatCurrency(cpfTax.deductibleExpensesLivroCaixa)}</span>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
+                    <span className="block text-[10px] text-slate-500 font-sans">(-) Dedução Aplicada</span>
+                    <span className="font-bold text-emerald-700">
+                      − {formatCurrency(cpfTax.deductionOptionUsed === 'SIMPLIFICADO' ? cpfTax.simplifiedDiscountAmount : (cpfTax.inssDeductionTotal + cpfTax.dependentDeductionTotal))}
+                    </span>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-xl border border-emerald-100">
+                    <span className="block text-[10px] text-slate-500 font-sans">(=) Base de Cálculo</span>
+                    <span className="font-bold text-slate-900">{formatCurrency(cpfTax.taxBase)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. Passo a Passo do Cálculo */}
+              <div className="space-y-3">
+                <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-2">
+                  <Calculator className="w-4 h-4 text-emerald-600" />
+                  Passo a Passo da Memória de Cálculo
+                </h4>
+
+                <div className="border border-slate-200 rounded-2xl divide-y divide-slate-100 overflow-hidden">
+                  <div className="p-3 bg-white flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-900">1. Receitas Efetivamente Recebidas no CPF</span>
+                      <p className="text-[11px] text-slate-500">Regime de caixa: parcelas de proced. odontológicos recebidas na competência.</p>
+                    </div>
+                    <span className="font-mono font-bold text-slate-900">{formatCurrency(cpfTax.grossRevenueReceived)}</span>
+                  </div>
+
+                  <div className="p-3 bg-white flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-900">2. (-) Despesas Dedutíveis no Livro Caixa</span>
+                      <p className="text-[11px] text-slate-500">Despesas odontológicas de custeio escrituradas com dedutibilidade confirmada.</p>
+                    </div>
+                    <span className="font-mono font-bold text-rose-600">− {formatCurrency(cpfTax.deductibleExpensesLivroCaixa)}</span>
+                  </div>
+
+                  <div className="p-3 bg-white flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-900">3. Receita Líquida após Livro Caixa</span>
+                      <p className="text-[11px] text-slate-500">Receita Bruta deduzida das despesas operacionais da profissão.</p>
+                    </div>
+                    <span className="font-mono font-bold text-slate-900">
+                      {formatCurrency(Math.max(0, cpfTax.grossRevenueReceived - cpfTax.deductibleExpensesLivroCaixa))}
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-slate-50/70 flex items-start justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900">4. Comparativo de Dedução Pessoal (Mais Vantajosa)</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                          {cpfTax.deductionOptionUsed === 'SIMPLIFICADO' ? 'Desconto Simplificado Escolhido' : 'Deduções Legais Escolhidas'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600">
+                        O sistema compara automaticamente as duas opções permitidas por lei e aplica a que reduz ao máximo o seu imposto:
+                      </p>
+                      <ul className="text-[11px] text-slate-600 list-disc list-inside space-y-0.5 pl-1">
+                        <li>
+                          <strong>Deduções Legais:</strong> INSS Próprio ({formatCurrency(cpfTax.inssDeductionTotal)}) + Dependentes ({cpfTax.dependentCount} × R$ 189,59 = {formatCurrency(cpfTax.dependentDeductionTotal)}) = <strong>{formatCurrency(cpfTax.inssDeductionTotal + cpfTax.dependentDeductionTotal)}</strong>
+                        </li>
+                        <li>
+                          <strong>Desconto Simplificado Oficial:</strong> <strong>{formatCurrency(cpfTax.simplifiedDiscountAmount)}</strong> mensais (25% sobre a 1ª faixa de isenção).
+                        </li>
+                      </ul>
+                    </div>
+                    <span className="font-mono font-bold text-emerald-700 shrink-0">
+                      − {formatCurrency(cpfTax.deductionOptionUsed === 'SIMPLIFICADO' ? cpfTax.simplifiedDiscountAmount : (cpfTax.inssDeductionTotal + cpfTax.dependentDeductionTotal))}
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-white flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-900">5. (=) Base Tributável Efetiva</span>
+                      <p className="text-[11px] text-slate-500">Valor sobre o qual incide a tabela progressiva mensal do IRPF.</p>
+                    </div>
+                    <span className="font-mono font-bold text-indigo-900 text-sm">{formatCurrency(cpfTax.taxBase)}</span>
+                  </div>
+
+                  <div className="p-3 bg-white flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-900">6. Aplicação da Tabela Progressiva (Faixa {cpfTax.bracketNumber})</span>
+                      <p className="text-[11px] text-slate-500">
+                        Alíquota nominal de {formatPercent(cpfTax.nominalRate * 100)} e parcela a deduzir de {formatCurrency(cpfTax.deductionAmount)}.
+                      </p>
+                    </div>
+                    <div className="text-right font-mono">
+                      <span className="block text-xs font-bold text-slate-900">
+                        {formatCurrency(cpfTax.taxBeforeReduction ?? Math.max(0, cpfTax.taxBase * cpfTax.nominalRate - cpfTax.deductionAmount))}
+                      </span>
+                      <span className="text-[10px] text-slate-400">
+                        ({formatCurrency(cpfTax.taxBase)} × {formatPercent(cpfTax.nominalRate * 100)} − {formatCurrency(cpfTax.deductionAmount)})
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Redução 2026 */}
+                  <div className="p-3 bg-emerald-50/50 flex items-start justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-emerald-950">7. (-) Redução Especial da Lei nº 15.191/2025</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-200 text-emerald-900">
+                          Vigência 2026
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-0.5">
+                        {cpfTax.grossRevenueReceived <= 5000
+                          ? 'Para rendimentos tributáveis de até R$ 5.000,00, a lei confere isenção integral, zerando o imposto apurado.'
+                          : cpfTax.grossRevenueReceived <= 7350
+                          ? `Para rendimentos entre R$ 5.000,01 e R$ 7.350,00, aplica-se a redução decrescente: 978,62 − (0,133145 × ${formatCurrency(cpfTax.grossRevenueReceived)}).`
+                          : 'Para rendimentos superiores a R$ 7.350,00, não há redução adicional aplicável.'}
+                      </p>
+                    </div>
+                    <span className="font-mono font-bold text-emerald-800 shrink-0">
+                      − {formatCurrency(cpfTax.additionalReduction || 0)}
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-slate-900 text-white flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-sm">8. (=) Imposto Final a Recolher (Carnê-Leão)</span>
+                      <p className="text-[11px] text-slate-300">
+                        Valor líquido do DARF (código 0190) com alíquota efetiva de {formatPercent(cpfTax.effectiveTaxRate)}.
+                      </p>
+                    </div>
+                    <span className="font-mono font-bold text-base text-emerald-400">
+                      {formatCurrency(cpfTax.carneLeaoEstimated)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. Tabela Progressiva Oficial 2026 */}
+              <div className="space-y-2">
+                <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-emerald-600" />
+                  Tabela Progressiva Mensal Oficial 2026 (RFB)
+                </h4>
+                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
+                      <tr>
+                        <th className="py-2 px-3">Faixa</th>
+                        <th className="py-2 px-3">Base de Cálculo Mensal (R$)</th>
+                        <th className="py-2 px-3 text-center">Alíquota</th>
+                        <th className="py-2 px-3 text-right">Parcela a Deduzir (R$)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                      <tr className={cpfTax.bracketNumber === 1 ? 'bg-emerald-50/80 font-bold text-emerald-950' : ''}>
+                        <td className="py-2 px-3 font-sans">1ª Faixa</td>
+                        <td className="py-2 px-3">Até R$ 2.428,80</td>
+                        <td className="py-2 px-3 text-center">0,0% (Isento)</td>
+                        <td className="py-2 px-3 text-right">R$ 0,00</td>
+                      </tr>
+                      <tr className={cpfTax.bracketNumber === 2 ? 'bg-emerald-50/80 font-bold text-emerald-950' : ''}>
+                        <td className="py-2 px-3 font-sans">2ª Faixa</td>
+                        <td className="py-2 px-3">De R$ 2.428,81 até R$ 2.826,65</td>
+                        <td className="py-2 px-3 text-center">7,5%</td>
+                        <td className="py-2 px-3 text-right">R$ 182,16</td>
+                      </tr>
+                      <tr className={cpfTax.bracketNumber === 3 ? 'bg-emerald-50/80 font-bold text-emerald-950' : ''}>
+                        <td className="py-2 px-3 font-sans">3ª Faixa</td>
+                        <td className="py-2 px-3">De R$ 2.826,66 até R$ 3.751,05</td>
+                        <td className="py-2 px-3 text-center">15,0%</td>
+                        <td className="py-2 px-3 text-right">R$ 394,16</td>
+                      </tr>
+                      <tr className={cpfTax.bracketNumber === 4 ? 'bg-emerald-50/80 font-bold text-emerald-950' : ''}>
+                        <td className="py-2 px-3 font-sans">4ª Faixa</td>
+                        <td className="py-2 px-3">De R$ 3.751,06 até R$ 4.664,68</td>
+                        <td className="py-2 px-3 text-center">22,5%</td>
+                        <td className="py-2 px-3 text-right">R$ 675,49</td>
+                      </tr>
+                      <tr className={cpfTax.bracketNumber === 5 ? 'bg-emerald-50/80 font-bold text-emerald-950' : ''}>
+                        <td className="py-2 px-3 font-sans">5ª Faixa</td>
+                        <td className="py-2 px-3">Acima de R$ 4.664,68</td>
+                        <td className="py-2 px-3 text-center">27,5%</td>
+                        <td className="py-2 px-3 text-right">R$ 908,73</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* 4. Fontes Oficiais & Legislação Aplicável */}
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+                <span className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                  Fontes Oficiais & Fundamentação Jurídica
+                </span>
+                <ul className="text-[11px] text-slate-600 space-y-1 list-disc list-inside">
+                  <li>
+                    <strong>Lei Federal nº 15.191/2025 e Lei Federal nº 15.270/2025:</strong> Institui a ampliação da faixa de isenção e a redução especial de imposto de renda mensal para rendimentos até R$ 7.350,00 a partir de 2026.
+                  </li>
+                  <li>
+                    <strong>Artigo 75 do Regulamento do Imposto de Renda (Decreto nº 9.580/2018):</strong> Disciplina a escrituração do Livro Caixa e o recolhimento mensal obrigatório via Carnê-Leão pelo profissional liberal da odontologia.
+                  </li>
+                  <li>
+                    <strong>Instrução Normativa RFB nº 1.500/2014:</strong> Normatiza a tributação dos rendimentos do trabalho não assalariado e a sistemática do desconto simplificado mensal (R$ 607,20 em 2026).
+                  </li>
+                  <li>
+                    <strong>Lei Complementar nº 123/2006:</strong> Garante a independência e segregação das bases tributárias de pessoa física (Carnê-Leão) em relação às bases de pessoa jurídica (Simples Nacional / Fator R).
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-end shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsIrpfMemoryModalOpen(false)}
+                className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-xs transition-all cursor-pointer"
+              >
+                Fechar Memória de Cálculo
               </button>
             </div>
           </div>

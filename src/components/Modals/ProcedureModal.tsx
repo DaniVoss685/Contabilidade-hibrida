@@ -237,6 +237,7 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
         totalDirectCost,
         suggestedMarginPercent,
         defaultPrice,
+        isIncomplete: false,
       });
       setSavedProcedureName(name.trim());
       setShowSuccess(true);
@@ -366,20 +367,20 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
                   label="Duração Clínica Média"
                   min={15}
                   max={240}
-                  step={5}
+                  step={15}
                   value={clinicalDurationMinutes}
                   onChange={setClinicalDurationMinutes}
-                  valueFormatter={(val) =>
-                    val >= 60 ? `${val} min (${(val / 60).toFixed(1)}h)` : `${val} min`
-                  }
+                  valueFormatter={(val) => {
+                    if (val < 60) return `${val} min`;
+                    const h = Math.floor(val / 60);
+                    const m = val % 60;
+                    return m === 0 ? `${h}h` : `${h}h ${m}min`;
+                  }}
                   marks={[
                     { value: 15, label: '15m' },
-                    { value: 30, label: '30m' },
                     { value: 45, label: '45m' },
-                    { value: 60, label: '1h' },
-                    { value: 90, label: '1.5h' },
-                    { value: 120, label: '2h' },
-                    { value: 180, label: '3h' },
+                    { value: 90, label: '1h 30' },
+                    { value: 150, label: '2h 30' },
                     { value: 240, label: '4h' },
                   ]}
                   color="indigo"

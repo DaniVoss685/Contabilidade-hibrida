@@ -13,6 +13,10 @@ import {
   Calendar,
   Wallet,
   Loader2,
+  Repeat,
+  Layers,
+  CalendarDays,
+  Check,
 } from 'lucide-react';
 import { db } from '../../lib/db';
 import {
@@ -25,7 +29,37 @@ import {
   AttachmentMetadata,
 } from '../../types';
 import { DatePicker, CurrencyInput, CustomSelect, useToast, ReceiptUploader, ConfirmDialog } from '../UI';
-import { formatCpf, formatCnpj } from '../../lib/masks';
+import { formatCpf, formatCnpj, formatCurrency, formatDateBr } from '../../lib/masks';
+
+function addMonthsToDateString(dateStr: string, monthsToAdd: number): string {
+  if (!dateStr) return dateStr;
+  const parts = dateStr.split('-').map(Number);
+  const y = parts[0];
+  const m = parts[1];
+  const d = parts[2];
+  const targetDate = new Date(y, m - 1 + monthsToAdd, 1);
+  const daysInMonth = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0).getDate();
+  const finalDay = Math.min(d, daysInMonth);
+  const finalMonth = String(targetDate.getMonth() + 1).padStart(2, '0');
+  const finalDayStr = String(finalDay).padStart(2, '0');
+  return `${targetDate.getFullYear()}-${finalMonth}-${finalDayStr}`;
+}
+
+function addWeeksToDateString(dateStr: string, weeksToAdd: number): string {
+  if (!dateStr) return dateStr;
+  const parts = dateStr.split('-').map(Number);
+  const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+  dt.setDate(dt.getDate() + weeksToAdd * 7);
+  const finalMonth = String(dt.getMonth() + 1).padStart(2, '0');
+  const finalDayStr = String(dt.getDate()).padStart(2, '0');
+  return `${dt.getFullYear()}-${finalMonth}-${finalDayStr}`;
+}
+
+function addYearsToDateString(dateStr: string, yearsToAdd: number): string {
+  if (!dateStr) return dateStr;
+  const parts = dateStr.split('-').map(Number);
+  return `${parts[0] + yearsToAdd}-${String(parts[1]).padStart(2, '0')}-${String(parts[2]).padStart(2, '0')}`;
+}
 
 interface NewExpenseModalProps {
   isOpen: boolean;
@@ -34,6 +68,7 @@ interface NewExpenseModalProps {
   bankAccounts: BankAccount[];
   onExpenseCreated?: () => void;
   expenseToEdit?: Expense | null;
+  initialExpenseType?: 'UNICA' | 'PARCELADA' | 'RECORRENTE';
 }
 
 export interface CounterpartyMeta {
@@ -192,6 +227,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
   bankAccounts,
   onExpenseCreated,
   expenseToEdit,
+  initialExpenseType,
 }) => {
   const toast = useToast();
   if (!isOpen) return null;
@@ -244,6 +280,15 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
   const [despesaOperacionalPj, setDespesaOperacionalPj] = useState<boolean>(
     defaultCat?.despesaOperacionalPj || true
   );
+
+  // Tipo de Lançamento: Único, Parcelado ou Recorrente
+  const [expenseType, setExpenseType] = useState<'UNICA' | 'PARCELADA' | 'RECORRENTE'>(
+    initialExpenseType || 'UNICA'
+  );
+  const [installmentsCount, setInstallmentsCount] = useState<number>(2);
+  const [recurrenceFrequency, setRecurrenceFrequency] = useState<'MENSAL' | 'SEMANAL' | 'ANUAL'>('MENSAL');
+  const [recurrenceCount, setRecurrenceCount] = useState<number>(12);
+  const [editScope, setEditScope] = useState<'ONLY_THIS' | 'THIS_AND_FUTURE' | 'ALL_SERIES'>('ONLY_THIS');
 
   // Manual override state with required justification
   const [isOverridden, setIsOverridden] = useState<boolean>(false);
@@ -299,6 +344,13 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       setDespesaOperacionalPj(expenseToEdit.despesaOperacionalPj !== undefined ? expenseToEdit.despesaOperacionalPj : true);
       setIsOverridden(Boolean(expenseToEdit.isOverridden));
       setOverrideJustification(expenseToEdit.overrideJustification || '');
+
+      setExpenseType(expenseToEdit.expenseType || (expenseToEdit.totalInstallments ? 'PARCELADA' : expenseToEdit.recurrenceId ? 'RECORRENTE' : 'UNICA'));
+      setInstallmentsCount(expenseToEdit.totalInstallments || 2);
+      setRecurrenceFrequency(expenseToEdit.recurrenceFrequency || 'MENSAL');
+      setRecurrenceCount(expenseToEdit.recurrenceCount || 12);
+      setEditScope('ONLY_THIS');
+
       setIsDirty(false);
     } else {
       setSupplierName('');
@@ -323,9 +375,16 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       setDespesaOperacionalPj(defaultCat?.despesaOperacionalPj || true);
       setIsOverridden(false);
       setOverrideJustification('');
+
+      setExpenseType(initialExpenseType || 'UNICA');
+      setInstallmentsCount(2);
+      setRecurrenceFrequency('MENSAL');
+      setRecurrenceCount(12);
+      setEditScope('ONLY_THIS');
+
       setIsDirty(false);
     }
-  }, [expenseToEdit, isOpen, defaultCat]);
+  }, [expenseToEdit, isOpen, defaultCat, initialExpenseType]);
 
   // Handle entity change with document re-masking
   const handleEntitySelect = (newEntity: ExpenseEntity) => {
@@ -394,12 +453,53 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     description: b.bankName || 'Conta Bancária',
   }));
 
+  const isSeriesExpense = Boolean(
+    expenseToEdit && (expenseToEdit.installmentGroupId || expenseToEdit.recurrenceId)
+  );
+
+  const installmentPreview = useMemo(() => {
+    if (expenseType !== 'PARCELADA' || value <= 0) return [];
+    const count = Math.max(2, Math.min(60, installmentsCount || 2));
+    const baseAmount = Math.floor((value / count) * 100) / 100;
+    const remainder = Math.round((value - baseAmount * count) * 100) / 100;
+    const list = [];
+    for (let i = 1; i <= count; i++) {
+      const instVal = i === count ? Math.round((baseAmount + remainder) * 100) / 100 : baseAmount;
+      const instDueDate = addMonthsToDateString(dueDate, i - 1);
+      list.push({
+        number: i,
+        total: count,
+        value: instVal,
+        dueDate: instDueDate,
+        isLastWithAdjustment: i === count && remainder !== 0,
+      });
+    }
+    return list;
+  }, [expenseType, value, installmentsCount, dueDate]);
+
+  const recurrencePreview = useMemo(() => {
+    if (expenseType !== 'RECORRENTE' || value <= 0) return { total: 0, count: 0, previewDates: [] as string[] };
+    const count = Math.max(2, Math.min(60, recurrenceCount || 12));
+    const total = Math.round(value * count * 100) / 100;
+    const previewDates: string[] = [];
+    for (let i = 1; i <= Math.min(count, 3); i++) {
+      const d =
+        recurrenceFrequency === 'MENSAL'
+          ? addMonthsToDateString(dueDate, i - 1)
+          : recurrenceFrequency === 'SEMANAL'
+          ? addWeeksToDateString(dueDate, i - 1)
+          : addYearsToDateString(dueDate, i - 1);
+      previewDates.push(d);
+    }
+    return { total, count, previewDates };
+  }, [expenseType, value, recurrenceCount, recurrenceFrequency, dueDate]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
 
-    if (counterpartyMeta.counterpartyRequired && !supplierName.trim()) {
-      toast.warning(`Por favor informe o ${counterpartyMeta.counterpartyLabel.toLowerCase()}.`);
+    if (!description.trim()) {
+      toast.warning('A descrição da despesa é obrigatória.');
       return;
     }
 
@@ -408,8 +508,18 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       return;
     }
 
+    if (!dueDate || !dueDate.trim()) {
+      toast.warning('A data de vencimento é obrigatória.');
+      return;
+    }
+
     if (isOverridden && !overrideJustification.trim()) {
       toast.warning('Para alterar manualmente a classificação tributária padrão, é obrigatório informar a justificativa.');
+      return;
+    }
+
+    if (isPaid && (!bankAccountId || bankAccountId.trim() === '')) {
+      toast.warning('A conta bancária é obrigatória para despesas pagas.');
       return;
     }
 
@@ -417,64 +527,206 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     try {
       const cat = selectedCategory;
       const finalAttachmentName = attachmentFile?.name || attachmentName.trim() || undefined;
-      // Fallback seguro se o campo opcional não foi preenchido
-      const finalSupplierName = supplierName.trim() || description.trim() || cat.name;
-      const finalDescription = description.trim() || cat.name;
+      // Descrição é a identificação principal; fornecedor recebe a descrição se omitido
+      const finalDescription = description.trim();
+      const finalSupplierName = supplierName.trim() || finalDescription;
+      const finalBankAccountId = isPaid ? bankAccountId : (bankAccountId || undefined);
+      const finalCompetenceDate = dueDate
+        ? `${dueDate.substring(0, 7)}-01`
+        : new Date().toISOString().split('T')[0];
 
       if (isEditing && expenseToEdit) {
-        db.updateExpense(expenseToEdit.id, {
-          supplierName: finalSupplierName,
-          supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
-          description: finalDescription,
-          categoryId: cat.id,
-          categoryCode: cat.code,
-          categoryName: cat.name,
-          subCategory: subCategory.trim() || undefined,
-          value,
-          competenceDate,
-          dueDate,
-          paymentDate: isPaid ? paymentDate : undefined,
-          paymentMethod: isPaid ? paymentMethod : undefined,
-          bankAccountId: isPaid ? bankAccountId : undefined,
-          documentNumber: documentNumber.trim() || undefined,
-          attachmentName: finalAttachmentName,
-          notes: notes.trim() || undefined,
-          entity,
-          dedutivelLivroCaixaPf,
-          impactaFatorRPj,
-          despesaOperacionalPj,
-          isOverridden,
-          overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
-          status: isPaid ? 'PAGO' : 'A_PAGAR',
-        });
-        toast.success('Despesa atualizada com sucesso.');
+        if (expenseToEdit.installmentGroupId || expenseToEdit.recurrenceId) {
+          db.updateExpenseSeries(
+            expenseToEdit.id,
+            {
+              supplierName: finalSupplierName,
+              supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
+              description: finalDescription,
+              categoryId: cat.id,
+              categoryCode: cat.code,
+              categoryName: cat.name,
+              subCategory: subCategory.trim() || undefined,
+              value,
+              competenceDate: finalCompetenceDate,
+              dueDate,
+              paymentDate: isPaid ? paymentDate : undefined,
+              paymentMethod: isPaid ? paymentMethod : undefined,
+              bankAccountId: finalBankAccountId,
+              documentNumber: documentNumber.trim() || undefined,
+              attachmentName: finalAttachmentName,
+              notes: notes.trim() || undefined,
+              entity,
+              dedutivelLivroCaixaPf,
+              impactaFatorRPj,
+              despesaOperacionalPj,
+              isOverridden,
+              overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
+              status: isPaid ? 'PAGO' : 'A_PAGAR',
+            },
+            editScope
+          );
+          toast.success(
+            editScope === 'ALL_SERIES'
+              ? 'Todas as despesas da série foram atualizadas.'
+              : editScope === 'THIS_AND_FUTURE'
+              ? 'Esta e as despesas seguintes foram atualizadas.'
+              : 'Despesa atualizada com sucesso.'
+          );
+        } else {
+          db.updateExpense(expenseToEdit.id, {
+            supplierName: finalSupplierName,
+            supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
+            description: finalDescription,
+            categoryId: cat.id,
+            categoryCode: cat.code,
+            categoryName: cat.name,
+            subCategory: subCategory.trim() || undefined,
+            value,
+            competenceDate: finalCompetenceDate,
+            dueDate,
+            paymentDate: isPaid ? paymentDate : undefined,
+            paymentMethod: isPaid ? paymentMethod : undefined,
+            bankAccountId: finalBankAccountId,
+            documentNumber: documentNumber.trim() || undefined,
+            attachmentName: finalAttachmentName,
+            notes: notes.trim() || undefined,
+            entity,
+            dedutivelLivroCaixaPf,
+            impactaFatorRPj,
+            despesaOperacionalPj,
+            isOverridden,
+            overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
+            status: isPaid ? 'PAGO' : 'A_PAGAR',
+            expenseType: 'UNICA',
+          });
+          toast.success('Despesa atualizada com sucesso.');
+        }
       } else {
-        db.addExpense({
-          supplierName: finalSupplierName,
-          supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
-          description: finalDescription,
-          categoryId: cat.id,
-          categoryCode: cat.code,
-          categoryName: cat.name,
-          subCategory: subCategory.trim() || undefined,
-          value,
-          competenceDate,
-          dueDate,
-          paymentDate: isPaid ? paymentDate : undefined,
-          paymentMethod: isPaid ? paymentMethod : undefined,
-          bankAccountId: isPaid ? bankAccountId : undefined,
-          documentNumber: documentNumber.trim() || undefined,
-          attachmentName: finalAttachmentName,
-          notes: notes.trim() || undefined,
-          entity,
-          dedutivelLivroCaixaPf,
-          impactaFatorRPj,
-          despesaOperacionalPj,
-          isOverridden,
-          overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
-          status: isPaid ? 'PAGO' : 'A_PAGAR',
-        });
-        toast.success('Despesa cadastrada com sucesso.');
+        if (expenseType === 'PARCELADA') {
+          const count = Math.max(2, Math.min(60, installmentsCount || 2));
+          const baseAmount = Math.floor((value / count) * 100) / 100;
+          const remainder = Math.round((value - baseAmount * count) * 100) / 100;
+          const groupId = `grp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          const items = [];
+
+          for (let i = 1; i <= count; i++) {
+            const instVal = i === count ? Math.round((baseAmount + remainder) * 100) / 100 : baseAmount;
+            const isFirstPaid = isPaid && i === 1;
+            items.push({
+              supplierName: finalSupplierName,
+              supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
+              description: `${finalDescription} (${i}/${count})`,
+              categoryId: cat.id,
+              categoryCode: cat.code,
+              categoryName: cat.name,
+              subCategory: subCategory.trim() || undefined,
+              value: instVal,
+              competenceDate: addMonthsToDateString(finalCompetenceDate, i - 1),
+              dueDate: addMonthsToDateString(dueDate, i - 1),
+              paymentDate: isFirstPaid ? paymentDate : undefined,
+              paymentMethod: isFirstPaid ? paymentMethod : undefined,
+              bankAccountId: isFirstPaid ? finalBankAccountId : (finalBankAccountId || undefined),
+              documentNumber: documentNumber.trim() || undefined,
+              attachmentName: finalAttachmentName,
+              notes: notes.trim() || undefined,
+              entity,
+              dedutivelLivroCaixaPf,
+              impactaFatorRPj,
+              despesaOperacionalPj,
+              isOverridden,
+              overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
+              status: isFirstPaid ? ('PAGO' as const) : ('A_PAGAR' as const),
+              expenseType: 'PARCELADA' as const,
+              installmentNumber: i,
+              totalInstallments: count,
+              installmentGroupId: groupId,
+            });
+          }
+          db.addExpenses(items);
+          toast.success(`Despesa parcelada em ${count}x cadastrada com sucesso.`);
+        } else if (expenseType === 'RECORRENTE') {
+          const count = Math.max(2, Math.min(60, recurrenceCount || 12));
+          const recId = `rec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          const items = [];
+
+          for (let i = 1; i <= count; i++) {
+            const isFirstPaid = isPaid && i === 1;
+            const itemDueDate =
+              recurrenceFrequency === 'MENSAL'
+                ? addMonthsToDateString(dueDate, i - 1)
+                : recurrenceFrequency === 'SEMANAL'
+                ? addWeeksToDateString(dueDate, i - 1)
+                : addYearsToDateString(dueDate, i - 1);
+            const itemCompDate =
+              recurrenceFrequency === 'MENSAL'
+                ? addMonthsToDateString(finalCompetenceDate, i - 1)
+                : recurrenceFrequency === 'SEMANAL'
+                ? addWeeksToDateString(finalCompetenceDate, i - 1)
+                : addYearsToDateString(finalCompetenceDate, i - 1);
+
+            items.push({
+              supplierName: finalSupplierName,
+              supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
+              description: `${finalDescription} (${i}/${count})`,
+              categoryId: cat.id,
+              categoryCode: cat.code,
+              categoryName: cat.name,
+              subCategory: subCategory.trim() || undefined,
+              value: value,
+              competenceDate: itemCompDate,
+              dueDate: itemDueDate,
+              paymentDate: isFirstPaid ? paymentDate : undefined,
+              paymentMethod: isFirstPaid ? paymentMethod : undefined,
+              bankAccountId: isFirstPaid ? finalBankAccountId : (finalBankAccountId || undefined),
+              documentNumber: documentNumber.trim() || undefined,
+              attachmentName: finalAttachmentName,
+              notes: notes.trim() || undefined,
+              entity,
+              dedutivelLivroCaixaPf,
+              impactaFatorRPj,
+              despesaOperacionalPj,
+              isOverridden,
+              overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
+              status: isFirstPaid ? ('PAGO' as const) : ('A_PAGAR' as const),
+              expenseType: 'RECORRENTE' as const,
+              recurrenceFrequency,
+              recurrenceCount: count,
+              recurrenceIndex: i,
+              recurrenceId: recId,
+            });
+          }
+          db.addExpenses(items);
+          toast.success(`Despesa recorrente com ${count} repetições cadastrada com sucesso.`);
+        } else {
+          db.addExpense({
+            supplierName: finalSupplierName,
+            supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
+            description: finalDescription,
+            categoryId: cat.id,
+            categoryCode: cat.code,
+            categoryName: cat.name,
+            subCategory: subCategory.trim() || undefined,
+            value,
+            competenceDate: finalCompetenceDate,
+            dueDate,
+            paymentDate: isPaid ? paymentDate : undefined,
+            paymentMethod: isPaid ? paymentMethod : undefined,
+            bankAccountId: finalBankAccountId,
+            documentNumber: documentNumber.trim() || undefined,
+            attachmentName: finalAttachmentName,
+            notes: notes.trim() || undefined,
+            entity,
+            dedutivelLivroCaixaPf,
+            impactaFatorRPj,
+            despesaOperacionalPj,
+            isOverridden,
+            overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
+            status: isPaid ? 'PAGO' : 'A_PAGAR',
+            expenseType: 'UNICA',
+          });
+          toast.success('Despesa cadastrada com sucesso.');
+        }
       }
 
       if (onExpenseCreated) onExpenseCreated();
@@ -585,89 +837,31 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
           </div>
 
           {/* Section 3: Identificação Contextual do Lançamento */}
+          {/* Section 3: Identificação da Despesa */}
           <div className="space-y-4">
             <span className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              3. Identificação do Lançamento
+              3. Identificação da Despesa
             </span>
 
-            {/* Descrição Detalhada */}
+            {/* Descrição da Despesa */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Descrição Detalhada do Gasto <span className="text-rose-500">*</span>
+                Descrição da Despesa <span className="text-rose-500">*</span>
               </label>
               <input
                 type="text"
-                placeholder={counterpartyMeta.descriptionPlaceholder}
+                placeholder="Ex: Energia Elétrica Enel, Aluguel do Consultório, Material Odontológico Cremer, Folha de Pagamento..."
                 value={description}
                 onChange={(e) => {
                   setDescription(e.target.value);
                   setIsDirty(true);
                 }}
-                className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none transition-all"
+                className="w-full text-xs font-medium rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none transition-all"
                 required
               />
-            </div>
-
-            {/* Contraparte Contextual e Documento */}
-            <div className={`grid grid-cols-1 ${counterpartyMeta.showDoc ? 'sm:grid-cols-2' : ''} gap-3.5`}>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5 flex items-center justify-between">
-                  <span>
-                    {counterpartyMeta.counterpartyLabel}{' '}
-                    {counterpartyMeta.counterpartyRequired ? (
-                      <span className="text-rose-500">*</span>
-                    ) : (
-                      <span className="text-[10px] text-slate-400 font-normal">(Opcional)</span>
-                    )}
-                  </span>
-                </label>
-                <input
-                  type="text"
-                  placeholder={counterpartyMeta.counterpartyPlaceholder}
-                  value={supplierName}
-                  onChange={(e) => {
-                    setSupplierName(e.target.value);
-                    setIsDirty(true);
-                  }}
-                  className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none transition-all"
-                  required={counterpartyMeta.counterpartyRequired}
-                />
-              </div>
-
-              {counterpartyMeta.showDoc && (
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1.5 flex items-center justify-between">
-                    <span>{counterpartyMeta.docLabel}</span>
-                    <span className="text-[10px] text-slate-400 font-normal">Opcional</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder={counterpartyMeta.docPlaceholder}
-                    value={supplierCpfCnpj}
-                    onChange={(e) => handleSupplierDocChange(e.target.value)}
-                    maxLength={18}
-                    className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 font-mono placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none transition-all"
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Subcategoria opcional */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5 flex items-center justify-between">
-                <span>Subcategoria ou Especificação Técnica</span>
-                <span className="text-[10px] text-slate-400 font-normal">Opcional</span>
-              </label>
-              <input
-                type="text"
-                placeholder="Ex: Resina Z350, Brocas diamantadas, Consultoria especializada..."
-                value={subCategory}
-                onChange={(e) => {
-                  setSubCategory(e.target.value);
-                  setIsDirty(true);
-                }}
-                className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none transition-all"
-              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                Nome principal da despesa nos resumos, relatórios, DRE e Fluxo de Caixa.
+              </p>
             </div>
           </div>
 
@@ -801,16 +995,134 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
             </div>
           </div>
 
-          {/* Section 5: Values and Dates */}
-          <div className="space-y-4">
+          {/* Section 5: Modalidade do Lançamento */}
+          <div className="space-y-3">
             <span className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              5. Valores & Competência
+              5. Modalidade do Lançamento <span className="text-rose-500">*</span>
             </span>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+            {isEditing && isSeriesExpense ? (
+              <div className="p-4 bg-purple-50/80 border border-purple-200 rounded-xl space-y-2.5">
+                <div className="flex items-center gap-2 text-purple-900 font-bold text-xs">
+                  <Repeat className="w-4 h-4 text-purple-700" />
+                  <span>
+                    Despesa Vinculada a uma Série ({expenseToEdit?.expenseType === 'PARCELADA'
+                      ? `Parcela ${expenseToEdit.installmentNumber}/${expenseToEdit.totalInstallments}`
+                      : `Recorrente ${expenseToEdit?.recurrenceIndex}/${expenseToEdit?.recurrenceCount}`})
+                  </span>
+                </div>
+                <p className="text-[11px] text-purple-800 leading-relaxed">
+                  Esta despesa faz parte de um grupo recorrente ou parcelado. Escolha o escopo de aplicação das suas alterações:
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditScope('ONLY_THIS')}
+                    className={`py-2 px-3 rounded-lg text-xs font-semibold border transition-all cursor-pointer text-center ${
+                      editScope === 'ONLY_THIS'
+                        ? 'bg-purple-700 text-white border-purple-800 shadow-xs'
+                        : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
+                    }`}
+                  >
+                    Apenas esta parcela
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditScope('THIS_AND_FUTURE')}
+                    className={`py-2 px-3 rounded-lg text-xs font-semibold border transition-all cursor-pointer text-center ${
+                      editScope === 'THIS_AND_FUTURE'
+                        ? 'bg-purple-700 text-white border-purple-800 shadow-xs'
+                        : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
+                    }`}
+                  >
+                    Esta e as seguintes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditScope('ALL_SERIES')}
+                    className={`py-2 px-3 rounded-lg text-xs font-semibold border transition-all cursor-pointer text-center ${
+                      editScope === 'ALL_SERIES'
+                        ? 'bg-purple-700 text-white border-purple-800 shadow-xs'
+                        : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
+                    }`}
+                  >
+                    Todas da série
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpenseType('UNICA');
+                    setIsDirty(true);
+                  }}
+                  className={`py-3 px-3 rounded-xl border text-center transition-all cursor-pointer flex flex-col items-center gap-1.5 ${
+                    expenseType === 'UNICA'
+                      ? 'border-emerald-600 bg-emerald-50 text-emerald-950 font-bold shadow-2xs'
+                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  <Calendar className="w-4 h-4 text-emerald-600" />
+                  <span className="text-xs">Lançamento Único</span>
+                  <span className="text-[10px] text-slate-400 font-normal">Gasto pontual</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpenseType('PARCELADA');
+                    setIsDirty(true);
+                  }}
+                  className={`py-3 px-3 rounded-xl border text-center transition-all cursor-pointer flex flex-col items-center gap-1.5 ${
+                    expenseType === 'PARCELADA'
+                      ? 'border-amber-600 bg-amber-50 text-amber-950 font-bold shadow-2xs'
+                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  <Layers className="w-4 h-4 text-amber-600" />
+                  <span className="text-xs">Parcelada</span>
+                  <span className="text-[10px] text-slate-400 font-normal">Ex: 2x a 60x</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpenseType('RECORRENTE');
+                    setIsDirty(true);
+                  }}
+                  className={`py-3 px-3 rounded-xl border text-center transition-all cursor-pointer flex flex-col items-center gap-1.5 ${
+                    expenseType === 'RECORRENTE'
+                      ? 'border-purple-600 bg-purple-50 text-purple-950 font-bold shadow-2xs'
+                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  <Repeat className="w-4 h-4 text-purple-600" />
+                  <span className="text-xs">Recorrente (Fixa)</span>
+                  <span className="text-[10px] text-slate-400 font-normal">Aluguel, software...</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Section 6: Values and Dates */}
+          <div className="space-y-4">
+            <span className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              6. Valores & Prazos
+            </span>
+
+            {/* Section 6: Values & Due Date & Bank Account */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 items-start">
               <div>
                 <CurrencyInput
-                  label="Valor da Despesa"
+                  label={
+                    expenseType === 'PARCELADA'
+                      ? 'Valor Total da Compra'
+                      : expenseType === 'RECORRENTE'
+                      ? 'Valor por Ocorrência'
+                      : 'Valor da Despesa'
+                  }
                   required
                   value={value}
                   onChange={setValue}
@@ -819,25 +1131,219 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
               <div>
                 <DatePicker
-                  label="Data de Competência"
-                  required
-                  value={competenceDate}
-                  onChange={setCompetenceDate}
-                />
-              </div>
-
-              <div>
-                <DatePicker
-                  label="Data de Vencimento"
+                  label={expenseType === 'PARCELADA' ? 'Vencimento 1ª Parcela' : 'Data de Vencimento'}
                   required
                   value={dueDate}
                   onChange={setDueDate}
                 />
               </div>
+
+              <div>
+                <CustomSelect
+                  label={isPaid ? "Conta Bancária de Pagamento *" : "Conta Bancária (Opcional)"}
+                  options={bankAccountOptions}
+                  value={bankAccountId}
+                  onChange={(v) => {
+                    setBankAccountId(v);
+                    setIsDirty(true);
+                  }}
+                  required={isPaid}
+                  placeholder={isPaid ? "Selecione a conta bancária..." : "Conta bancária opcional..."}
+                />
+              </div>
             </div>
+
+            {/* Custom Configuration for PARCELADA */}
+            {expenseType === 'PARCELADA' && !isEditing && (
+              <div className="p-4 rounded-xl border border-amber-200 bg-amber-50/40 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                    <Layers className="w-4 h-4 text-amber-600" />
+                    Configuração do Parcelamento
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {[2, 3, 4, 6, 10, 12].map((cnt) => (
+                      <button
+                        key={cnt}
+                        type="button"
+                        onClick={() => {
+                          setInstallmentsCount(cnt);
+                          setIsDirty(true);
+                        }}
+                        className={`px-2 py-1 text-[11px] font-semibold rounded-md border transition-all cursor-pointer ${
+                          installmentsCount === cnt
+                            ? 'bg-amber-600 text-white border-amber-700'
+                            : 'bg-white text-slate-700 border-amber-200 hover:bg-amber-100/60'
+                        }`}
+                      >
+                        {cnt}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Quantidade de Parcelas (2x a 60x):
+                    </label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={60}
+                      value={installmentsCount}
+                      onChange={(e) => {
+                        setInstallmentsCount(Math.max(2, Math.min(60, parseInt(e.target.value, 10) || 2)));
+                        setIsDirty(true);
+                      }}
+                      className="w-full text-xs rounded-xl border border-amber-300 px-3 py-2 bg-white text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                    />
+                  </div>
+
+                  <div className="p-3 bg-white rounded-xl border border-amber-200 text-xs space-y-1">
+                    <div className="flex justify-between text-slate-600">
+                      <span>Valor Base por Parcela:</span>
+                      <span className="font-bold text-slate-900">
+                        {installmentPreview.length > 0 ? formatCurrency(installmentPreview[0].value) : 'R$ 0,00'}
+                      </span>
+                    </div>
+                    {installmentPreview.some((p) => p.isLastWithAdjustment) && (
+                      <div className="flex justify-between text-amber-700 text-[11px] font-medium">
+                        <span>Última Parcela (com centavos):</span>
+                        <span className="font-bold">
+                          {formatCurrency(installmentPreview[installmentPreview.length - 1].value)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Breakdown List */}
+                <div className="pt-2 border-t border-amber-200/70">
+                  <span className="text-[11px] font-bold text-amber-900 block mb-1.5">
+                    Cronograma de Vencimentos ({installmentPreview.length} parcelas):
+                  </span>
+                  <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                    {installmentPreview.map((inst) => (
+                      <div
+                        key={inst.number}
+                        className="flex items-center justify-between text-[11px] py-1 px-2.5 rounded-lg bg-white border border-amber-100"
+                      >
+                        <span className="font-semibold text-slate-800">
+                          Parcela {inst.number}/{inst.total}
+                        </span>
+                        <span className="text-slate-500 font-mono">
+                          Vencimento: {formatDateBr(inst.dueDate)}
+                        </span>
+                        <span className="font-bold text-slate-900">
+                          {formatCurrency(inst.value)}
+                          {inst.isLastWithAdjustment && (
+                            <span className="ml-1 text-[10px] text-amber-600 font-normal">(ajuste)</span>
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-emerald-700 font-semibold mt-1.5 flex items-center gap-1">
+                    <Check className="w-3 h-3 text-emerald-600" />
+                    <span>
+                      Soma exata das parcelas bate 100% com o total: {formatCurrency(value)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Custom Configuration for RECORRENTE */}
+            {expenseType === 'RECORRENTE' && !isEditing && (
+              <div className="p-4 rounded-xl border border-purple-200 bg-purple-50/40 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-purple-900 flex items-center gap-1.5">
+                    <Repeat className="w-4 h-4 text-purple-600" />
+                    Configuração da Recorrência
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {[3, 6, 12, 24].map((cnt) => (
+                      <button
+                        key={cnt}
+                        type="button"
+                        onClick={() => {
+                          setRecurrenceCount(cnt);
+                          setIsDirty(true);
+                        }}
+                        className={`px-2 py-1 text-[11px] font-semibold rounded-md border transition-all cursor-pointer ${
+                          recurrenceCount === cnt
+                            ? 'bg-purple-700 text-white border-purple-800'
+                            : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/60'
+                        }`}
+                      >
+                        {cnt} meses
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Periodicidade:
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(['MENSAL', 'SEMANAL', 'ANUAL'] as const).map((freq) => (
+                        <button
+                          key={freq}
+                          type="button"
+                          onClick={() => {
+                            setRecurrenceFrequency(freq);
+                            setIsDirty(true);
+                          }}
+                          className={`py-1.5 text-xs font-semibold rounded-lg border text-center transition-all cursor-pointer ${
+                            recurrenceFrequency === freq
+                              ? 'bg-purple-700 text-white border-purple-800'
+                              : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
+                          }`}
+                        >
+                          {freq === 'MENSAL' ? 'Mensal' : freq === 'SEMANAL' ? 'Semanal' : 'Anual'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Quantidade de Ocorrências a Projetar:
+                    </label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={60}
+                      value={recurrenceCount}
+                      onChange={(e) => {
+                        setRecurrenceCount(Math.max(2, Math.min(60, parseInt(e.target.value, 10) || 2)));
+                        setIsDirty(true);
+                      }}
+                      className="w-full text-xs rounded-xl border border-purple-300 px-3 py-2 bg-white text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                    />
+                  </div>
+                </div>
+
+                <div className="p-3 bg-white rounded-xl border border-purple-200 text-xs space-y-1">
+                  <div className="flex justify-between text-slate-700 font-semibold">
+                    <span>Compromisso Financeiro Total Projetado:</span>
+                    <span className="font-bold text-purple-900 text-sm">
+                      {formatCurrency(recurrencePreview.total)}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Gera {recurrencePreview.count} lançamentos vinculados com intervalo {recurrenceFrequency.toLowerCase()}.
+                    Primeiros vencimentos: {recurrencePreview.previewDates.map((d) => formatDateBr(d)).join(', ')}...
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Section 4: Settlement / Payment */}
+          {/* Section 7: Settlement / Payment */}
           <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/40 space-y-4">
             <label className="flex items-center gap-2.5 cursor-pointer">
               <input
@@ -847,33 +1353,44 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
                 className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500"
               />
               <span className="text-xs font-bold text-slate-800">
-                Despesa já foi paga (Liquidação imediata)
+                {expenseType === 'PARCELADA'
+                  ? 'Quitar 1ª parcela imediatamente'
+                  : expenseType === 'RECORRENTE'
+                  ? 'Quitar 1ª ocorrência imediatamente'
+                  : 'Despesa já foi paga (Liquidação imediata)'}
               </span>
             </label>
 
             {isPaid && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-                <DatePicker
-                  label="Data do Pagamento"
-                  required={isPaid}
-                  value={paymentDate}
-                  onChange={setPaymentDate}
-                />
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <DatePicker
+                    label="Data do Pagamento"
+                    required={isPaid}
+                    value={paymentDate}
+                    onChange={setPaymentDate}
+                  />
 
-                <CustomSelect
-                  label="Forma de Pagamento"
-                  options={paymentMethodOptions}
-                  value={paymentMethod}
-                  onChange={(v) => setPaymentMethod(v as PaymentMethod)}
-                />
+                  <CustomSelect
+                    label="Forma de Pagamento"
+                    options={paymentMethodOptions}
+                    value={paymentMethod}
+                    onChange={(v) => setPaymentMethod(v as PaymentMethod)}
+                  />
+                </div>
 
-                <CustomSelect
-                  label="Conta Bancária"
-                  options={bankAccountOptions}
-                  value={bankAccountId}
-                  onChange={setBankAccountId}
-                />
-              </div>
+                {expenseType === 'PARCELADA' && (
+                  <p className="text-[11px] text-amber-800 bg-amber-50/80 p-2.5 rounded-xl border border-amber-200">
+                    Apenas a 1ª parcela será registrada como <strong>PAGA</strong>. As demais parcelas permanecerão registradas como <strong>A PAGAR</strong> com seus respectivos vencimentos mensais.
+                  </p>
+                )}
+
+                {expenseType === 'RECORRENTE' && (
+                  <p className="text-[11px] text-purple-800 bg-purple-50/80 p-2.5 rounded-xl border border-purple-200">
+                    Apenas a 1ª ocorrência será registrada como <strong>PAGA</strong>. As demais permanecerão agendadas como <strong>A PAGAR</strong>.
+                  </p>
+                )}
+              </>
             )}
           </div>
 

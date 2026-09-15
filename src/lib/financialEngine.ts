@@ -15,6 +15,7 @@ import {
   AnnualDreSummary,
   CategoryAnnualControlItem,
   FinancialEntityFilter,
+  FinancialItemDetail,
 } from '../types/financial';
 import { calculateCpfMonthlyTax, calculateSimplesNacionalMonthlyTax } from './taxEngine';
 import {
@@ -22,6 +23,12 @@ import {
   getOperationalGroup,
   getOperationalGroupName,
 } from './chartOfAccountsData';
+
+function getCleanExpenseItemName(exp: Expense): string {
+  const raw = (exp.supplierName && exp.supplierName.trim()) || (exp.description && exp.description.trim()) || 'Despesa Diversa';
+  const cleaned = raw.replace(/\s*\(\d+\/\d+\)$/, '').trim();
+  return cleaned || raw;
+}
 
 const MONTH_LABELS = [
   'Jan',
@@ -86,6 +93,7 @@ export function buildAnnualCashFlow(
 
   const initialBalanceYear = runningBalance;
   const months: MonthlyCashFlowCol[] = [];
+  const expenseItemMap = new Map<string, FinancialItemDetail>();
 
   for (let m = 1; m <= 12; m++) {
     const monthKey = `${year}-${String(m).padStart(2, '0')}`;
@@ -156,6 +164,7 @@ export function buildAnnualCashFlow(
     let projectedOutflow = 0;
     const outflowByGroup: MonthlyCashFlowCol['outflowByGroup'] = {};
     const outflowByCategory: MonthlyCashFlowCol['outflowByCategory'] = {};
+    const outflowByItem: MonthlyCashFlowCol['outflowByItem'] = {};
 
     expenses.forEach((exp) => {
       // Entity filter
@@ -188,6 +197,29 @@ export function buildAnnualCashFlow(
         };
       }
 
+      const itemName = getCleanExpenseItemName(exp);
+      const itemKey = `${exp.categoryId}__${itemName.toLowerCase()}`;
+      if (!expenseItemMap.has(itemKey)) {
+        expenseItemMap.set(itemKey, {
+          itemKey,
+          itemName,
+          categoryId: exp.categoryId,
+          categoryCode: exp.categoryCode || '',
+          groupCode,
+        });
+      }
+
+      if (!outflowByItem[itemKey]) {
+        outflowByItem[itemKey] = {
+          itemKey,
+          itemName,
+          categoryId: exp.categoryId,
+          realized: 0,
+          projected: 0,
+          total: 0,
+        };
+      }
+
       // Realized Outflow (paid in this month)
       const payDate = exp.paymentDate || exp.dueDate;
       if (exp.status === 'PAGO' && payDate && payDate.startsWith(monthKey)) {
@@ -196,6 +228,8 @@ export function buildAnnualCashFlow(
         outflowByGroup[groupCode].total += exp.value;
         outflowByCategory[exp.categoryId].realized += exp.value;
         outflowByCategory[exp.categoryId].total += exp.value;
+        outflowByItem[itemKey].realized += exp.value;
+        outflowByItem[itemKey].total += exp.value;
       }
 
       // Projected Outflow (to pay in this month)
@@ -209,6 +243,8 @@ export function buildAnnualCashFlow(
         outflowByGroup[groupCode].total += exp.value;
         outflowByCategory[exp.categoryId].projected += exp.value;
         outflowByCategory[exp.categoryId].total += exp.value;
+        outflowByItem[itemKey].projected += exp.value;
+        outflowByItem[itemKey].total += exp.value;
       }
     });
 
@@ -236,6 +272,7 @@ export function buildAnnualCashFlow(
       totalOutflow,
       outflowByGroup,
       outflowByCategory,
+      outflowByItem,
       netRealized,
       netProjected,
       netCashFlow,
@@ -263,6 +300,10 @@ export function buildAnnualCashFlow(
     a.code.localeCompare(b.code)
   );
 
+  const allExpenseItems = Array.from(expenseItemMap.values()).sort((a, b) =>
+    a.itemName.localeCompare(b.itemName)
+  );
+
   return {
     year,
     months,
@@ -277,6 +318,7 @@ export function buildAnnualCashFlow(
     finalBalanceYear,
     allExpenseGroups,
     allExpenseCategories,
+    allExpenseItems,
     allProcedures: Array.from(proceduresSet).sort(),
   };
 }
@@ -329,6 +371,8 @@ export function buildAnnualDre(
     }
   });
 
+  const fixedItemMap = new Map<string, FinancialItemDetail>();
+
   for (let m = 1; m <= 12; m++) {
     const monthKey = `${year}-${String(m).padStart(2, '0')}`;
     const monthLabel = MONTH_LABELS[m - 1];
@@ -346,18 +390,18 @@ export function buildAnnualDre(
 
       if (s.serviceDate && s.serviceDate.startsWith(monthKey)) {
         grossRevenue += s.totalValue;
-        const proc = s.procedureName || 'Outros Procedimentos';
-        revenueByProcedure[proc] = (revenueByProcedure[proc] || 0) + s.totalValue;
-
         if (s.taxOrigin === 'CPF') {
           cpfGrossRevenue += s.totalValue;
         } else {
           cnpjGrossRevenue += s.totalValue;
         }
+
+        const procName = s.procedureName || 'Outros Procedimentos';
+        revenueByProcedure[procName] = (revenueByProcedure[procName] || 0) + s.totalValue;
       }
     });
 
-    // 2. Direct Taxes (Carnê-Leão e Simples Nacional)
+    // 2. Tributos Diretos / Deduções da Receita
     const cpfTaxCalc = calculateCpfMonthlyTax(
       sales,
       expenses,
@@ -394,6 +438,7 @@ export function buildAnnualDre(
     let fixedExpenses = 0;
     const fixedExpensesByGroup: Record<string, number> = {};
     const fixedExpensesByCategory: Record<string, number> = {};
+    const fixedExpensesByItem: Record<string, number> = {};
 
     expenses.forEach((e) => {
       if (entityFilter !== 'ALL' && e.entity !== entityFilter) {
@@ -412,6 +457,19 @@ export function buildAnnualDre(
           fixedExpenses += e.value;
           fixedExpensesByGroup[groupCode] = (fixedExpensesByGroup[groupCode] || 0) + e.value;
           fixedExpensesByCategory[e.categoryId] = (fixedExpensesByCategory[e.categoryId] || 0) + e.value;
+
+          const itemName = getCleanExpenseItemName(e);
+          const itemKey = `${e.categoryId}__${itemName.toLowerCase()}`;
+          if (!fixedItemMap.has(itemKey)) {
+            fixedItemMap.set(itemKey, {
+              itemKey,
+              itemName,
+              categoryId: e.categoryId,
+              categoryCode: e.categoryCode || '',
+              groupCode,
+            });
+          }
+          fixedExpensesByItem[itemKey] = (fixedExpensesByItem[itemKey] || 0) + e.value;
         }
       }
     });
@@ -446,6 +504,7 @@ export function buildAnnualDre(
       fixedExpenses,
       fixedExpensesByGroup,
       fixedExpensesByCategory,
+      fixedExpensesByItem,
       ebitda,
       ebitdaMarginPercent,
       netResult,
@@ -468,6 +527,10 @@ export function buildAnnualDre(
   const totalNetResult = months.reduce((acc, m) => acc + m.netResult, 0);
   const averageNetMarginPercent =
     totalGrossRevenue > 0 ? (totalNetResult / totalGrossRevenue) * 100 : 0;
+
+  const allFixedItems = Array.from(fixedItemMap.values()).sort((a, b) =>
+    a.itemName.localeCompare(b.itemName)
+  );
 
   return {
     year,
@@ -493,6 +556,7 @@ export function buildAnnualDre(
     allExpenseCategories: Array.from(allExpenseCatMap.values()).sort((a, b) =>
       a.code.localeCompare(b.code)
     ),
+    allFixedItems,
     allProcedures: Array.from(allProceduresSet).sort(),
   };
 }

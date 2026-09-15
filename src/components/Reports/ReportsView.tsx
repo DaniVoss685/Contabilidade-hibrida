@@ -204,7 +204,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           entries.push([
             formatDateBr(e.paymentDate || ''),
             'SAIDA_DEDUTIVEL',
-            `Pagamento ${e.supplierName} - ${e.categoryName} (${e.description})`,
+            `Pagamento ${e.description || e.supplierName} - ${e.categoryName}`,
             e.documentNumber || 'Comprovante',
             0,
             e.value,

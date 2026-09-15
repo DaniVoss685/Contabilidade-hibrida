@@ -49,6 +49,17 @@ export interface MonthlyCashFlowCol {
       total: number;
     }
   >;
+  outflowByItem?: Record<
+    string,
+    {
+      itemKey: string;
+      itemName: string;
+      categoryId: string;
+      realized: number;
+      projected: number;
+      total: number;
+    }
+  >;
 
   // Net Results & Balances
   netRealized: number;
@@ -56,6 +67,14 @@ export interface MonthlyCashFlowCol {
   netCashFlow: number; // totalInflow - totalOutflow
   initialBalance: number;
   finalBalance: number;
+}
+
+export interface FinancialItemDetail {
+  itemKey: string;
+  itemName: string;
+  categoryId: string;
+  categoryCode: string;
+  groupCode: string;
 }
 
 export interface AnnualCashFlowSummary {
@@ -72,6 +91,7 @@ export interface AnnualCashFlowSummary {
   finalBalanceYear: number;
   allExpenseGroups: { code: string; name: string }[];
   allExpenseCategories: { id: string; code: string; name: string; groupCode: string }[];
+  allExpenseItems?: FinancialItemDetail[];
   allProcedures: string[];
 }
 
@@ -107,6 +127,7 @@ export interface MonthlyDreCol {
   fixedExpenses: number;
   fixedExpensesByGroup: Record<string, number>;
   fixedExpensesByCategory: Record<string, number>;
+  fixedExpensesByItem?: Record<string, number>;
 
   // 7. (=) Resultado Operacional (EBITDA)
   ebitda: number;
@@ -135,6 +156,7 @@ export interface AnnualDreSummary {
   allVariableGroups: { code: string; name: string }[];
   allFixedGroups: { code: string; name: string }[];
   allExpenseCategories: { id: string; code: string; name: string; groupCode: string }[];
+  allFixedItems?: FinancialItemDetail[];
   allProcedures: string[];
 }
 

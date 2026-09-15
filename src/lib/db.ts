@@ -436,14 +436,21 @@ export class DentalFinanceDB {
       if (res.procedures && res.procedures.length > 0) {
         this.procedures = res.procedures;
         saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, tenantId);
+      } else if (res.procedures && res.procedures.length === 0 && this.procedures.length > 0) {
+        this.procedures.forEach((p) => SupabaseService.saveProcedure(p, tenantId).catch(console.warn));
       }
       if (res.clinicalInputs && res.clinicalInputs.length > 0) {
         this.clinicalInputs = res.clinicalInputs;
         saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, tenantId);
+      } else if (res.clinicalInputs && res.clinicalInputs.length === 0 && this.clinicalInputs.length > 0) {
+        this.clinicalInputs.forEach((i) => SupabaseService.saveClinicalInput(i, tenantId).catch(console.warn));
       }
       if (res.bankAccounts && res.bankAccounts.length > 0) {
         this.bankAccounts = res.bankAccounts;
         saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, tenantId);
+      } else {
+        const banksToSync = this.getBankAccounts();
+        SupabaseService.saveBankAccountsBulk(banksToSync, tenantId).catch(console.warn);
       }
       if (res.appointments) {
         this.appointments = res.appointments;
@@ -522,6 +529,10 @@ export class DentalFinanceDB {
         },
       ], tenantId);
       this.taxRulesPf = loadItem<Record<number, TaxRulesPf>>(STORAGE_KEYS.TAX_RULES_PF, DEFAULT_TAX_RULES_PF, tenantId);
+      if (this.taxRulesPf && this.taxRulesPf[2026] && (this.taxRulesPf[2026].simplifiedDiscountLimitMonthly === 564.80 || this.taxRulesPf[2026].brackets?.[0]?.max === 2259.20)) {
+        this.taxRulesPf[2026] = DEFAULT_TAX_RULES_PF[2026];
+        saveItem(STORAGE_KEYS.TAX_RULES_PF, this.taxRulesPf, tenantId);
+      }
       this.taxRulesSimples = loadItem<Record<number, TaxRulesSimples>>(STORAGE_KEYS.TAX_RULES_SIMPLES, DEFAULT_TAX_RULES_SIMPLES, tenantId);
       this.preferences = loadItem<SystemPreferences>(
         STORAGE_KEYS.SYSTEM_PREFERENCES,
@@ -598,7 +609,58 @@ export class DentalFinanceDB {
         },
       ], tenantId);
       this.taxRulesPf = loadItem<Record<number, TaxRulesPf>>(STORAGE_KEYS.TAX_RULES_PF, DEFAULT_TAX_RULES_PF, tenantId);
+      if (this.taxRulesPf && this.taxRulesPf[2026] && (this.taxRulesPf[2026].simplifiedDiscountLimitMonthly === 564.80 || this.taxRulesPf[2026].brackets?.[0]?.max === 2259.20)) {
+        this.taxRulesPf[2026] = DEFAULT_TAX_RULES_PF[2026];
+        saveItem(STORAGE_KEYS.TAX_RULES_PF, this.taxRulesPf, tenantId);
+      }
       this.taxRulesSimples = loadItem<Record<number, TaxRulesSimples>>(STORAGE_KEYS.TAX_RULES_SIMPLES, DEFAULT_TAX_RULES_SIMPLES, tenantId);
+    }
+
+    // Sanitizar observações automáticas legadas em vendas (ex: 'Atendimento Clínico - Canal')
+    let salesModified = false;
+    this.sales = this.sales.map((s) => {
+      let changed = false;
+      let sDesc = s.description;
+      let sNotes = s.notes;
+      const procLower = (s.procedureName || '').toLowerCase().trim();
+      if (sDesc && (sDesc.toLowerCase().trim().startsWith('atendimento clínico') || sDesc.toLowerCase().trim() === procLower)) {
+        sDesc = '';
+        changed = true;
+      }
+      if (sNotes && (sNotes.toLowerCase().trim().startsWith('atendimento clínico') || sNotes.toLowerCase().trim() === procLower || sNotes.toLowerCase().trim() === `atendimento clínico - ${procLower}`)) {
+        sNotes = '';
+        changed = true;
+      }
+      if (changed) {
+        salesModified = true;
+        return { ...s, description: sDesc, notes: sNotes };
+      }
+      return s;
+    });
+    if (salesModified) {
+      saveItem(STORAGE_KEYS.SALES, this.sales, tenantId);
+    }
+
+    // Desduplicar procedimentos com cadastro incompleto se já houver versão oficial cadastrada
+    const nameMap = new Map<string, DentalProcedure>();
+    const deduplicatedProcedures: DentalProcedure[] = [];
+    for (const p of this.procedures) {
+      const key = p.name.trim().toLowerCase();
+      const existing = nameMap.get(key);
+      if (!existing) {
+        nameMap.set(key, p);
+        deduplicatedProcedures.push(p);
+      } else if (existing.isIncomplete && !p.isIncomplete) {
+        const idx = deduplicatedProcedures.indexOf(existing);
+        if (idx !== -1) {
+          deduplicatedProcedures[idx] = p;
+        }
+        nameMap.set(key, p);
+      }
+    }
+    if (deduplicatedProcedures.length !== this.procedures.length) {
+      this.procedures = deduplicatedProcedures;
+      saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, tenantId);
     }
   }
 
@@ -1397,14 +1459,28 @@ export class DentalFinanceDB {
   // Getters & Preferences
   public getPreferences(): SystemPreferences {
     if (!this.preferences) {
-      this.preferences = { hideCpf: false, alertFatorR: true, alertDueDates: true, operationalReminders: true };
+      this.preferences = {
+        hideCpf: false,
+        alertFatorR: true,
+        alertDueDates: true,
+        operationalReminders: true,
+        lunchBreakEnabled: true,
+        lunchBreakStart: '12:00',
+        lunchBreakEnd: '13:00',
+      };
     }
-    return { operationalReminders: true, ...this.preferences };
+    return {
+      operationalReminders: true,
+      lunchBreakEnabled: true,
+      lunchBreakStart: '12:00',
+      lunchBreakEnd: '13:00',
+      ...this.preferences,
+    };
   }
 
   public updatePreferences(updates: Partial<SystemPreferences>): SystemPreferences {
     this.preferences = { ...this.getPreferences(), ...updates };
-    saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, this.preferences);
+    saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, this.preferences, this.activeTenantId);
     this.log('ATUALIZACAO_PREFERENCIAS', 'PREFERENCES', 'sys', 'Preferências e privacidade do sistema atualizadas.');
     this.notify();
     return { ...this.preferences };
@@ -1491,6 +1567,61 @@ export class DentalFinanceDB {
   }
 
   public getBankAccounts(): BankAccount[] {
+    if (!this.bankAccounts || this.bankAccounts.length === 0) {
+      const defaultBanks: BankAccount[] = [
+        {
+          id: `bank_itau_${this.activeTenantId}`,
+          orgId: this.org?.id || 'org_dental',
+          name: 'Banco Itaú (PF)',
+          bankName: 'Banco Itaú',
+          accountType: 'CORRENTE_PF',
+          initialBalance: 0,
+          currentBalance: 0,
+        },
+        {
+          id: `bank_inter_${this.activeTenantId}`,
+          orgId: this.org?.id || 'org_dental',
+          name: 'Banco Inter (PJ)',
+          bankName: 'Banco Inter',
+          accountType: 'CORRENTE_PJ',
+          initialBalance: 0,
+          currentBalance: 0,
+        },
+        {
+          id: `bank_caixa_${this.activeTenantId}`,
+          orgId: this.org?.id || 'org_dental',
+          name: 'Caixa Físico (PF)',
+          bankName: 'Caixa Físico',
+          accountType: 'CORRENTE_PF',
+          initialBalance: 0,
+          currentBalance: 0,
+        },
+      ];
+      this.bankAccounts = defaultBanks;
+      saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
+      SupabaseService.saveBankAccountsBulk(this.bankAccounts, this.activeTenantId).catch(console.error);
+    } else {
+      let migrated = false;
+      this.bankAccounts = this.bankAccounts.map((b) => {
+        if (b.name === 'Itaú - Conta Principal (PF)' || b.name === 'Itaú - Conta Principal') {
+          migrated = true;
+          return { ...b, name: 'Banco Itaú (PF)' };
+        }
+        if (b.name === 'Banco Inter - Clínica PJ' || b.name === 'Banco Inter') {
+          migrated = true;
+          return { ...b, name: 'Banco Inter (PJ)' };
+        }
+        if (b.name === 'Caixa Geral (Dinheiro em Espécie)' || b.name === 'Caixa Geral') {
+          migrated = true;
+          return { ...b, name: 'Caixa Físico (PF)' };
+        }
+        return b;
+      });
+      if (migrated) {
+        saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
+        SupabaseService.saveBankAccountsBulk(this.bankAccounts, this.activeTenantId).catch(console.error);
+      }
+    }
     return this.bankAccounts;
   }
 
@@ -1501,7 +1632,7 @@ export class DentalFinanceDB {
       orgId: this.org.id,
     };
     this.bankAccounts = [...this.bankAccounts, newAccount];
-    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts);
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
     this.log('CRIACAO_CONTA_BANCARIA', 'BANK_ACCOUNT', newAccount.id, `Conta bancária "${newAccount.name}" (${newAccount.accountType}) cadastrada.`);
     this.notify();
     return newAccount;
@@ -1509,7 +1640,7 @@ export class DentalFinanceDB {
 
   public updateBankAccount(id: string, updates: Partial<BankAccount>) {
     this.bankAccounts = this.bankAccounts.map((b) => (b.id === id ? { ...b, ...updates } : b));
-    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts);
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
     this.log('ATUALIZACAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária atualizada.`);
     this.notify();
   }
@@ -1518,7 +1649,7 @@ export class DentalFinanceDB {
     const prevLen = this.bankAccounts.length;
     this.bankAccounts = this.bankAccounts.filter((b) => b.id !== id);
     if (this.bankAccounts.length !== prevLen) {
-      saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts);
+      saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
       this.log('EXCLUSAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária excluída.`);
       this.notify();
       return true;
@@ -1537,9 +1668,12 @@ export class DentalFinanceDB {
   public getTaxRulesPf(year: number): TaxRulesPf {
     const candidate = this.taxRulesPf && this.taxRulesPf[year];
     if (candidate && Array.isArray(candidate.brackets) && candidate.brackets.length > 0) {
+      if (year === 2026 && (candidate.simplifiedDiscountLimitMonthly === 564.80 || candidate.brackets[0]?.max === 2259.20)) {
+        return DEFAULT_TAX_RULES_PF[2026];
+      }
       return candidate;
     }
-    return DEFAULT_TAX_RULES_PF[year] || DEFAULT_TAX_RULES_PF[2025];
+    return DEFAULT_TAX_RULES_PF[year] || DEFAULT_TAX_RULES_PF[2026];
   }
 
   public getTaxRulesSimples(year: number): TaxRulesSimples {
@@ -1627,12 +1761,27 @@ export class DentalFinanceDB {
 
         const docSummary =
           sale.taxOrigin === 'CPF'
-            ? inst.receitaSaudeId
+            ? inst.status !== 'RECEBIDO'
+              ? 'Receita Saúde (A Emitir)'
+              : inst.receitaSaudeId
               ? `Receita Saúde #${inst.receitaSaudeId}`
-              : `Receita Saúde (Pendente)`
+              : `Receita Saúde (Pendente de Emissão)`
             : sale.nfseNumber
             ? `NFS-e #${sale.nfseNumber}`
             : `NFS-e (Pendente)`;
+
+        let effectiveNotes: string | undefined = undefined;
+        const rawNote = (sale.notes && sale.notes.trim()) || '';
+        const lowerNote = rawNote.toLowerCase();
+        const procLower = (sale.procedureName || '').trim().toLowerCase();
+        if (
+          rawNote &&
+          !lowerNote.startsWith('atendimento clínico') &&
+          lowerNote !== procLower &&
+          lowerNote !== `atendimento clínico - ${procLower}`
+        ) {
+          effectiveNotes = rawNote;
+        }
 
         items.push({
           installmentId: inst.id,
@@ -1652,6 +1801,17 @@ export class DentalFinanceDB {
           receitaSaudeId: inst.receitaSaudeId,
           installmentNumber: inst.installmentNumber,
           totalInstallments: inst.totalInstallments,
+          notes: effectiveNotes,
+          appointmentId: sale.appointmentId,
+          origin: sale.origin || (sale.appointmentId ? 'AGENDA' : 'MANUAL'),
+          serviceDate: sale.serviceDate,
+          cardFeePercent: inst.cardFeePercent ?? sale.cardFeePercent,
+          cardFeeAmount: inst.cardFeeAmount ?? sale.cardFeeAmount,
+          netValue: inst.netValue ?? sale.netValue,
+          paymentMethod: inst.paymentMethod || sale.paymentMethod,
+          bankAccountId: inst.bankAccountId || sale.bankAccountId,
+          originalEstimatedValue: sale.originalEstimatedValue,
+          priceHistory: sale.priceHistory,
         });
       }
     }
@@ -1776,8 +1936,14 @@ export class DentalFinanceDB {
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
       const res = await SupabaseService.saveSale(newSale, this.activeTenantId);
       if (!res.success) {
-        return { success: false, error: res.error || 'Erro ao salvar venda no servidor' };
+        return { success: false, error: res.error || 'Erro ao salvar receita no servidor' };
       }
+      (newSale.installments || []).forEach((inst) => {
+        if (inst.status === 'RECEBIDO' && inst.bankAccountId) {
+          const rec = inst.amountReceived ?? inst.netValue ?? inst.value;
+          this.updateBankAccountBalance(inst.bankAccountId, rec);
+        }
+      });
     }
     this.sales = [newSale, ...this.sales];
     saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
@@ -1802,6 +1968,12 @@ export class DentalFinanceDB {
     saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
       SupabaseService.saveSale(newSale, this.activeTenantId).catch(console.warn);
+      (newSale.installments || []).forEach((inst) => {
+        if (inst.status === 'RECEBIDO' && inst.bankAccountId) {
+          const rec = inst.amountReceived ?? inst.netValue ?? inst.value;
+          this.updateBankAccountBalance(inst.bankAccountId, rec);
+        }
+      });
     }
     this.log(
       'CRIACAO_RECEITA',
@@ -1817,21 +1989,32 @@ export class DentalFinanceDB {
     const found = this.sales.find((s) => s.id === id);
     if (!found) return { success: false, error: 'Receita não encontrada' };
     const updated: Sale = { ...found, ...updates };
+    this.sales = this.sales.map((s) => (s.id === id ? updated : s));
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    this.log('ATUALIZACAO_RECEITA', 'SALE', id, `Dados da receita foram atualizados.`);
+    this.notify();
+
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
       const res = await SupabaseService.saveSale(updated, this.activeTenantId);
       if (!res.success) {
         return { success: false, error: res.error || 'Erro ao atualizar venda no servidor' };
       }
     }
-    this.sales = this.sales.map((s) => (s.id === id ? updated : s));
-    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
-    this.log('ATUALIZACAO_RECEITA', 'SALE', id, `Dados da receita foram atualizados.`);
-    this.notify();
     return { success: true };
   }
 
   public updateSale(id: string, updates: Partial<Sale>) {
-    this.updateSaleAsync(id, updates).catch(console.warn);
+    const found = this.sales.find((s) => s.id === id);
+    if (!found) return;
+    const updated: Sale = { ...found, ...updates };
+    this.sales = this.sales.map((s) => (s.id === id ? updated : s));
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    this.log('ATUALIZACAO_RECEITA', 'SALE', id, `Dados da receita foram atualizados.`);
+    this.notify();
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveSale(updated, this.activeTenantId).catch(console.warn);
+    }
   }
 
   public async deleteSaleAsync(id: string): Promise<{ success: boolean; error?: string }> {
@@ -1887,6 +2070,24 @@ export class DentalFinanceDB {
     return updatedCount;
   }
 
+  public updateBankAccountBalance(bankAccountId: string, deltaAmount: number) {
+    let updatedAccount: BankAccount | null = null;
+    this.bankAccounts = (this.bankAccounts || []).map((acc) => {
+      if (acc.id === bankAccountId) {
+        const newBalance = Number(((acc.currentBalance || 0) + deltaAmount).toFixed(2));
+        updatedAccount = { ...acc, currentBalance: newBalance };
+        return updatedAccount;
+      }
+      return acc;
+    });
+    if (updatedAccount) {
+      saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveBankAccount(updatedAccount, this.activeTenantId).catch(console.warn);
+      }
+    }
+  }
+
   public settleInstallment(
     saleId: string,
     installmentId: string,
@@ -1897,6 +2098,7 @@ export class DentalFinanceDB {
     receitaSaudeId?: string,
     receitaSaudeStatus?: ReceitaSaudeStatus
   ) {
+    let affectedSale: Sale | null = null;
     this.sales = this.sales.map((sale) => {
       if (sale.id !== saleId) return sale;
 
@@ -1921,23 +2123,33 @@ export class DentalFinanceDB {
         };
       });
 
-      return {
+      affectedSale = {
         ...sale,
         installments: updatedInstallments,
       };
+      return affectedSale;
     });
 
-    saveItem(STORAGE_KEYS.SALES, this.sales);
-    this.log(
-      'RECEBIMENTO_PARCELA',
-      'INSTALLMENT',
-      installmentId,
-      `Recebimento de parcela registrado no valor de R$ ${amountReceived.toFixed(2)}. Data: ${paymentDate}.`
-    );
-    this.notify();
+    if (affectedSale) {
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveSale(affectedSale, this.activeTenantId).catch(console.warn);
+      }
+      if (bankAccountId) {
+        this.updateBankAccountBalance(bankAccountId, amountReceived);
+      }
+      this.log(
+        'RECEBIMENTO_PARCELA',
+        'INSTALLMENT',
+        installmentId,
+        `Recebimento de parcela registrado no valor de R$ ${amountReceived.toFixed(2)}. Data: ${paymentDate}.`
+      );
+      this.notify();
+    }
   }
 
   public updateReceitaSaude(saleId: string, installmentId: string, status: ReceitaSaudeStatus, identifier: string) {
+    let affectedSale: Sale | null = null;
     this.sales = this.sales.map((sale) => {
       if (sale.id !== saleId) return sale;
       const updated = sale.installments.map((inst) => {
@@ -1949,33 +2161,48 @@ export class DentalFinanceDB {
           receitaSaudeEmittedAt: status === 'EMITIDO' ? new Date().toISOString() : undefined,
         };
       });
-      return { ...sale, installments: updated };
+      affectedSale = { ...sale, installments: updated };
+      return affectedSale;
     });
-    saveItem(STORAGE_KEYS.SALES, this.sales);
-    this.log('EMISSAO_RECEITA_SAUDE', 'INSTALLMENT', installmentId, `Status Receita Saúde atualizado para ${status} (ID: ${identifier}).`);
-    this.notify();
+    if (affectedSale) {
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveSale(affectedSale, this.activeTenantId).catch(console.warn);
+      }
+      this.log('EMISSAO_RECEITA_SAUDE', 'INSTALLMENT', installmentId, `Status Receita Saúde atualizado para ${status} (ID: ${identifier}).`);
+      this.notify();
+    }
   }
 
   public updateNfse(saleId: string, status: Sale['nfseStatus'], number: string, code?: string) {
+    let affectedSale: Sale | null = null;
     this.sales = this.sales.map((sale) => {
       if (sale.id !== saleId) return sale;
-      return {
+      affectedSale = {
         ...sale,
         nfseStatus: status,
         nfseNumber: number,
         nfseVerificationCode: code,
         nfseEmittedAt: status === 'EMITIDA' ? new Date().toISOString() : undefined,
       };
+      return affectedSale;
     });
-    saveItem(STORAGE_KEYS.SALES, this.sales);
-    this.log('EMISSAO_NFSE', 'SALE', saleId, `NFS-e atualizada para ${status} (Número: ${number}).`);
-    this.notify();
+    if (affectedSale) {
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveSale(affectedSale, this.activeTenantId).catch(console.warn);
+      }
+      this.log('EMISSAO_NFSE', 'SALE', saleId, `NFS-e atualizada para ${status} (Número: ${number}).`);
+      this.notify();
+    }
   }
 
   // Receivables Actions (Exclusão e Edição de Parcelas / Contas a Receber)
   public deleteReceivableInstallment(installmentId: string): boolean {
     let affected = false;
     const updatedSales: Sale[] = [];
+    let removedSaleId: string | null = null;
+    let modifiedSale: Sale | null = null;
 
     for (const sale of this.sales) {
       const hasInst = sale.installments.some((inst) => inst.id === installmentId);
@@ -1989,6 +2216,7 @@ export class DentalFinanceDB {
 
       // Se a venda não tem mais nenhuma parcela, exclui a venda
       if (remainingInstallments.length === 0) {
+        removedSaleId = sale.id;
         this.log('EXCLUSAO_RECEIVABLE', 'INSTALLMENT', installmentId, `Última parcela da venda "${sale.procedureName}" excluída. Venda removida.`);
         continue;
       }
@@ -2002,12 +2230,13 @@ export class DentalFinanceDB {
 
       const newTotalValue = renumbered.reduce((sum, inst) => sum + inst.value, 0);
 
-      updatedSales.push({
+      modifiedSale = {
         ...sale,
         totalValue: newTotalValue,
         installmentsCount: renumbered.length,
         installments: renumbered,
-      });
+      };
+      updatedSales.push(modifiedSale);
 
       this.log(
         'EXCLUSAO_RECEIVABLE',
@@ -2019,7 +2248,14 @@ export class DentalFinanceDB {
 
     if (affected) {
       this.sales = updatedSales;
-      saveItem(STORAGE_KEYS.SALES, this.sales);
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        if (removedSaleId) {
+          SupabaseService.deleteSale(removedSaleId, this.activeTenantId).catch(console.warn);
+        } else if (modifiedSale) {
+          SupabaseService.saveSale(modifiedSale, this.activeTenantId).catch(console.warn);
+        }
+      }
       this.notify();
       return true;
     }
@@ -2030,6 +2266,8 @@ export class DentalFinanceDB {
     const idSet = new Set(installmentIds);
     let deletedCount = 0;
     const updatedSales: Sale[] = [];
+    const removedSaleIds: string[] = [];
+    const changedSales: Sale[] = [];
 
     for (const sale of this.sales) {
       const matched = sale.installments.filter((inst) => idSet.has(inst.id));
@@ -2042,6 +2280,7 @@ export class DentalFinanceDB {
       const remaining = sale.installments.filter((inst) => !idSet.has(inst.id));
 
       if (remaining.length === 0) {
+        removedSaleIds.push(sale.id);
         continue; // Venda inteira removida
       }
 
@@ -2053,17 +2292,23 @@ export class DentalFinanceDB {
 
       const newTotal = renumbered.reduce((sum, inst) => sum + inst.value, 0);
 
-      updatedSales.push({
+      const upd: Sale = {
         ...sale,
         totalValue: newTotal,
         installmentsCount: renumbered.length,
         installments: renumbered,
-      });
+      };
+      changedSales.push(upd);
+      updatedSales.push(upd);
     }
 
     if (deletedCount > 0) {
       this.sales = updatedSales;
-      saveItem(STORAGE_KEYS.SALES, this.sales);
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        removedSaleIds.forEach((id) => SupabaseService.deleteSale(id, this.activeTenantId).catch(console.warn));
+        changedSales.forEach((s) => SupabaseService.saveSale(s, this.activeTenantId).catch(console.warn));
+      }
       this.log(
         'EXCLUSAO_RECEIVABLE_LOTE',
         'INSTALLMENT',
@@ -2089,6 +2334,7 @@ export class DentalFinanceDB {
   ): number {
     const idSet = new Set(installmentIds);
     let updatedCount = 0;
+    const changedSales: Sale[] = [];
 
     this.sales = this.sales.map((sale) => {
       let saleHasMatch = false;
@@ -2119,15 +2365,20 @@ export class DentalFinanceDB {
 
       if (!saleHasMatch) return sale;
 
-      return {
+      const updatedSale: Sale = {
         ...sale,
         taxOrigin: updates.taxOrigin || sale.taxOrigin,
         installments: updatedInstallments,
       };
+      changedSales.push(updatedSale);
+      return updatedSale;
     });
 
     if (updatedCount > 0) {
-      saveItem(STORAGE_KEYS.SALES, this.sales);
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        changedSales.forEach((s) => SupabaseService.saveSale(s, this.activeTenantId).catch(console.warn));
+      }
       this.log(
         'ATUALIZACAO_RECEIVABLE_LOTE',
         'INSTALLMENT',
@@ -2149,6 +2400,7 @@ export class DentalFinanceDB {
     updates: {
       dueDate?: string;
       value?: number;
+      cardFeePercent?: number;
       taxOrigin?: TaxOrigin;
       status?: InstallmentStatus;
       paymentDate?: string;
@@ -2160,6 +2412,7 @@ export class DentalFinanceDB {
     }
   ): boolean {
     let affected = false;
+    let modifiedSale: Sale | null = null;
     this.sales = this.sales.map((sale) => {
       const hasInst = sale.installments.some((i) => i.id === installmentId);
       if (!hasInst) return sale;
@@ -2170,12 +2423,18 @@ export class DentalFinanceDB {
 
         const isSettled = updates.status === 'RECEBIDO';
         const newVal = updates.value !== undefined ? updates.value : inst.value;
-        const newReceived = isSettled ? newVal : (updates.status === 'A_RECEBER' ? 0 : inst.amountReceived);
+        const feePercent = updates.cardFeePercent !== undefined ? updates.cardFeePercent : (inst.cardFeePercent || sale.cardFeePercent || 0);
+        const feeAmount = feePercent > 0 ? Number(((newVal * feePercent) / 100).toFixed(2)) : 0;
+        const netVal = feePercent > 0 ? Number((newVal - feeAmount).toFixed(2)) : newVal;
+        const newReceived = isSettled ? (inst.amountReceived && inst.amountReceived > 0 && updates.value === undefined ? inst.amountReceived : netVal) : (updates.status === 'A_RECEBER' ? 0 : inst.amountReceived);
 
         return {
           ...inst,
           dueDate: updates.dueDate || inst.dueDate,
           value: newVal,
+          cardFeePercent: feePercent > 0 ? feePercent : undefined,
+          cardFeeAmount: feeAmount > 0 ? feeAmount : undefined,
+          netValue: netVal,
           status: updates.status || inst.status,
           paymentDate: updates.paymentDate !== undefined ? updates.paymentDate : inst.paymentDate,
           paymentMethod: updates.paymentMethod || inst.paymentMethod,
@@ -2188,17 +2447,21 @@ export class DentalFinanceDB {
 
       const newTotal = updatedInstallments.reduce((acc, curr) => acc + curr.value, 0);
 
-      return {
+      modifiedSale = {
         ...sale,
         totalValue: newTotal,
         taxOrigin: updates.taxOrigin || sale.taxOrigin,
         nfseNumber: updates.nfseNumber !== undefined ? updates.nfseNumber : sale.nfseNumber,
         installments: updatedInstallments,
       };
+      return modifiedSale;
     });
 
-    if (affected) {
-      saveItem(STORAGE_KEYS.SALES, this.sales);
+    if (affected && modifiedSale) {
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveSale(modifiedSale, this.activeTenantId).catch(console.warn);
+      }
       this.log('ATUALIZACAO_RECEIVABLE', 'INSTALLMENT', installmentId, 'Parcela de conta a receber atualizada com sucesso.');
       this.notify();
       return true;
@@ -2208,12 +2471,18 @@ export class DentalFinanceDB {
 
   public unsettleInstallment(saleId: string, installmentId: string): boolean {
     let affected = false;
+    let modifiedSale: Sale | null = null;
+    let revertedAmount = 0;
+    let targetBankId: string | undefined = undefined;
+
     this.sales = this.sales.map((sale) => {
       if (sale.id !== saleId) return sale;
 
       const updatedInstallments = sale.installments.map((inst) => {
         if (inst.id !== installmentId) return inst;
         affected = true;
+        revertedAmount = inst.amountReceived || inst.value || 0;
+        targetBankId = inst.bankAccountId;
         return {
           ...inst,
           status: 'A_RECEBER' as InstallmentStatus,
@@ -2223,14 +2492,21 @@ export class DentalFinanceDB {
         };
       });
 
-      return {
+      modifiedSale = {
         ...sale,
         installments: updatedInstallments,
       };
+      return modifiedSale;
     });
 
-    if (affected) {
-      saveItem(STORAGE_KEYS.SALES, this.sales);
+    if (affected && modifiedSale) {
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveSale(modifiedSale, this.activeTenantId).catch(console.warn);
+      }
+      if (targetBankId && revertedAmount > 0) {
+        this.updateBankAccountBalance(targetBankId, -revertedAmount);
+      }
       this.log(
         'ESTORNO_RECEBIMENTO',
         'INSTALLMENT',
@@ -2280,6 +2556,9 @@ export class DentalFinanceDB {
     saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
       SupabaseService.saveExpense(newExpense, this.activeTenantId).catch(console.warn);
+      if (newExpense.status === 'PAGO' && newExpense.bankAccountId) {
+        this.updateBankAccountBalance(newExpense.bankAccountId, -newExpense.value);
+      }
     }
     this.log(
       'CRIACAO_DESPESA',
@@ -2299,10 +2578,13 @@ export class DentalFinanceDB {
         status: 'PAGO',
         paymentDate,
         paymentMethod,
-        bankAccountId,
+        bankAccountId: bankAccountId || exp.bankAccountId,
       };
       if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
         SupabaseService.saveExpense(updated, this.activeTenantId).catch(console.warn);
+      }
+      if (updated.bankAccountId) {
+        this.updateBankAccountBalance(updated.bankAccountId, -updated.value);
       }
       return updated;
     });
@@ -2329,6 +2611,14 @@ export class DentalFinanceDB {
   }
 
   public updateExpense(id: string, updates: Partial<Expense>) {
+    const found = this.expenses.find((e) => e.id === id);
+    if (found) {
+      const updated: Expense = { ...found, ...updates };
+      this.expenses = this.expenses.map((exp) => (exp.id === id ? updated : exp));
+      saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+      this.log('ATUALIZACAO_DESPESA', 'EXPENSE', id, `Dados da despesa atualizados.`);
+      this.notify();
+    }
     this.updateExpenseAsync(id, updates).catch(console.warn);
   }
 
@@ -2359,7 +2649,10 @@ export class DentalFinanceDB {
     this.expenses = this.expenses.filter((e) => !idSet.has(e.id));
     const deletedCount = prevLen - this.expenses.length;
     if (deletedCount > 0) {
-      saveItem(STORAGE_KEYS.EXPENSES, this.expenses);
+      saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        ids.forEach((id) => SupabaseService.deleteExpense(id, this.activeTenantId).catch(console.warn));
+      }
       this.log('EXCLUSAO_DESPESA_LOTE', 'EXPENSE', 'batch', `${deletedCount} despesas excluídas em lote.`);
       this.notify();
     }
@@ -2369,20 +2662,165 @@ export class DentalFinanceDB {
   public batchUpdateExpenses(ids: string[], updates: Partial<Expense>): number {
     const idSet = new Set(ids);
     let updatedCount = 0;
+    const changedExpenses: Expense[] = [];
     this.expenses = this.expenses.map((e) => {
       if (idSet.has(e.id)) {
         updatedCount++;
-        return { ...e, ...updates };
+        const upd = { ...e, ...updates };
+        changedExpenses.push(upd);
+        return upd;
       }
       return e;
     });
     if (updatedCount > 0) {
-      saveItem(STORAGE_KEYS.EXPENSES, this.expenses);
+      saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        SupabaseService.saveExpensesBulk(changedExpenses, this.activeTenantId).catch(console.warn);
+      }
       this.log('ATUALIZACAO_DESPESA_LOTE', 'EXPENSE', 'batch', `${updatedCount} despesas atualizadas em lote.`);
       this.notify();
     }
     return updatedCount;
   }
+
+  public addExpenses(expensesData: Array<Omit<Expense, 'id' | 'orgId' | 'createdAt'>>): Expense[] {
+    const createdList: Expense[] = [];
+    expensesData.forEach((data, index) => {
+      const newExpense: Expense = {
+        ...data,
+        id: `exp_${Date.now()}_${index}_${Math.random().toString(36).substring(2, 6)}`,
+        orgId: this.org.id,
+        createdAt: new Date().toISOString(),
+      };
+      createdList.push(newExpense);
+    });
+    this.expenses = [...createdList, ...this.expenses];
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveExpensesBulk(createdList, this.activeTenantId).catch(console.warn);
+      createdList.forEach((exp) => {
+        if (exp.status === 'PAGO' && exp.bankAccountId) {
+          this.updateBankAccountBalance(exp.bankAccountId, -exp.value);
+        }
+      });
+    }
+    this.log(
+      'CRIACAO_DESPESA_LOTE',
+      'EXPENSE',
+      'batch',
+      `${createdList.length} despesas cadastradas em lote / série.`
+    );
+    this.notify();
+    return createdList;
+  }
+
+  public deleteExpenseSeries(id: string, scope: 'ONLY_THIS' | 'THIS_AND_FUTURE' | 'ALL_SERIES'): number {
+    const target = this.expenses.find((e) => e.id === id);
+    if (!target) return 0;
+    const seriesId = target.installmentGroupId || target.recurrenceId;
+    if (!seriesId || scope === 'ONLY_THIS') {
+      this.deleteExpense(id);
+      return 1;
+    }
+
+    const prevLen = this.expenses.length;
+    const targetDueDate = target.dueDate;
+    const toDelete: Expense[] = [];
+
+    this.expenses = this.expenses.filter((e) => {
+      const matchGroup =
+        (target.installmentGroupId && e.installmentGroupId === target.installmentGroupId) ||
+        (target.recurrenceId && e.recurrenceId === target.recurrenceId);
+
+      if (!matchGroup) return true;
+
+      if (scope === 'ALL_SERIES') {
+        toDelete.push(e);
+        return false;
+      }
+      if (scope === 'THIS_AND_FUTURE') {
+        if (e.id === target.id || e.dueDate >= targetDueDate) {
+          toDelete.push(e);
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const deletedCount = prevLen - this.expenses.length;
+    if (deletedCount > 0) {
+      saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        toDelete.forEach((exp) => {
+          SupabaseService.deleteExpense(exp.id, this.activeTenantId).catch(console.warn);
+        });
+      }
+      this.log('EXCLUSAO_DESPESA_SERIE', 'EXPENSE', seriesId, `${deletedCount} despesas da série excluídas.`);
+      this.notify();
+    }
+    return deletedCount;
+  }
+
+  public updateExpenseSeries(
+    id: string,
+    updates: Partial<Expense>,
+    scope: 'ONLY_THIS' | 'THIS_AND_FUTURE' | 'ALL_SERIES'
+  ): number {
+    const target = this.expenses.find((e) => e.id === id);
+    if (!target) return 0;
+    const seriesId = target.installmentGroupId || target.recurrenceId;
+    if (!seriesId || scope === 'ONLY_THIS') {
+      this.updateExpense(id, updates);
+      return 1;
+    }
+
+    const targetDueDate = target.dueDate;
+    let updatedCount = 0;
+    const toSync: Expense[] = [];
+
+    this.expenses = this.expenses.map((e) => {
+      const matchGroup =
+        (target.installmentGroupId && e.installmentGroupId === target.installmentGroupId) ||
+        (target.recurrenceId && e.recurrenceId === target.recurrenceId);
+
+      if (!matchGroup) return e;
+
+      let shouldUpdate = false;
+      if (scope === 'ALL_SERIES') {
+        shouldUpdate = true;
+      } else if (scope === 'THIS_AND_FUTURE') {
+        if (e.id === target.id || e.dueDate >= targetDueDate) {
+          shouldUpdate = true;
+        }
+      }
+
+      if (shouldUpdate) {
+        updatedCount++;
+        const filteredUpdates = { ...updates };
+        delete filteredUpdates.installmentNumber;
+        delete filteredUpdates.recurrenceIndex;
+        delete filteredUpdates.dueDate;
+        delete filteredUpdates.competenceDate;
+        const updated = { ...e, ...filteredUpdates };
+        toSync.push(updated);
+        return updated;
+      }
+      return e;
+    });
+
+    if (updatedCount > 0) {
+      saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+      if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+        toSync.forEach((exp) => {
+          SupabaseService.saveExpense(exp, this.activeTenantId).catch(console.warn);
+        });
+      }
+      this.log('ATUALIZACAO_DESPESA_SERIE', 'EXPENSE', seriesId, `${updatedCount} despesas da série atualizadas.`);
+      this.notify();
+    }
+    return updatedCount;
+  }
+
 
   // Procedure Actions (Tabela de Procedimentos e Precificação)
   public getProcedures(): DentalProcedure[] {
@@ -2411,10 +2849,11 @@ export class DentalFinanceDB {
     this.notify();
     return { success: true, procedure: newProc };
   }
-
   public addProcedure(procData: Omit<DentalProcedure, 'id'>): DentalProcedure {
+    const defaultPriceVal = procData.defaultPrice ?? procData.suggestedPrice ?? 0;
     const newProc: DentalProcedure = {
       ...procData,
+      defaultPrice: defaultPriceVal,
       id: `proc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     };
     this.procedures = [newProc, ...this.procedures];
@@ -2426,7 +2865,7 @@ export class DentalFinanceDB {
       'CRIACAO_PROCEDIMENTO',
       'PROCEDURE',
       newProc.id,
-      `Procedimento "${newProc.name}" (${newProc.category}) cadastrado com preço de tabela R$ ${newProc.defaultPrice.toFixed(2)}.`
+      `Procedimento "${newProc.name}" (${newProc.category}) cadastrado com preço de tabela R$ ${(newProc.defaultPrice ?? 0).toFixed(2)}.`
     );
     this.notify();
     return newProc;
@@ -2946,18 +3385,108 @@ export class DentalFinanceDB {
   public addAppointment(
     appointmentData: Omit<Appointment, 'id' | 'createdAt' | 'updatedAt' | 'dentistName'> & {
       dentistName?: string;
+      price?: number;
+      autoCreateSale?: boolean;
     }
   ): Appointment {
     const now = new Date().toISOString();
+    const aptId = `apt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    // Bloqueio rigoroso de sobreposição de horários (conflito de consultas)
+    const newStartMin = appointmentData.startTime ? (Number(appointmentData.startTime.split(':')[0]) * 60 + Number(appointmentData.startTime.split(':')[1])) : 0;
+    const newEndMin = appointmentData.endTime ? (Number(appointmentData.endTime.split(':')[0]) * 60 + Number(appointmentData.endTime.split(':')[1])) : 0;
+
+    const conflict = this.appointments.find((a) => {
+      if (a.date !== appointmentData.date) return false;
+      if (a.status === 'CANCELADA') return false;
+      if (appointmentData.dentistName && a.dentistName && a.dentistName !== appointmentData.dentistName) return false;
+      const aStartMin = a.startTime ? (Number(a.startTime.split(':')[0]) * 60 + Number(a.startTime.split(':')[1])) : 0;
+      const aEndMin = a.endTime ? (Number(a.endTime.split(':')[0]) * 60 + Number(a.endTime.split(':')[1])) : 0;
+      return newStartMin < aEndMin && newEndMin > aStartMin;
+    });
+
+    if (conflict) {
+      throw new Error(
+        `Conflito de horário! Já existe uma consulta de ${conflict.patientName} (${conflict.procedureName}) agendada das ${conflict.startTime} às ${conflict.endTime}.`
+      );
+    }
+
+    // Auto-create linked sale if procedure & patient are present and autoCreateSale !== false
+    let linkedSaleId: string | undefined = appointmentData.saleId;
+    const shouldCreateSale =
+      appointmentData.autoCreateSale !== false &&
+      Boolean(appointmentData.procedureName && appointmentData.patientName) &&
+      !linkedSaleId;
+
+    if (shouldCreateSale) {
+      const proc = this.procedures.find(
+        (p) =>
+          (appointmentData.procedureId && p.id === appointmentData.procedureId) ||
+          p.name.trim().toLowerCase() === (appointmentData.procedureName || '').trim().toLowerCase()
+      );
+      const procId = appointmentData.procedureId || proc?.id;
+      const saleVal = Number(appointmentData.price || proc?.defaultPrice || 150);
+      linkedSaleId = `sale_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const installmentId = `inst_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+      const newSale: Sale = {
+        id: linkedSaleId,
+        orgId: appointmentData.orgId || this.org?.id || `org_${this.activeTenantId}`,
+        taxOrigin: 'CPF',
+        patientId: appointmentData.patientId,
+        patientName: appointmentData.patientName,
+        patientCpf: appointmentData.patientCpf || '',
+        payerIsBeneficiary: true,
+        procedureId: procId,
+        procedureName: appointmentData.procedureName,
+        description: '', // NUNCA gerar observações automáticas como 'Atendimento Clínico - Canal'
+        totalValue: saleVal,
+        serviceDate: appointmentData.date,
+        paymentMethod: 'PIX',
+        installmentsCount: 1,
+        installments: [
+          {
+            id: installmentId,
+            saleId: linkedSaleId,
+            installmentNumber: 1,
+            totalInstallments: 1,
+            value: saleVal,
+            dueDate: appointmentData.date,
+            status: 'A_RECEBER',
+            receitaSaudeStatus: 'A_EMITIR',
+          },
+        ],
+        notes: appointmentData.notes?.trim() || '',
+        appointmentId: aptId,
+        origin: 'AGENDA',
+        originalEstimatedValue: saleVal,
+        createdAt: now,
+      };
+
+      this.sales = [newSale, ...this.sales];
+      saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+      SupabaseService.saveSale(newSale, this.activeTenantId).catch(console.error);
+    }
+
+    const matchedProc = this.procedures.find(
+      (p) =>
+        (appointmentData.procedureId && p.id === appointmentData.procedureId) ||
+        p.name.trim().toLowerCase() === (appointmentData.procedureName || '').trim().toLowerCase()
+    );
+
     const newAppointment: Appointment = {
       dentistName: appointmentData.dentistName || (appointmentData as any).professionalName || 'Dr(a). Dentista',
+      status: appointmentData.status || 'PENDENTE',
       ...appointmentData,
-      id: `apt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      procedureId: appointmentData.procedureId || matchedProc?.id,
+      id: aptId,
+      saleId: linkedSaleId,
       createdAt: now,
       updatedAt: now,
     };
     this.appointments = [newAppointment, ...this.appointments];
-    saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);
+    saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, this.activeTenantId);
+    SupabaseService.saveAppointment(newAppointment, this.activeTenantId).catch(console.error);
     this.log(
       'CRIACAO_AGENDAMENTO',
       'APPOINTMENT',
@@ -2968,20 +3497,103 @@ export class DentalFinanceDB {
     return newAppointment;
   }
 
-  public updateAppointment(id: string, updates: Partial<Appointment>): boolean {
+  public updateAppointment(id: string, updates: Partial<Appointment> & { price?: number }): boolean {
+    const existing = this.appointments.find((a) => a.id === id);
+    if (!existing) return false;
+
+    const targetDate = updates.date || existing.date;
+    const targetStart = updates.startTime || existing.startTime;
+    const targetEnd = updates.endTime || existing.endTime;
+    const targetDentist = updates.dentistName || existing.dentistName;
+    const targetStatus = updates.status || existing.status;
+
+    if (targetStatus !== 'CANCELADA' && (updates.startTime || updates.endTime || updates.date)) {
+      const newStartMin = targetStart ? (Number(targetStart.split(':')[0]) * 60 + Number(targetStart.split(':')[1])) : 0;
+      const newEndMin = targetEnd ? (Number(targetEnd.split(':')[0]) * 60 + Number(targetEnd.split(':')[1])) : 0;
+
+      const conflict = this.appointments.find((a) => {
+        if (a.id === id) return false;
+        if (a.date !== targetDate) return false;
+        if (a.status === 'CANCELADA') return false;
+        if (targetDentist && a.dentistName && a.dentistName !== targetDentist) return false;
+        const aStartMin = a.startTime ? (Number(a.startTime.split(':')[0]) * 60 + Number(a.startTime.split(':')[1])) : 0;
+        const aEndMin = a.endTime ? (Number(a.endTime.split(':')[0]) * 60 + Number(a.endTime.split(':')[1])) : 0;
+        return newStartMin < aEndMin && newEndMin > aStartMin;
+      });
+
+      if (conflict) {
+        throw new Error(
+          `Conflito de horário! Já existe uma consulta de ${conflict.patientName} (${conflict.procedureName}) agendada das ${conflict.startTime} às ${conflict.endTime}.`
+        );
+      }
+    }
+
     let affected = false;
+    let targetApt: Appointment | undefined;
+
     this.appointments = this.appointments.map((apt) => {
       if (apt.id !== id) return apt;
       affected = true;
-      return {
+      const { price, ...restUpdates } = updates;
+      targetApt = {
         ...apt,
-        ...updates,
+        ...restUpdates,
         updatedAt: new Date().toISOString(),
       };
+      return targetApt;
     });
 
-    if (affected) {
-      saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);
+    if (affected && targetApt) {
+      saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, this.activeTenantId);
+      SupabaseService.saveAppointment(targetApt, this.activeTenantId).catch(console.error);
+
+      // Sincronizar venda vinculada se existir
+      if (targetApt.saleId) {
+        const sale = this.sales.find((s) => s.id === targetApt!.saleId);
+        if (sale) {
+          const newPrice = updates.price !== undefined ? updates.price : sale.totalValue;
+          const origValue = sale.originalEstimatedValue ?? sale.totalValue;
+          let newPriceHistory = sale.priceHistory || [];
+          if (updates.price !== undefined && updates.price !== sale.totalValue) {
+            newPriceHistory = [
+              ...newPriceHistory,
+              {
+                date: new Date().toISOString(),
+                from: sale.totalValue,
+                to: newPrice,
+                note: `Reajuste pós-atendimento (${sale.procedureName})`,
+              },
+            ];
+          }
+
+          const updatedSale: Sale = {
+            ...sale,
+            patientName: updates.patientName ?? sale.patientName,
+            patientId: updates.patientId ?? sale.patientId,
+            patientCpf: updates.patientCpf ?? sale.patientCpf,
+            procedureName: updates.procedureName ?? sale.procedureName,
+            procedureId: updates.procedureId ?? sale.procedureId,
+            notes: updates.notes ?? sale.notes,
+            serviceDate: updates.date ?? sale.serviceDate,
+            totalValue: newPrice,
+            originalEstimatedValue: origValue,
+            priceHistory: newPriceHistory,
+            installments: sale.installments.map((inst) =>
+              inst.status === 'A_RECEBER'
+                ? {
+                    ...inst,
+                    dueDate: updates.date ?? inst.dueDate,
+                    value: newPrice,
+                  }
+                : inst
+            ),
+          };
+          this.sales = this.sales.map((s) => (s.id === updatedSale.id ? updatedSale : s));
+          saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+          SupabaseService.saveSale(updatedSale, this.activeTenantId).catch(console.error);
+        }
+      }
+
       this.log('ATUALIZACAO_AGENDAMENTO', 'APPOINTMENT', id, `Agendamento ${id} atualizado.`);
       this.notify();
       return true;
@@ -2994,10 +3606,24 @@ export class DentalFinanceDB {
   }
 
   public deleteAppointment(id: string): boolean {
+    const apt = this.appointments.find((a) => a.id === id);
     const prevLen = this.appointments.length;
-    this.appointments = this.appointments.filter((apt) => apt.id !== id);
+    this.appointments = this.appointments.filter((a) => a.id !== id);
     if (this.appointments.length !== prevLen) {
-      saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);
+      saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, this.activeTenantId);
+      SupabaseService.deleteAppointment(id, this.activeTenantId).catch(console.error);
+
+      // Se havia venda vinculada ainda em aberto (não recebida), remove do financeiro
+      if (apt?.saleId) {
+        const sale = this.sales.find((s) => s.id === apt.saleId);
+        const hasReceived = sale?.installments.some((i) => i.status === 'RECEBIDO');
+        if (sale && !hasReceived) {
+          this.sales = this.sales.filter((s) => s.id !== apt.saleId);
+          saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+          SupabaseService.deleteSale(apt.saleId, this.activeTenantId).catch(console.error);
+        }
+      }
+
       this.log('EXCLUSAO_AGENDAMENTO', 'APPOINTMENT', id, `Agendamento excluído da agenda.`);
       this.notify();
       return true;

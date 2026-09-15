@@ -58,6 +58,9 @@ function AppContent() {
 
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [newExpenseInitialType, setNewExpenseInitialType] = useState<
+    'UNICA' | 'PARCELADA' | 'RECORRENTE' | undefined
+  >(undefined);
 
   const handleNavigateTab = (tab: NavTab, action?: string) => {
     setCurrentTab(tab);
@@ -65,6 +68,10 @@ function AppContent() {
       if (action === 'new_sale') {
         setIsNewSaleOpen(true);
       } else if (action === 'new_expense') {
+        setNewExpenseInitialType('UNICA');
+        setIsNewExpenseOpen(true);
+      } else if (action === 'new_recurrent_expense') {
+        setNewExpenseInitialType('RECORRENTE');
         setIsNewExpenseOpen(true);
       } else {
         setPendingAction(action);
@@ -73,7 +80,7 @@ function AppContent() {
   };
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [maskCpf, setMaskCpf] = useState(true); // LGPD default: masked
+  const [maskCpf, setMaskCpf] = useState(false); // CPF always displayed completely as required
 
   // Global Period Filter State - Dynamic real environment date
   const [selectedYear, setSelectedYear] = useState<number>(() => new Date().getFullYear());
@@ -145,13 +152,14 @@ function AppContent() {
     });
   }, [expenses, periodPrefix]);
 
-  // Filtered receivables based on global period
+  // Filtered receivables based on global period (strictly by installment due date or receipt date)
   const filteredReceivables = useMemo(() => {
     return receivablesList.filter((item) => {
-      return (
-        (item.dueDate && item.dueDate.startsWith(periodPrefix)) ||
-        (item.competenceDate && item.competenceDate.startsWith(periodPrefix))
-      );
+      const targetDate =
+        item.status === 'RECEBIDO' && item.paymentDate
+          ? item.paymentDate
+          : item.dueDate;
+      return Boolean(targetDate && targetDate.startsWith(periodPrefix));
     });
   }, [receivablesList, periodPrefix]);
 
@@ -350,10 +358,29 @@ function AppContent() {
             <ExpensesView
               expenses={filteredExpenses}
               categories={categories}
-              onOpenNewExpense={() => setIsNewExpenseOpen(true)}
+              onOpenNewExpense={() => {
+                setNewExpenseInitialType('UNICA');
+                setIsNewExpenseOpen(true);
+              }}
               selectedYear={selectedYear}
               selectedMonth={selectedMonth}
               onResetPeriod={handleResetPeriod}
+            />
+          )}
+
+          {currentTab === 'recurrent_expenses' && (
+            <ExpensesView
+              expenses={filteredExpenses}
+              categories={categories}
+              onOpenNewExpense={() => {
+                setNewExpenseInitialType('RECORRENTE');
+                setIsNewExpenseOpen(true);
+              }}
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              onResetPeriod={handleResetPeriod}
+              initialFilter="RECORRENTE"
+              viewMode="recurrent"
             />
           )}
 
@@ -471,9 +498,13 @@ function AppContent() {
 
       <NewExpenseModal
         isOpen={isNewExpenseOpen}
-        onClose={() => setIsNewExpenseOpen(false)}
+        onClose={() => {
+          setIsNewExpenseOpen(false);
+          setNewExpenseInitialType(undefined);
+        }}
         categories={categories}
         bankAccounts={bankAccounts}
+        initialExpenseType={newExpenseInitialType}
         onExpenseCreated={() => {
           setTick((t) => t + 1);
         }}

@@ -77,6 +77,11 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
       return;
     }
 
+    if (!bankAccountId || bankAccountId.trim() === '') {
+      toast.warning('A seleção da conta bancária de destino é obrigatória para liquidar a parcela.');
+      return;
+    }
+
     const receitaStatus: ReceitaSaudeStatus | undefined = isCpf
       ? markAsEmitted
         ? 'EMITIDO'
@@ -148,7 +153,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
           {/* Settle Details with DatePicker and CurrencyInput */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <DatePicker
-              label="Data do Recebimento"
+              label="Data do Recebimento *"
               required
               value={paymentDate}
               onChange={setPaymentDate}
@@ -171,10 +176,11 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
             />
 
             <CustomSelect
-              label="Conta Bancária de Destino"
+              label="Conta Bancária de Destino *"
               options={bankAccountOptions}
               value={bankAccountId}
               onChange={setBankAccountId}
+              required
             />
           </div>
 

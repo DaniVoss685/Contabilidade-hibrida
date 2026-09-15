@@ -98,16 +98,24 @@ export const Slider: React.FC<SliderProps> = ({
 
       {/* Optional Marks */}
       {marks && marks.length > 0 && (
-        <div className="flex justify-between text-[10px] text-slate-400 font-medium px-0.5">
-          {marks.map((mark) => (
-            <span
-              key={mark.value}
-              onClick={() => !disabled && onChange(mark.value)}
-              className="cursor-pointer hover:text-slate-700 transition-colors"
-            >
-              {mark.label}
-            </span>
-          ))}
+        <div className="relative w-full h-4 text-[10px] text-slate-400 font-medium px-0.5">
+          {marks.map((mark) => {
+            const markPercent = Math.min(100, Math.max(0, ((mark.value - min) / (max - min)) * 100));
+            let transformClass = '-translate-x-1/2';
+            if (markPercent <= 0) transformClass = 'translate-x-0';
+            else if (markPercent >= 100) transformClass = '-translate-x-full';
+
+            return (
+              <span
+                key={mark.value}
+                onClick={() => !disabled && onChange(mark.value)}
+                className={`absolute ${transformClass} cursor-pointer hover:text-slate-700 transition-colors whitespace-nowrap`}
+                style={{ left: `${markPercent}%` }}
+              >
+                {mark.label}
+              </span>
+            );
+          })}
         </div>
       )}
     </div>

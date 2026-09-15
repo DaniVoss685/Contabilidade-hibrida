@@ -9,6 +9,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Sparkles,
+  Wallet,
 } from 'lucide-react';
 import { AnnualCashFlowSummary, CashFlowDisplayMode } from '../../types/financial';
 import { getOperationalGroup } from '../../lib/chartOfAccountsData';
@@ -33,11 +34,21 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
     '02': true,
     '04': true,
   });
+  const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({
+    'cat_01_01': true,
+  });
 
   const toggleGroup = (groupCode: string) => {
     setExpandedGroups((prev) => ({
       ...prev,
       [groupCode]: !prev[groupCode],
+    }));
+  };
+
+  const toggleCategory = (catId: string) => {
+    setExpandedCats((prev) => ({
+      ...prev,
+      [catId]: !prev[catId],
     }));
   };
 
@@ -49,12 +60,18 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
       allGroups[g.code] = true;
     });
     setExpandedGroups(allGroups);
+    const allCats: Record<string, boolean> = {};
+    data.allExpenseCategories.forEach((c) => {
+      allCats[c.id] = true;
+    });
+    setExpandedCats(allCats);
   };
 
   const collapseAll = () => {
     setExpandInflows(false);
     setExpandOutflows(false);
     setExpandedGroups({});
+    setExpandedCats({});
   };
 
   const formatCurrency = (val: number) => {
@@ -168,6 +185,24 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
             </thead>
 
             <tbody className="divide-y divide-slate-100 font-sans">
+              {/* ============================================================ */}
+              {/* 0. SALDO INICIAL DE CAIXA (BANCOS & DISPONIBILIDADES)        */}
+              {/* ============================================================ */}
+              <tr className="bg-slate-100/90 font-bold text-slate-800 border-b border-slate-200 hover:bg-slate-200/60 transition-colors">
+                <td className="p-2.5 sticky left-0 z-10 bg-slate-100 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] flex items-center gap-2">
+                  <Wallet className="w-4 h-4 text-slate-600" />
+                  <span>(=) SALDO INICIAL DE CAIXA (BANCOS)</span>
+                </td>
+                {data.months.map((m) => (
+                  <td key={m.monthKey} className="p-2.5 text-right font-bold text-slate-800">
+                    {formatCurrency(m.initialBalance)}
+                  </td>
+                ))}
+                <td className="p-2.5 text-right font-black text-slate-900 bg-slate-200">
+                  {formatCurrency(data.initialBalanceYear)}
+                </td>
+              </tr>
+
               {/* ============================================================ */}
               {/* 1. ENTRADAS DE CAIXA (INFLOWS)                               */}
               {/* ============================================================ */}
@@ -384,16 +419,9 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
                                 <ChevronRight className="w-3 h-3" />
                               )}
                             </button>
-                            <div className="flex flex-col">
-                              <span className="font-semibold text-slate-800">
-                                {group.name.startsWith(group.code)
-                                  ? group.name
-                                  : `${group.code} - ${group.name}`}
-                              </span>
-                              <span className="text-[10px] text-slate-400 font-normal">
-                                {getOperationalGroup(group.code).description}
-                              </span>
-                            </div>
+                            <span className="font-semibold text-slate-800">
+                              {group.code} - {getOperationalGroup(group.code).shortName || group.name.replace(/^\d+\s*-\s*/, '')}
+                            </span>
                           </div>
                         </td>
                         {data.months.map((m) => {
@@ -422,35 +450,95 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
                           );
                           if (!hasAnyVal) return null;
 
+                          const catItems = (data.allExpenseItems || []).filter(
+                            (it) => it.categoryId === cat.id
+                          );
+                          const isCatExpanded = Boolean(expandedCats[cat.id]);
+
                           return (
-                            <tr
-                              key={cat.id}
-                              className="text-[11px] text-slate-600 bg-white hover:bg-slate-50"
-                            >
-                              <td className="p-1.5 pl-12 sticky left-0 z-10 bg-white shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] truncate max-w-[280px]">
-                                <span className="font-mono text-[10px] text-slate-400 mr-1.5">
-                                  {cat.code}
-                                </span>
-                                {cat.name}
-                              </td>
-                              {data.months.map((m) => {
-                                const cVal = getOutflowValue(m.outflowByCategory[cat.id]);
-                                return (
-                                  <td key={m.monthKey} className="p-1.5 text-right text-slate-600">
-                                    {cVal > 0 ? formatCurrency(cVal) : '-'}
-                                  </td>
-                                );
-                              })}
-                              <td className="p-1.5 text-right font-semibold text-slate-800 bg-slate-50">
-                                {formatCurrency(
-                                  data.months.reduce(
-                                    (acc, m) =>
-                                      acc + getOutflowValue(m.outflowByCategory[cat.id]),
-                                    0
-                                  )
-                                )}
-                              </td>
-                            </tr>
+                            <React.Fragment key={cat.id}>
+                              <tr className="text-[11px] text-slate-700 bg-white hover:bg-slate-50 font-medium">
+                                <td className="p-1.5 pl-10 sticky left-0 z-10 bg-white shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] truncate max-w-[280px]">
+                                  <div className="flex items-center gap-1.5">
+                                    {catItems.length > 0 ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleCategory(cat.id)}
+                                        className="p-0.5 hover:bg-slate-200 rounded text-slate-500 cursor-pointer"
+                                        title={isCatExpanded ? 'Recolher lançamentos' : 'Expandir lançamentos'}
+                                      >
+                                        {isCatExpanded ? (
+                                          <ChevronDown className="w-2.5 h-2.5" />
+                                        ) : (
+                                          <ChevronRight className="w-2.5 h-2.5" />
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <span className="w-3" />
+                                    )}
+                                    <span className="font-mono text-[10px] text-slate-400">
+                                      {cat.code}
+                                    </span>
+                                    <span>{cat.name}</span>
+                                  </div>
+                                </td>
+                                {data.months.map((m) => {
+                                  const cVal = getOutflowValue(m.outflowByCategory[cat.id]);
+                                  return (
+                                    <td key={m.monthKey} className="p-1.5 text-right text-slate-600">
+                                      {cVal > 0 ? formatCurrency(cVal) : '-'}
+                                    </td>
+                                  );
+                                })}
+                                <td className="p-1.5 text-right font-semibold text-slate-800 bg-slate-50">
+                                  {formatCurrency(
+                                    data.months.reduce(
+                                      (acc, m) =>
+                                        acc + getOutflowValue(m.outflowByCategory[cat.id]),
+                                      0
+                                    )
+                                  )}
+                                </td>
+                              </tr>
+
+                              {/* Nível 3: Contas / Despesas individuais lançadas */}
+                              {isCatExpanded &&
+                                catItems.map((item) => {
+                                  const hasItemVal = data.months.some(
+                                    (m) => getOutflowValue(m.outflowByItem?.[item.itemKey]) > 0
+                                  );
+                                  if (!hasItemVal) return null;
+
+                                  return (
+                                    <tr
+                                      key={item.itemKey}
+                                      className="text-[10.5px] text-slate-500 bg-slate-50/60 hover:bg-slate-100/50"
+                                    >
+                                      <td className="p-1 pl-16 sticky left-0 z-10 bg-slate-50 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] truncate max-w-[280px]">
+                                        <span className="text-slate-400 font-mono text-[9px] mr-1.5">└─</span>
+                                        <span className="font-normal text-slate-600">{item.itemName}</span>
+                                      </td>
+                                      {data.months.map((m) => {
+                                        const iVal = getOutflowValue(m.outflowByItem?.[item.itemKey]);
+                                        return (
+                                          <td key={m.monthKey} className="p-1 text-right text-slate-500 font-mono">
+                                            {iVal > 0 ? formatCurrency(iVal) : '-'}
+                                          </td>
+                                        );
+                                      })}
+                                      <td className="p-1 text-right font-medium text-slate-700 bg-slate-100/60 font-mono">
+                                        {formatCurrency(
+                                          data.months.reduce(
+                                            (acc, m) =>
+                                              acc + getOutflowValue(m.outflowByItem?.[item.itemKey]),
+                                            0
+                                          )
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </React.Fragment>
                           );
                         })}
                     </React.Fragment>
@@ -490,21 +578,6 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
                   }`}
                 >
                   {formatCurrency(data.netTotalCashFlow)}
-                </td>
-              </tr>
-
-              {/* Saldo Inicial */}
-              <tr className="bg-slate-50/70 text-slate-600 font-medium">
-                <td className="p-2 pl-6 sticky left-0 z-10 bg-slate-50 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
-                  Saldo Inicial de Caixa (Contas Bancárias)
-                </td>
-                {data.months.map((m) => (
-                  <td key={m.monthKey} className="p-2 text-right font-medium text-slate-700">
-                    {formatCurrency(m.initialBalance)}
-                  </td>
-                ))}
-                <td className="p-2 text-right font-bold text-slate-700 bg-slate-100">
-                  {formatCurrency(data.initialBalanceYear)}
                 </td>
               </tr>
 

@@ -15,10 +15,12 @@ import {
 } from '../types';
 
 export const SUPABASE_URL =
-  (import.meta.env.VITE_SUPABASE_URL as string) ||
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SUPABASE_URL) ||
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_URL) ||
   'https://fbkouuvupdyffizwoiti.supabase.co';
 export const SUPABASE_ANON_KEY =
-  (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ||
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SUPABASE_ANON_KEY) ||
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZia291dXZ1cGR5ZmZpendvaXRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyOTI2NDUsImV4cCI6MjA3MDg2ODY0NX0.9xN5BQug6yHm_k9H20v524XFuCbd1JzW2aRSQJWstfo';
 
 const REST_URL = `${SUPABASE_URL}/rest/v1`;
@@ -278,6 +280,25 @@ export function mapAppPatientToDb(app: Patient, tenantId: string): any {
 }
 
 export function mapDbSaleToApp(db: any): Sale {
+  const installments = Array.isArray(db.installments) ? db.installments : [];
+  const totalInstallmentCardFees = installments.reduce((acc: number, i: any) => acc + (i.cardFeeAmount || 0), 0);
+  const cardFeeAmount =
+    db.card_fee_amount !== undefined
+      ? Number(db.card_fee_amount)
+      : totalInstallmentCardFees > 0
+      ? totalInstallmentCardFees
+      : undefined;
+  const cardFeePercent =
+    db.card_fee_percent !== undefined
+      ? Number(db.card_fee_percent)
+      : installments.find((i: any) => i.cardFeePercent)?.cardFeePercent || undefined;
+  const netValue =
+    db.net_value !== undefined
+      ? Number(db.net_value)
+      : cardFeeAmount
+      ? Math.max(0, Number(db.total_value || 0) - cardFeeAmount)
+      : Number(db.total_value || 0);
+
   return {
     id: db.id,
     orgId: db.org_id,
@@ -292,6 +313,10 @@ export function mapDbSaleToApp(db: any): Sale {
     procedureName: db.procedure_name || '',
     description: db.description || '',
     totalValue: Number(db.total_value || 0),
+    cardFeePercent,
+    cardFeeAmount,
+    netValue,
+    bankAccountId: db.bank_account_id || installments[0]?.bankAccountId || undefined,
     serviceDate: db.service_date,
     paymentMethod: db.payment_method,
     installmentsCount: Number(db.installments_count || 1),
@@ -299,8 +324,12 @@ export function mapDbSaleToApp(db: any): Sale {
     nfseNumber: db.nfse_number || undefined,
     nfseVerificationCode: db.nfse_verification_code || undefined,
     nfseEmittedAt: db.nfse_emitted_at || undefined,
-    installments: Array.isArray(db.installments) ? db.installments : [],
+    installments,
     notes: db.notes || '',
+    appointmentId: db.appointment_id || undefined,
+    origin: db.origin || (db.appointment_id ? 'AGENDA' : 'MANUAL'),
+    originalEstimatedValue: db.original_estimated_value !== undefined ? Number(db.original_estimated_value) : undefined,
+    priceHistory: Array.isArray(db.price_history) ? db.price_history : [],
     createdAt: db.created_at || new Date().toISOString(),
   };
 }
@@ -330,6 +359,8 @@ export function mapAppSaleToDb(app: Sale, tenantId: string): any {
     nfse_emitted_at: app.nfseEmittedAt || null,
     installments: app.installments || [],
     notes: app.notes || '',
+    appointment_id: app.appointmentId || null,
+    origin: app.origin || (app.appointmentId ? 'AGENDA' : 'MANUAL'),
     created_at: app.createdAt || new Date().toISOString(),
   };
 }
@@ -367,6 +398,14 @@ export function mapDbExpenseToApp(db: any): Expense {
     overrideJustification: db.override_justification || '',
     status: db.status || 'A_PAGAR',
     createdAt: db.created_at || new Date().toISOString(),
+    expenseType: (db.expense_type as any) || (db.total_installments ? 'PARCELADA' : db.recurrence_id ? 'RECORRENTE' : 'UNICA'),
+    recurrenceId: db.recurrence_id || undefined,
+    recurrenceFrequency: db.recurrence_frequency || undefined,
+    recurrenceCount: db.recurrence_count != null ? Number(db.recurrence_count) : undefined,
+    recurrenceIndex: db.recurrence_index != null ? Number(db.recurrence_index) : undefined,
+    installmentGroupId: db.installment_group_id || undefined,
+    installmentNumber: db.installment_number != null ? Number(db.installment_number) : undefined,
+    totalInstallments: db.total_installments != null ? Number(db.total_installments) : undefined,
   };
 }
 
@@ -400,10 +439,18 @@ export function mapAppExpenseToDb(app: Expense, tenantId: string): any {
     dedutivel_livro_caixa_pf: app.dedutivelLivroCaixaPf || 'SIM',
     impacta_fator_r_pj: Boolean(app.impactaFatorRPj),
     despesa_operacional_pj: Boolean(app.despesaOperacionalPj ?? true),
-    isOverridden: Boolean(app.isOverridden),
+    is_overridden: Boolean(app.isOverridden),
     override_justification: app.overrideJustification || null,
     status: app.status || 'A_PAGAR',
     created_at: app.createdAt || new Date().toISOString(),
+    expense_type: app.expenseType || (app.totalInstallments ? 'PARCELADA' : app.recurrenceId ? 'RECORRENTE' : 'UNICA'),
+    recurrence_id: app.recurrenceId || null,
+    recurrence_frequency: app.recurrenceFrequency || null,
+    recurrence_count: app.recurrenceCount != null ? Number(app.recurrenceCount) : null,
+    recurrence_index: app.recurrenceIndex != null ? Number(app.recurrenceIndex) : null,
+    installment_group_id: app.installmentGroupId || null,
+    installment_number: app.installmentNumber != null ? Number(app.installmentNumber) : null,
+    total_installments: app.totalInstallments != null ? Number(app.totalInstallments) : null,
   };
 }
 
@@ -734,14 +781,14 @@ export const SupabaseService = {
 
     return {
       professional: profRes.data && profRes.data.length > 0 ? mapDbProfessionalToApp(profRes.data[0], tenantId) : null,
-      payrollHistory: (payrollRes.data || []).map(mapDbPayrollToApp),
-      patients: (patientsRes.data || []).map(mapDbPatientToApp),
-      sales: (salesRes.data || []).map(mapDbSaleToApp),
-      expenses: (expensesRes.data || []).map(mapDbExpenseToApp),
-      procedures: (proceduresRes.data || []).map(mapDbProcedureToApp),
-      clinicalInputs: (inputsRes.data || []).map(mapDbClinicalInputToApp),
-      bankAccounts: (banksRes.data || []).map(mapDbBankAccountToApp),
-      appointments: (apptsRes.data || []).map(mapDbAppointmentToApp),
+      payrollHistory: payrollRes.data ? payrollRes.data.map(mapDbPayrollToApp) : [],
+      patients: patientsRes.data ? patientsRes.data.map(mapDbPatientToApp) : null,
+      sales: salesRes.data ? salesRes.data.map(mapDbSaleToApp) : null,
+      expenses: expensesRes.data ? expensesRes.data.map(mapDbExpenseToApp) : null,
+      procedures: proceduresRes.data ? proceduresRes.data.map(mapDbProcedureToApp) : null,
+      clinicalInputs: inputsRes.data ? inputsRes.data.map(mapDbClinicalInputToApp) : null,
+      bankAccounts: banksRes.data ? banksRes.data.map(mapDbBankAccountToApp) : null,
+      appointments: apptsRes.data ? apptsRes.data.map(mapDbAppointmentToApp) : null,
       preferences: prefsRes.data && prefsRes.data.length > 0 ? mapDbPreferencesToApp(prefsRes.data[0]) : null,
       auditLogs: (logsRes.data || []).map(mapDbAuditLogToApp),
       error,
@@ -867,6 +914,18 @@ export const SupabaseService = {
     return { success: !error, error: error || undefined };
   },
 
+  async saveExpensesBulk(expenses: Expense[], tenantId: string): Promise<{ success: boolean; error?: string }> {
+    if (!expenses || expenses.length === 0) return { success: true };
+    await this.ensureTenantExists(tenantId);
+    const payloads = expenses.map((exp) => mapAppExpenseToDb(exp, tenantId));
+    const { error } = await supabaseFetch('df_expenses?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payloads,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
   async deleteExpense(expenseId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
     const { error } = await supabaseFetch(`df_expenses?id=eq.${expenseId}&tenant_id=eq.${tenantId}`, {
       method: 'DELETE',
@@ -906,6 +965,29 @@ export const SupabaseService = {
   async deleteClinicalInput(inputId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
     const { error } = await supabaseFetch(`df_clinical_inputs?id=eq.${inputId}&tenant_id=eq.${tenantId}`, {
       method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async saveBankAccount(account: BankAccount, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppBankAccountToDb(account, tenantId);
+    const { error } = await supabaseFetch('df_bank_accounts?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async saveBankAccountsBulk(accounts: BankAccount[], tenantId: string): Promise<{ success: boolean; error?: string }> {
+    if (!accounts || accounts.length === 0) return { success: true };
+    await this.ensureTenantExists(tenantId);
+    const payloads = accounts.map((acc) => mapAppBankAccountToDb(acc, tenantId));
+    const { error } = await supabaseFetch('df_bank_accounts?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payloads,
     });
     return { success: !error, error: error || undefined };
   },

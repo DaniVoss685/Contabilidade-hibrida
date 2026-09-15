@@ -25,11 +25,21 @@ export const DreTable: React.FC<DreTableProps> = ({ data, onSelectMonth }) => {
     '01': true,
     '02': true,
   });
+  const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({
+    'cat_01_01': true,
+  });
 
   const toggleFixedGroup = (code: string) => {
     setExpandedFixedGroups((prev) => ({
       ...prev,
       [code]: !prev[code],
+    }));
+  };
+
+  const toggleCategory = (catId: string) => {
+    setExpandedCats((prev) => ({
+      ...prev,
+      [catId]: !prev[catId],
     }));
   };
 
@@ -42,6 +52,11 @@ export const DreTable: React.FC<DreTableProps> = ({ data, onSelectMonth }) => {
       all[g.code] = true;
     });
     setExpandedFixedGroups(all);
+    const allCats: Record<string, boolean> = {};
+    data.allExpenseCategories.forEach((c) => {
+      allCats[c.id] = true;
+    });
+    setExpandedCats(allCats);
   };
 
   const collapseAll = () => {
@@ -49,6 +64,7 @@ export const DreTable: React.FC<DreTableProps> = ({ data, onSelectMonth }) => {
     setExpandVariable(false);
     setExpandFixed(false);
     setExpandedFixedGroups({});
+    setExpandedCats({});
   };
 
   const formatCurrency = (val: number) => {
@@ -276,9 +292,7 @@ export const DreTable: React.FC<DreTableProps> = ({ data, onSelectMonth }) => {
                   if (!hasVal) return null;
 
                   const groupDef = getOperationalGroup(group.code);
-                  const displayName = group.name.startsWith(group.code)
-                    ? group.name
-                    : `${group.code} - ${group.name}`;
+                  const displayName = `${group.code} - ${groupDef.shortName || group.name.replace(/^\d+\s*-\s*/, '')}`;
 
                   return (
                     <tr key={group.code} className="text-[11px] text-slate-700 bg-white hover:bg-amber-50/40">
@@ -370,37 +384,149 @@ export const DreTable: React.FC<DreTableProps> = ({ data, onSelectMonth }) => {
                   const hasVal = data.months.some((m) => (m.fixedExpensesByGroup[group.code] || 0) > 0);
                   if (!hasVal) return null;
 
+                  const isGroupExpanded = Boolean(expandedFixedGroups[group.code]);
                   const groupDef = getOperationalGroup(group.code);
-                  const displayName = group.name.startsWith(group.code)
-                    ? group.name
-                    : `${group.code} - ${group.name}`;
+                  const displayName = `${group.code} - ${groupDef.shortName || group.name.replace(/^\d+\s*-\s*/, '')}`;
+                  const groupCats = data.allExpenseCategories.filter((c) => c.groupCode === group.code);
 
                   return (
-                    <tr key={group.code} className="text-[11px] text-slate-600 bg-white hover:bg-slate-50">
-                      <td className="p-2 pl-9 sticky left-0 z-10 bg-white shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
-                        <div className="flex flex-col">
-                          <span className="font-semibold text-slate-800">
-                            • {displayName}
-                          </span>
-                          <span className="text-[10px] text-slate-400 font-normal">
-                            {groupDef.description}
-                          </span>
-                        </div>
-                      </td>
-                      {data.months.map((m) => (
-                        <td key={m.monthKey} className="p-2 text-right text-slate-600">
-                          {(m.fixedExpensesByGroup[group.code] || 0) > 0
-                            ? `- ${formatCurrency(m.fixedExpensesByGroup[group.code] || 0)}`
-                            : '-'}
+                    <React.Fragment key={group.code}>
+                      <tr className="text-[11px] text-slate-700 bg-slate-50/70 hover:bg-slate-100/70 font-medium">
+                        <td className="p-2 pl-6 sticky left-0 z-10 bg-white/95 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => toggleFixedGroup(group.code)}
+                              className="p-0.5 hover:bg-slate-200 rounded text-slate-600 cursor-pointer"
+                              title={isGroupExpanded ? 'Recolher subcategorias' : 'Expandir subcategorias'}
+                            >
+                              {isGroupExpanded ? (
+                                <ChevronDown className="w-3 h-3" />
+                              ) : (
+                                <ChevronRight className="w-3 h-3" />
+                              )}
+                            </button>
+                            <span className="font-semibold text-slate-800">
+                              {displayName}
+                            </span>
+                          </div>
                         </td>
-                      ))}
-                      <td className="p-2 text-right font-bold text-slate-700 bg-slate-50">
-                        -{' '}
-                        {formatCurrency(
-                          data.months.reduce((acc, m) => acc + (m.fixedExpensesByGroup[group.code] || 0), 0)
-                        )}
-                      </td>
-                    </tr>
+                        {data.months.map((m) => (
+                          <td key={m.monthKey} className="p-2 text-right text-slate-600">
+                            {(m.fixedExpensesByGroup[group.code] || 0) > 0
+                              ? `- ${formatCurrency(m.fixedExpensesByGroup[group.code] || 0)}`
+                              : '-'}
+                          </td>
+                        ))}
+                        <td className="p-2 text-right font-bold text-slate-700 bg-slate-50">
+                          -{' '}
+                          {formatCurrency(
+                            data.months.reduce((acc, m) => acc + (m.fixedExpensesByGroup[group.code] || 0), 0)
+                          )}
+                        </td>
+                      </tr>
+
+                      {/* Subcategorias do Grupo */}
+                      {isGroupExpanded &&
+                        groupCats.map((cat) => {
+                          const hasCatVal = data.months.some(
+                            (m) => (m.fixedExpensesByCategory[cat.id] || 0) > 0
+                          );
+                          if (!hasCatVal) return null;
+
+                          const catItems = (data.allFixedItems || []).filter(
+                            (it) => it.categoryId === cat.id
+                          );
+                          const isCatExpanded = Boolean(expandedCats[cat.id]);
+
+                          return (
+                            <React.Fragment key={cat.id}>
+                              <tr className="text-[11px] text-slate-700 bg-white hover:bg-slate-50 font-medium">
+                                <td className="p-1.5 pl-10 sticky left-0 z-10 bg-white shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] truncate max-w-[280px]">
+                                  <div className="flex items-center gap-1.5">
+                                    {catItems.length > 0 ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleCategory(cat.id)}
+                                        className="p-0.5 hover:bg-slate-200 rounded text-slate-500 cursor-pointer"
+                                        title={isCatExpanded ? 'Recolher lançamentos' : 'Expandir lançamentos'}
+                                      >
+                                        {isCatExpanded ? (
+                                          <ChevronDown className="w-2.5 h-2.5" />
+                                        ) : (
+                                          <ChevronRight className="w-2.5 h-2.5" />
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <span className="w-3" />
+                                    )}
+                                    <span className="font-mono text-[10px] text-slate-400">
+                                      {cat.code}
+                                    </span>
+                                    <span>{cat.name}</span>
+                                  </div>
+                                </td>
+                                {data.months.map((m) => {
+                                  const cVal = m.fixedExpensesByCategory[cat.id] || 0;
+                                  return (
+                                    <td key={m.monthKey} className="p-1.5 text-right text-slate-600">
+                                      {cVal > 0 ? `- ${formatCurrency(cVal)}` : '-'}
+                                    </td>
+                                  );
+                                })}
+                                <td className="p-1.5 text-right font-semibold text-slate-800 bg-slate-50">
+                                  -{' '}
+                                  {formatCurrency(
+                                    data.months.reduce(
+                                      (acc, m) => acc + (m.fixedExpensesByCategory[cat.id] || 0),
+                                      0
+                                    )
+                                  )}
+                                </td>
+                              </tr>
+
+                              {/* Nível 3: Contas / Despesas individuais lançadas */}
+                              {isCatExpanded &&
+                                catItems.map((item) => {
+                                  const hasItemVal = data.months.some(
+                                    (m) => (m.fixedExpensesByItem?.[item.itemKey] || 0) > 0
+                                  );
+                                  if (!hasItemVal) return null;
+
+                                  return (
+                                    <tr
+                                      key={item.itemKey}
+                                      className="text-[10.5px] text-slate-500 bg-slate-50/60 hover:bg-slate-100/50"
+                                    >
+                                      <td className="p-1 pl-16 sticky left-0 z-10 bg-slate-50 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] truncate max-w-[280px]">
+                                        <span className="text-slate-400 font-mono text-[9px] mr-1.5">└─</span>
+                                        <span className="font-normal text-slate-600">{item.itemName}</span>
+                                      </td>
+                                      {data.months.map((m) => {
+                                        const iVal = m.fixedExpensesByItem?.[item.itemKey] || 0;
+                                        return (
+                                          <td key={m.monthKey} className="p-1 text-right text-slate-500 font-mono">
+                                            {iVal > 0 ? `- ${formatCurrency(iVal)}` : '-'}
+                                          </td>
+                                        );
+                                      })}
+                                      <td className="p-1 text-right font-medium text-slate-700 bg-slate-100/60 font-mono">
+                                        -{' '}
+                                        {formatCurrency(
+                                          data.months.reduce(
+                                            (acc, m) =>
+                                              acc + (m.fixedExpensesByItem?.[item.itemKey] || 0),
+                                            0
+                                          )
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </React.Fragment>
+                          );
+                        })}
+                    </React.Fragment>
                   );
                 })}
 

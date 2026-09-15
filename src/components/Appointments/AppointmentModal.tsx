@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Calendar, Clock, User, Stethoscope, FileText, Send, CheckCircle2, ArrowRight } from 'lucide-react';
+import { X, Calendar, Clock, User, Stethoscope, FileText, Send, CheckCircle2, ArrowRight, AlertCircle } from 'lucide-react';
 import { db } from '../../lib/db';
 import { Patient, DentalProcedure, Appointment, AppointmentStatus, AppointmentOrigin, Professional } from '../../types';
 import { PatientSearchSelect } from '../UI/PatientSearchSelect';
-import { DatePicker, TimePicker, CustomSelect, ConfirmDialog, useToast } from '../UI';
+import { DatePicker, TimePicker, CustomSelect, ConfirmDialog, useToast, CurrencyInput } from '../UI';
 
 import { formatDateBr } from '../../lib/masks';
 
@@ -19,8 +19,8 @@ interface AppointmentModalProps {
 }
 
 const STATUS_OPTIONS: { value: AppointmentStatus; label: string; color: string }[] = [
+  { value: 'PENDENTE', label: 'Pendente de Confirmação', color: 'bg-amber-100 text-amber-800' },
   { value: 'CONFIRMADA', label: 'Confirmada', color: 'bg-emerald-100 text-emerald-800' },
-  { value: 'PENDENTE', label: 'Pendente Confirmação', color: 'bg-amber-100 text-amber-800' },
   { value: 'AGUARDANDO', label: 'Aguardando na Recepção', color: 'bg-blue-100 text-blue-800' },
   { value: 'EM_ATENDIMENTO', label: 'Em Atendimento', color: 'bg-purple-100 text-purple-800' },
   { value: 'FINALIZADA', label: 'Finalizada', color: 'bg-slate-100 text-slate-700' },
@@ -37,13 +37,23 @@ const ORIGIN_OPTIONS: { value: AppointmentOrigin; label: string }[] = [
 ];
 
 const DURATION_OPTIONS = [
-  { value: '15', label: '15 minutos (Avaliação rápida)' },
-  { value: '30', label: '30 minutos (Consulta padrão / Manutenção)' },
-  { value: '45', label: '45 minutos (Profilaxia / Restauração)' },
-  { value: '60', label: '1 hora (Procedimento cirúrgico / Endodontia)' },
-  { value: '90', label: '1h 30min (Cirurgia avançada / Implante)' },
-  { value: '120', label: '2 horas (Reabilitação / Cirurgia múltipla)' },
+  { value: '15', label: '15 minutos' },
+  { value: '30', label: '30 minutos' },
+  { value: '45', label: '45 minutos' },
+  { value: '60', label: '1 hora' },
+  { value: '75', label: '1h 15min' },
+  { value: '90', label: '1h 30min' },
+  { value: '105', label: '1h 45min' },
+  { value: '120', label: '2 horas' },
+  { value: '150', label: '2h 30min' },
+  { value: '180', label: '3 horas' },
 ];
+
+function timeToMinutes(timeStr: string): number {
+  if (!timeStr) return 0;
+  const [h, m] = timeStr.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
 
 function calculateEndTime(start: string, durationMinutes: number): string {
   if (!start) return '';
@@ -84,7 +94,8 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
 
   const [selectedProcedureId, setSelectedProcedureId] = useState('');
   const [procedureName, setProcedureName] = useState('');
-  const [status, setStatus] = useState<AppointmentStatus>('CONFIRMADA');
+  const [price, setPrice] = useState<number>(150);
+  const [status, setStatus] = useState<AppointmentStatus>('PENDENTE');
   const [origin, setOrigin] = useState<AppointmentOrigin>('WHATSAPP');
   const [notes, setNotes] = useState('');
   const [sendWhatsappReminder, setSendWhatsappReminder] = useState(true);
@@ -112,6 +123,45 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
     setEndTime(calculateEndTime(startTime, durationMinutes));
   }, [startTime, durationMinutes]);
 
+  const existingAppointments = useMemo(() => {
+    return isOpen ? db.getAppointments() : [];
+  }, [isOpen]);
+
+  const preferences = useMemo(() => {
+    return db.getPreferences();
+  }, [isOpen]);
+
+  const lunchBreakStart = preferences.lunchBreakStart || '12:00';
+  const lunchBreakEnd = preferences.lunchBreakEnd || '13:00';
+  const isLunchBreakEnabled = preferences.lunchBreakEnabled !== false;
+
+  const conflictAppointment = useMemo(() => {
+    if (!date || !startTime || !endTime) return null;
+    const startMin = timeToMinutes(startTime);
+    const endMin = timeToMinutes(endTime);
+
+    return (
+      existingAppointments.find((a) => {
+        if (appointmentToEdit && a.id === appointmentToEdit.id) return false;
+        if (a.date !== date) return false;
+        if (a.status === 'CANCELADA') return false;
+        if (dentistName && a.dentistName && a.dentistName !== dentistName) return false;
+        const aStart = timeToMinutes(a.startTime);
+        const aEnd = timeToMinutes(a.endTime || calculateEndTime(a.startTime, a.durationMinutes));
+        return startMin < aEnd && endMin > aStart;
+      }) || null
+    );
+  }, [existingAppointments, appointmentToEdit, date, startTime, endTime, dentistName]);
+
+  const isLunchConflict = useMemo(() => {
+    if (!isLunchBreakEnabled || !startTime || !endTime) return false;
+    const startMin = timeToMinutes(startTime);
+    const endMin = timeToMinutes(endTime);
+    const lunchStartMin = timeToMinutes(lunchBreakStart);
+    const lunchEndMin = timeToMinutes(lunchBreakEnd);
+    return startMin < lunchEndMin && endMin > lunchStartMin;
+  }, [isLunchBreakEnabled, startTime, endTime, lunchBreakStart, lunchBreakEnd]);
+
   // Reset or populate clean state whenever modal opens or item to edit changes
   useEffect(() => {
     if (isOpen) {
@@ -126,6 +176,13 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         setEndTime(appointmentToEdit.endTime);
         setSelectedProcedureId(appointmentToEdit.procedureId || '');
         setProcedureName(appointmentToEdit.procedureName);
+        if (appointmentToEdit.saleId) {
+          const linkedSale = db.getSales().find((s) => s.id === appointmentToEdit.saleId);
+          if (linkedSale) setPrice(linkedSale.totalValue);
+        } else if (appointmentToEdit.procedureId) {
+          const proc = db.getProcedures().find((p) => p.id === appointmentToEdit.procedureId);
+          if (proc?.defaultPrice) setPrice(proc.defaultPrice);
+        }
         setStatus(appointmentToEdit.status);
         setOrigin(appointmentToEdit.origin || 'WHATSAPP');
         setNotes(appointmentToEdit.notes || '');
@@ -164,7 +221,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         setDurationMinutes(45);
         setSelectedProcedureId('');
         setProcedureName('');
-        setStatus('CONFIRMADA');
+        setStatus('PENDENTE');
         setOrigin('WHATSAPP');
         setNotes('');
         setSendWhatsappReminder(true);
@@ -227,6 +284,9 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
       if (found.clinicalDurationMinutes) {
         setDurationMinutes(found.clinicalDurationMinutes);
       }
+      if (found.defaultPrice !== undefined && found.defaultPrice !== null) {
+        setPrice(found.defaultPrice);
+      }
     } else {
       setProcedureName('');
     }
@@ -249,6 +309,9 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
     if (!procedureName.trim()) {
       newErrors.procedure = 'Informe ou selecione o procedimento clínico.';
     }
+    if (conflictAppointment) {
+      newErrors.startTime = `Horário indisponível: coincide com ${conflictAppointment.patientName} (${conflictAppointment.startTime} às ${conflictAppointment.endTime}).`;
+    }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -256,6 +319,12 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (conflictAppointment) {
+      toast.error(
+        `Conflito de horário! Já existe uma consulta de ${conflictAppointment.patientName} (${conflictAppointment.startTime} às ${conflictAppointment.endTime}). Por favor, escolha outro horário.`
+      );
+      return;
+    }
     if (!validate() || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -281,6 +350,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
           origin,
           notes,
           sendWhatsappReminder,
+          price,
         });
         savedAppointment = {
           ...appointmentToEdit,
@@ -320,6 +390,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
           origin,
           notes,
           sendWhatsappReminder,
+          price,
           rescheduledFromId: rescheduleFromAppointment?.id,
           rescheduledFromDate: rescheduleFromAppointment?.date,
         });
@@ -427,6 +498,54 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
               )}
             </div>
 
+            {/* Procedure Selection & Price */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="sm:col-span-2">
+                <CustomSelect
+                  label="Procedimento Clínico"
+                  required
+                  searchable
+                  options={procedureOptions}
+                  value={selectedProcedureId}
+                  onChange={handleProcedureSelect}
+                  placeholder="Selecione um procedimento..."
+                  error={errors.procedure}
+                  className="w-full"
+                />
+                {procedures.length === 0 && (
+                  <div className="mt-1.5 flex items-center justify-between text-xs text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200">
+                    <span>Nenhum procedimento cadastrado.</span>
+                    {onNavigateToProcedures && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          onNavigateToProcedures();
+                        }}
+                        className="font-bold text-emerald-700 hover:text-emerald-800 hover:underline cursor-pointer flex items-center gap-1"
+                      >
+                        <span>Ir para Procedimentos</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="sm:col-span-1">
+                <CurrencyInput
+                  label="Valor Previsto (R$)"
+                  value={price}
+                  onChange={(val) => setPrice(val)}
+                  placeholder="0,00"
+                  className="w-full"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Cria venda e conta a receber automaticamente
+                </p>
+              </div>
+            </div>
+
             {/* Date, Start Time & Duration Grid - Fully Premium Components */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
@@ -465,57 +584,34 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                   onChange={(v) => setDurationMinutes(Number(v))}
                   className="w-full"
                 />
-                <p className="mt-1 text-xs text-slate-400">Término previsto às {endTime}</p>
+                <p className="mt-1 text-xs text-slate-500 font-medium">
+                  Término previsto às <strong className="text-slate-800 font-semibold">{endTime}</strong>
+                </p>
               </div>
             </div>
 
-            {/* Procedure Selection & Custom Detail */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <CustomSelect
-                  label="Procedimento Clínico"
-                  required
-                  searchable
-                  options={procedureOptions}
-                  value={selectedProcedureId}
-                  onChange={handleProcedureSelect}
-                  placeholder="Selecione um procedimento..."
-                  error={errors.procedure}
-                  className="w-full"
-                />
-                {procedures.length === 0 && (
-                  <div className="mt-1.5 flex items-center justify-between text-xs text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200">
-                    <span>Nenhum procedimento cadastrado.</span>
-                    {onNavigateToProcedures && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onClose();
-                          onNavigateToProcedures();
-                        }}
-                        className="font-bold text-emerald-700 hover:text-emerald-800 hover:underline cursor-pointer flex items-center gap-1"
-                      >
-                        <span>Ir para Procedimentos</span>
-                        <ArrowRight className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                )}
+            {/* Conflito de Horário - Bloqueio com Alerta Visual */}
+            {conflictAppointment && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2.5 text-xs text-rose-800 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="font-bold">Conflito de Horário!</strong>
+                  <p className="mt-0.5">
+                    Já existe uma consulta para <strong>{conflictAppointment.patientName}</strong> ({conflictAppointment.procedureName}) agendada das <strong>{conflictAppointment.startTime} às {conflictAppointment.endTime}</strong> nesta data. O sistema não permite sobrepor horários.
+                  </p>
+                </div>
               </div>
+            )}
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Detalhe / Descrição Clínica
-                </label>
-                <input
-                  type="text"
-                  value={procedureName}
-                  onChange={(e) => setProcedureName(e.target.value)}
-                  placeholder="Ex: Restauração Resina Dente 16..."
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                />
+            {/* Aviso de Intervalo de Almoço */}
+            {isLunchConflict && !conflictAppointment && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2 text-xs text-amber-800 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  <strong>Aviso:</strong> Este horário coincide com o intervalo de almoço configurado (<strong>{lunchBreakStart} às {lunchBreakEnd}</strong>).
+                </span>
               </div>
-            </div>
+            )}
 
             {/* Status & Origin - Premium CustomSelects */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -595,7 +691,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                 rows={2}
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="Ex: Paciente alérgico a dipirona; trazer radiografia panorâmica..."
+                placeholder="Ex: Canal de 6 dentes; paciente alérgico a dipirona; dente 16..."
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
               />
             </div>

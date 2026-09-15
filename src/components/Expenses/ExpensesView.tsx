@@ -14,6 +14,9 @@ import {
   Square,
   AlertCircle,
   Calendar,
+  Repeat,
+  Layers,
+  X,
 } from 'lucide-react';
 import { Expense, ExpenseCategory, ExpenseEntity } from '../../types';
 import { formatCurrency, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
@@ -46,6 +49,8 @@ interface ExpensesViewProps {
   selectedYear?: number;
   selectedMonth?: number | 'ALL';
   onResetPeriod?: () => void;
+  initialFilter?: 'ALL' | 'CPF' | 'CNPJ' | 'RECORRENTE';
+  viewMode?: 'all' | 'recurrent';
 }
 
 export const ExpensesView: React.FC<ExpensesViewProps> = ({
@@ -55,12 +60,26 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   selectedYear,
   selectedMonth,
   onResetPeriod,
+  initialFilter = 'ALL',
+  viewMode = 'all',
 }) => {
   const toast = useToast();
   const [searchTerm, setSearchTerm] = useState('');
-  const [entityFilter, setEntityFilter] = useState<'ALL' | 'CPF' | 'CNPJ'>('ALL');
+  const [entityFilter, setEntityFilter] = useState<'ALL' | 'CPF' | 'CNPJ'>(
+    initialFilter === 'CPF' ? 'CPF' : initialFilter === 'CNPJ' ? 'CNPJ' : 'ALL'
+  );
+  const [typeFilter, setTypeFilter] = useState<'ALL' | 'RECORRENTE' | 'PARCELADA' | 'UNICA'>(
+    initialFilter === 'RECORRENTE' || viewMode === 'recurrent' ? 'RECORRENTE' : 'ALL'
+  );
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState<string>('ALL');
+
+  React.useEffect(() => {
+    if (viewMode === 'recurrent' || initialFilter === 'RECORRENTE') {
+      setTypeFilter('RECORRENTE');
+    }
+  }, [viewMode, initialFilter]);
 
   // Bulk selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -81,6 +100,39 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     message: '',
     onConfirm: () => {},
   });
+
+  // Series delete modal state
+  const [seriesDeleteModal, setSeriesDeleteModal] = useState<{
+    isOpen: boolean;
+    expense: Expense | null;
+  }>({
+    isOpen: false,
+    expense: null,
+  });
+
+  const recurrentKpis = useMemo(() => {
+    const recurrentList = expenses.filter(
+      (e) => e.expenseType === 'RECORRENTE' || Boolean(e.recurrenceId)
+    );
+    const totalRecurrentValue = recurrentList.reduce((acc, e) => acc + (e.value || 0), 0);
+    const paidRecurrentValue = recurrentList
+      .filter((e) => e.status === 'PAGO')
+      .reduce((acc, e) => acc + (e.value || 0), 0);
+    const pendingRecurrentValue = recurrentList
+      .filter((e) => e.status === 'A_PAGAR')
+      .reduce((acc, e) => acc + (e.value || 0), 0);
+    const uniqueSeries = new Set(
+      recurrentList.map((e) => e.recurrenceId || e.description.replace(/\s*\(\d+\/\d+\)$/, ''))
+    ).size;
+
+    return {
+      totalRecurrentValue,
+      paidRecurrentValue,
+      pendingRecurrentValue,
+      totalCount: recurrentList.length,
+      uniqueSeries,
+    };
+  }, [expenses]);
 
   const filteredExpenses = useMemo(() => {
     const trimmed = searchTerm.trim();
@@ -105,9 +157,25 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
       const matchesCat =
         categoryFilter === 'ALL' || exp.categoryId === categoryFilter;
 
-      return matchesSearch && matchesEntity && matchesStatus && matchesCat;
+      const isRecurrent = exp.expenseType === 'RECORRENTE' || Boolean(exp.recurrenceId);
+      const isInstallment = exp.expenseType === 'PARCELADA' || Boolean(exp.installmentGroupId);
+      const isSingle = !isRecurrent && !isInstallment;
+
+      let matchesType = true;
+      if (viewMode === 'recurrent' || typeFilter === 'RECORRENTE') {
+        matchesType = isRecurrent;
+      } else if (typeFilter === 'PARCELADA') {
+        matchesType = isInstallment;
+      } else if (typeFilter === 'UNICA') {
+        matchesType = isSingle;
+      }
+
+      const matchesPaymentMethod =
+        paymentMethodFilter === 'ALL' || exp.paymentMethod === paymentMethodFilter;
+
+      return matchesSearch && matchesEntity && matchesStatus && matchesCat && matchesType && matchesPaymentMethod;
     });
-  }, [expenses, searchTerm, entityFilter, statusFilter, categoryFilter]);
+  }, [expenses, searchTerm, entityFilter, statusFilter, categoryFilter, typeFilter, paymentMethodFilter, viewMode]);
 
   // Handle single pay
   const handlePayExpense = (id: string) => {
@@ -115,24 +183,51 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     db.payExpense(id, todayStr, 'PIX');
   };
 
-  // Handle single delete
-  const handleDeleteExpense = (id: string, supplier: string) => {
+  // Handle single delete (or open series modal if linked)
+  const handleDeleteExpense = (exp: Expense) => {
+    if (exp.installmentGroupId || exp.recurrenceId) {
+      setSeriesDeleteModal({
+        isOpen: true,
+        expense: exp,
+      });
+      return;
+    }
+
     setConfirmState({
       isOpen: true,
       title: 'Excluir Despesa',
-      message: `Deseja realmente excluir a despesa de "${supplier}"?`,
+      message: `Deseja realmente excluir a despesa de "${exp.supplierName}"?`,
       confirmLabel: 'Excluir',
       variant: 'danger',
       onConfirm: () => {
-        db.deleteExpense(id);
+        db.deleteExpense(exp.id);
         setSelectedIds((prev) => {
           const next = new Set(prev);
-          next.delete(id);
+          next.delete(exp.id);
           return next;
         });
         toast.success('Despesa excluída com sucesso.');
       },
     });
+  };
+
+  const handleConfirmSeriesDelete = (scope: 'ONLY_THIS' | 'THIS_AND_FUTURE' | 'ALL_SERIES') => {
+    if (!seriesDeleteModal.expense) return;
+    const targetExp = seriesDeleteModal.expense;
+    const count = db.deleteExpenseSeries(targetExp.id, scope);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(targetExp.id);
+      return next;
+    });
+    setSeriesDeleteModal({ isOpen: false, expense: null });
+    toast.success(
+      scope === 'ALL_SERIES'
+        ? `Todas as ${count} despesas da série foram excluídas.`
+        : scope === 'THIS_AND_FUTURE'
+        ? `Esta e as despesas futuras (${count}) foram excluídas.`
+        : 'Despesa excluída com sucesso.'
+    );
   };
 
   // Bulk selection handlers
@@ -273,35 +368,129 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
-            <TrendingDown className="w-5 h-5 text-rose-600" />
-            Despesas e Contas a Pagar
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Separação estrita de Pessoa Física (PF) e Pessoa Jurídica (PJ) com edição e exclusão em lote
-          </p>
-        </div>
+      {viewMode === 'recurrent' ? (
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-700">
+                <Repeat className="w-4 h-4" />
+              </div>
+              <span>Despesas Recorrentes</span>
+              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                Fixas & Contratos
+              </span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Acompanhamento centralizado de aluguéis, sistemas de gestão, assinaturas e obrigações mensais fixas
+            </p>
+          </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleExport}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 transition-colors cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Exportar CSV</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 transition-colors cursor-pointer shadow-xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Exportar CSV</span>
+            </button>
 
-          <button
-            onClick={onOpenNewExpense}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-md active:scale-98 transition-all cursor-pointer"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>+ NOVA DESPESA</span>
-          </button>
+            <button
+              onClick={onOpenNewExpense}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-md active:scale-98 transition-all cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>+ NOVA DESPESA RECORRENTE</span>
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+              <TrendingDown className="w-5 h-5 text-rose-600" />
+              Despesas e Contas a Pagar
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Separação estrita de Pessoa Física (PF) e Pessoa Jurídica (PJ) com edição e exclusão em lote
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Exportar CSV</span>
+            </button>
+
+            <button
+              onClick={onOpenNewExpense}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-md active:scale-98 transition-all cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>+ NOVA DESPESA</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Recurrent Mode KPI Cards Strip */}
+      {viewMode === 'recurrent' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
+            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              Contratos / Assinaturas
+            </div>
+            <div className="text-xl font-extrabold text-slate-900 mt-1 flex items-center gap-2">
+              <Repeat className="w-4 h-4 text-indigo-600" />
+              <span>{recurrentKpis.uniqueSeries}</span>
+              <span className="text-xs font-medium text-slate-500">
+                {recurrentKpis.uniqueSeries === 1 ? 'série ativa' : 'séries ativas'}
+              </span>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              {recurrentKpis.totalCount} lançamentos no período
+            </div>
+          </div>
+
+          <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
+            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              Total Recorrente no Período
+            </div>
+            <div className="text-xl font-extrabold text-indigo-700 mt-1">
+              {formatCurrency(recurrentKpis.totalRecurrentValue)}
+            </div>
+            <div className="text-[11px] text-slate-400 mt-0.5">
+              Compromissos fixos cadastrados
+            </div>
+          </div>
+
+          <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
+            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              Recorrente Pago
+            </div>
+            <div className="text-xl font-extrabold text-emerald-700 mt-1">
+              {formatCurrency(recurrentKpis.paidRecurrentValue)}
+            </div>
+            <div className="text-[11px] text-emerald-600 mt-0.5">
+              Liquidados na competência
+            </div>
+          </div>
+
+          <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
+            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              Recorrente a Pagar
+            </div>
+            <div className="text-xl font-extrabold text-rose-700 mt-1">
+              {formatCurrency(recurrentKpis.pendingRecurrentValue)}
+            </div>
+            <div className="text-[11px] text-rose-600 mt-0.5">
+              Previsão de saída pendente
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Floating / Sticky Bulk Action Bar */}
       {selectedIds.size > 0 && (
@@ -380,13 +569,17 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
         </div>
       )}
 
-      {/* Filters Bar: strictly PF or PJ */}
+      {/* Filters Bar */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
         <div className="relative flex-1">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Buscar por fornecedor, descrição ou categoria..."
+            placeholder={
+              viewMode === 'recurrent'
+                ? 'Buscar em despesas recorrentes por fornecedor ou categoria...'
+                : 'Buscar por fornecedor, descrição ou categoria...'
+            }
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-9 pr-4 py-2 text-xs rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
@@ -423,8 +616,29 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
           </button>
         </div>
 
+        {/* Type Filter (when in all expenses) or Active Badge (when in recurrent tab) */}
+        {viewMode === 'recurrent' ? (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-bold">
+            <Repeat className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Filtro: Recorrentes</span>
+          </div>
+        ) : (
+          <div className="w-44">
+            <CustomSelect
+              value={typeFilter}
+              onChange={(val) => setTypeFilter(val as any)}
+              options={[
+                { value: 'ALL', label: 'Tipos: Todos' },
+                { value: 'RECORRENTE', label: 'Recorrentes (Fixas)' },
+                { value: 'PARCELADA', label: 'Parceladas' },
+                { value: 'UNICA', label: 'À Vista' },
+              ]}
+            />
+          </div>
+        )}
+
         {/* Status Filter */}
-        <div className="w-40">
+        <div className="w-36">
           <CustomSelect
             value={statusFilter}
             onChange={(val) => setStatusFilter(val)}
@@ -432,6 +646,23 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
               { value: 'ALL', label: 'Status: Todos' },
               { value: 'A_PAGAR', label: 'A Pagar' },
               { value: 'PAGO', label: 'Pagas' },
+            ]}
+          />
+        </div>
+
+        {/* Forma de Pagamento Filter */}
+        <div className="w-44">
+          <CustomSelect
+            value={paymentMethodFilter}
+            onChange={(val) => setPaymentMethodFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Forma: Todas' },
+              { value: 'PIX', label: 'PIX' },
+              { value: 'BOLETO', label: 'Boleto' },
+              { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
+              { value: 'CARTAO_DEBITO', label: 'Cartão de Débito' },
+              { value: 'TRANSFERENCIA', label: 'Transferência' },
+              { value: 'DINHEIRO', label: 'Dinheiro' },
             ]}
           />
         </div>
@@ -457,22 +688,31 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4">Vencimento</th>
-                <th className="py-3 px-4">Pagamento</th>
-                <th className="py-3 px-4">Titularidade</th>
-                <th className="py-3 px-4">Fornecedor / Descrição</th>
-                <th className="py-3 px-4">Categoria do Plano</th>
-                <th className="py-3 px-4 text-center">Atributos Fiscais</th>
-                <th className="py-3 px-4 text-right">Valor</th>
+                <th className="py-3 px-4 text-center">Categoria</th>
+                <th className="py-3 px-4 text-center">Descrição</th>
+                <th className="py-3 px-4 text-center">Valor</th>
+                <th className="py-3 px-4 text-center">Data de Pagamento</th>
+                <th className="py-3 px-4 text-center">Data de Vencimento</th>
                 <th className="py-3 px-4 text-center min-w-[110px] whitespace-nowrap">Status</th>
+                <th className="py-3 px-4 text-center">Atributos Fiscais</th>
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
               {filteredExpenses.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-slate-400">
-                    Nenhuma despesa encontrada.
+                  <td colSpan={9} className="py-12 text-center text-slate-400">
+                    {viewMode === 'recurrent' || typeFilter === 'RECORRENTE' ? (
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <Repeat className="w-8 h-8 text-indigo-300" />
+                        <span className="font-semibold text-slate-700">Nenhuma despesa recorrente encontrada neste período.</span>
+                        <p className="text-xs text-slate-400 max-w-md">
+                          Cadastre despesas fixas contínuas (como aluguel, software de gestão odontológica, internet ou assessoria) clicando em &quot;+ NOVA DESPESA RECORRENTE&quot;.
+                        </p>
+                      </div>
+                    ) : (
+                      <span>Nenhuma despesa encontrada.</span>
+                    )}
                   </td>
                 </tr>
               ) : (
@@ -502,37 +742,47 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                         </button>
                       </td>
 
-                      {/* Due Date */}
-                      <td className="py-3.5 px-4 font-mono font-medium text-slate-900">
-                        {formatDateBr(exp.dueDate)}
-                      </td>
-
-                      {/* Payment Date */}
-                      <td className="py-3.5 px-4 font-mono text-slate-600">
-                        {isPaid && exp.paymentDate ? (
-                          <span className="text-emerald-700 font-semibold">{formatDateBr(exp.paymentDate)}</span>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-
-                      {/* Entity Badge: strictly CPF or CNPJ */}
+                      {/* 1. Categoria */}
                       <td className="py-3.5 px-4">
-                        {exp.entity === 'CPF' ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-200">
-                            <User className="w-3 h-3" /> CPF
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[10px] bg-blue-100 text-blue-800 border border-blue-200">
-                            <Building className="w-3 h-3" /> CNPJ
-                          </span>
-                        )}
+                        <span className="font-semibold text-slate-900">{exp.categoryName}</span>
+                        <div className="text-[10px] font-mono text-slate-400">{exp.categoryCode}</div>
                       </td>
 
-                      {/* Supplier & Description */}
+                      {/* 2. Descrição */}
                       <td className="py-3.5 px-4">
-                        <div className="font-bold text-slate-900">{exp.supplierName}</div>
-                        <div className="text-[11px] text-slate-500">{exp.description}</div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-slate-900">{exp.description || exp.supplierName}</span>
+                          {/* Titularidade Badge */}
+                          {exp.entity === 'CPF' ? (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded-full font-bold text-[9px] bg-emerald-50 text-emerald-800 border border-emerald-200">
+                              <User className="w-2.5 h-2.5" /> CPF
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded-full font-bold text-[9px] bg-blue-50 text-blue-800 border border-blue-200">
+                              <Building className="w-2.5 h-2.5" /> CNPJ
+                            </span>
+                          )}
+                          {/* Parcela Badge */}
+                          {(exp.expenseType === 'PARCELADA' || (exp.installmentNumber && exp.totalInstallments)) && (
+                            <span
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-50 text-amber-800 border border-amber-200"
+                              title={`Despesa Parcelada: Parcela ${exp.installmentNumber || 1} de ${exp.totalInstallments || 1}`}
+                            >
+                              <Layers className="w-2.5 h-2.5 text-amber-600" />
+                              {exp.installmentNumber || 1}/{exp.totalInstallments || 1}
+                            </span>
+                          )}
+                          {/* Recorrente Badge (limpo, sem repetição da contagem de parcelas) */}
+                          {(exp.expenseType === 'RECORRENTE' || exp.recurrenceId) && (
+                            <span
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-50 text-purple-800 border border-purple-200"
+                              title={`Despesa Recorrente (${exp.recurrenceFrequency || 'MENSAL'})`}
+                            >
+                              <Repeat className="w-2.5 h-2.5 text-purple-600" />
+                              Recorrente
+                            </span>
+                          )}
+                        </div>
                         {exp.attachmentName && (
                           <div className="inline-flex items-center gap-1 text-[10px] text-teal-700 mt-0.5">
                             <Paperclip className="w-3 h-3" /> {exp.attachmentName}
@@ -540,13 +790,41 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                         )}
                       </td>
 
-                      {/* Category */}
-                      <td className="py-3.5 px-4">
-                        <span className="font-medium text-slate-800">{exp.categoryName}</span>
-                        <div className="text-[10px] font-mono text-slate-400">{exp.categoryCode}</div>
+                      {/* 3. Valor */}
+                      <td className="py-3.5 px-4 text-right">
+                        <div className="font-bold text-slate-900 text-sm">
+                          {formatCurrency(exp.value)}
+                        </div>
                       </td>
 
-                      {/* Tax Attributes */}
+                      {/* 4. Data de Pagamento */}
+                      <td className="py-3.5 px-4 font-mono text-slate-600 text-center">
+                        {isPaid && exp.paymentDate ? (
+                          <span className="text-emerald-700 font-semibold">{formatDateBr(exp.paymentDate)}</span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+
+                      {/* 5. Data de Vencimento */}
+                      <td className="py-3.5 px-4 font-mono font-medium text-slate-900 text-center">
+                        {formatDateBr(exp.dueDate)}
+                      </td>
+
+                      {/* 6. Status */}
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        <span
+                          className={`inline-flex items-center justify-center min-w-[85px] whitespace-nowrap px-2.5 py-1 rounded-full font-bold text-[10px] ${
+                            isPaid
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {isPaid ? 'PAGO' : 'A PAGAR'}
+                        </span>
+                      </td>
+
+                      {/* 7. Atributos Fiscais */}
                       <td className="py-3.5 px-4 text-center">
                         <div className="inline-flex flex-col gap-1 items-center">
                           <div className="flex items-center gap-1.5 text-[10px]">
@@ -575,33 +853,13 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
                           {exp.isOverridden && (
                             <span className="text-[9px] text-amber-700 font-semibold" title={exp.overrideJustification}>
-                              (Alteração manual justificada)
+                              (Alteração manual)
                             </span>
                           )}
                         </div>
                       </td>
 
-                      {/* Value */}
-                      <td className="py-3.5 px-4 text-right">
-                        <div className="font-bold text-slate-900 text-sm">
-                          {formatCurrency(exp.value)}
-                        </div>
-                      </td>
-
-                      {/* Status */}
-                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center justify-center min-w-[85px] whitespace-nowrap px-2.5 py-1 rounded-full font-bold text-[10px] ${
-                            isPaid
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {isPaid ? 'PAGO' : 'A PAGAR'}
-                        </span>
-                      </td>
-
-                      {/* Actions */}
+                      {/* 8. Ações */}
                       <td className="py-3.5 px-4 text-center">
                         <div className="flex items-center justify-center gap-1.5">
                           {!isPaid ? (
@@ -627,7 +885,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                           </button>
 
                           <button
-                            onClick={() => handleDeleteExpense(exp.id, exp.supplierName)}
+                            onClick={() => handleDeleteExpense(exp)}
                             className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                             title="Excluir despesa"
                           >
@@ -658,6 +916,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
         <NewExpenseModal
           isOpen={Boolean(editingExpense)}
           onClose={() => setEditingExpense(null)}
+          onExpenseCreated={() => setEditingExpense(null)}
           categories={categories}
           bankAccounts={db.getBankAccounts()}
           expenseToEdit={editingExpense}
@@ -674,6 +933,84 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
         onConfirm={confirmState.onConfirm}
         onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
       />
+
+      {/* Series Delete Scope Modal */}
+      {seriesDeleteModal.isOpen && seriesDeleteModal.expense && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-200 p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5 text-rose-700">
+                <div className="p-2 rounded-xl bg-rose-50 border border-rose-200">
+                  <Trash2 className="w-5 h-5 text-rose-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Excluir Despesa da Série</h3>
+                  <p className="text-xs text-slate-500">
+                    {seriesDeleteModal.expense.expenseType === 'PARCELADA'
+                      ? `Parcela ${seriesDeleteModal.expense.installmentNumber}/${seriesDeleteModal.expense.totalInstallments}`
+                      : 'Lançamento Recorrente'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSeriesDeleteModal({ isOpen: false, expense: null })}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Esta despesa de <strong>"{seriesDeleteModal.expense.supplierName}"</strong> ({formatCurrency(seriesDeleteModal.expense.value)}) está vinculada a uma série de pagamentos. Como deseja proceder com a exclusão?
+            </p>
+
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleConfirmSeriesDelete('ONLY_THIS')}
+                className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-slate-300 hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                <div className="font-bold text-xs text-slate-900">Apenas esta despesa / parcela</div>
+                <div className="text-[11px] text-slate-500">
+                  Exclui somente este lançamento ({formatDateBr(seriesDeleteModal.expense.dueDate)}) e mantém o restante da série.
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleConfirmSeriesDelete('THIS_AND_FUTURE')}
+                className="w-full text-left p-3 rounded-xl border border-amber-200 hover:border-amber-300 bg-amber-50/40 hover:bg-amber-50 transition-all cursor-pointer"
+              >
+                <div className="font-bold text-xs text-amber-950">Esta e as seguintes da série</div>
+                <div className="text-[11px] text-amber-800">
+                  Exclui a partir deste lançamento em diante. Parcelas anteriores já liquidadas ou passadas serão mantidas.
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleConfirmSeriesDelete('ALL_SERIES')}
+                className="w-full text-left p-3 rounded-xl border border-rose-200 hover:border-rose-300 bg-rose-50/40 hover:bg-rose-50 transition-all cursor-pointer"
+              >
+                <div className="font-bold text-xs text-rose-950">Todas as despesas da série</div>
+                <div className="text-[11px] text-rose-800">
+                  Exclui todas as parcelas e repetições deste grupo, removendo a série por completo.
+                </div>
+              </button>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSeriesDeleteModal({ isOpen: false, expense: null })}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

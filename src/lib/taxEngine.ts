@@ -121,15 +121,15 @@ export const DEFAULT_TAX_RULES_PF: Record<number, TaxRulesPf> = {
     year: 2026,
     effectiveDate: '2026-01-01',
     dependentDeductionMonthly: 189.59,
-    simplifiedDiscountLimitMonthly: 564.80,
-    descontoSimplificadoMensal: 564.80,
+    simplifiedDiscountLimitMonthly: 607.20,
+    descontoSimplificadoMensal: 607.20,
     deducaoDependenteMensal: 189.59,
     brackets: [
-      { min: 0, max: 2259.20, rate: 0.0, deduction: 0 },
-      { min: 2259.21, max: 2826.65, rate: 0.075, deduction: 169.44 },
-      { min: 2826.66, max: 3751.05, rate: 0.15, deduction: 381.44 },
-      { min: 3751.06, max: 4664.68, rate: 0.225, deduction: 662.77 },
-      { min: 4664.69, max: Infinity, rate: 0.275, deduction: 896.00 },
+      { min: 0, max: 2428.80, rate: 0.0, deduction: 0 },
+      { min: 2428.81, max: 2826.65, rate: 0.075, deduction: 182.16 },
+      { min: 2826.66, max: 3751.05, rate: 0.15, deduction: 394.16 },
+      { min: 3751.06, max: 4664.68, rate: 0.225, deduction: 675.49 },
+      { min: 4664.69, max: Infinity, rate: 0.275, deduction: 908.73 },
     ],
   },
   2027: {
@@ -280,19 +280,20 @@ export function calculateMonthlyPfTax(
   const inssProprioDeduction = professional.inssProprioMensal || 0;
   const dependentDeduction = (professional.numDependentes || 0) * rules.dependentDeductionMonthly;
   const totalLegalDeductions = inssProprioDeduction + dependentDeduction + deductibleLivroCaixaPaid;
+  const legalDeductionsAfterLivroCaixa = inssProprioDeduction + dependentDeduction;
 
   // Desconto simplificado mensal alternativo:
   // Se as deduções legais forem menores que o desconto simplificado, pode ser vantajoso usar o desconto simplificado
-  const simplifiedDiscount = rules.simplifiedDiscountLimitMonthly;
-  const useSimplified = simplifiedDiscount > (inssProprioDeduction + dependentDeduction);
+  const simplifiedDiscount = rules.simplifiedDiscountLimitMonthly || (rules.year >= 2026 ? 607.20 : 564.80);
+  const useSimplified = simplifiedDiscount > legalDeductionsAfterLivroCaixa;
+  const selectedDeductionType: 'SIMPLIFICADO' | 'LEGAL' = useSimplified ? 'SIMPLIFICADO' : 'LEGAL';
   
   // No Carnê-Leão tradicional, Livro Caixa abate diretamente da receita.
   // Depois, sobre a receita líquida abatida de livro caixa, abate-se dependentes e previdência, ou desconto simplificado.
   const netAfterLivroCaixaRealized = Math.max(0, receivedGrossCpf - deductibleLivroCaixaPaid);
   const netAfterLivroCaixaProjected = Math.max(0, projectedGrossCpf - deductibleLivroCaixaPaid);
 
-  const deductionsAfterLivroCaixa = inssProprioDeduction + dependentDeduction;
-  const effectiveSubtractions = Math.max(deductionsAfterLivroCaixa, useSimplified ? simplifiedDiscount : 0);
+  const effectiveSubtractions = Math.max(legalDeductionsAfterLivroCaixa, useSimplified ? simplifiedDiscount : 0);
 
   const taxableBaseRealized = Math.max(0, netAfterLivroCaixaRealized - effectiveSubtractions);
   const taxableBaseProjected = Math.max(0, netAfterLivroCaixaProjected - effectiveSubtractions);
@@ -303,7 +304,7 @@ export function calculateMonthlyPfTax(
     const brackets =
       rules && Array.isArray(rules.brackets) && rules.brackets.length > 0
         ? rules.brackets
-        : DEFAULT_TAX_RULES_PF[year]?.brackets || DEFAULT_TAX_RULES_PF[2025].brackets;
+        : DEFAULT_TAX_RULES_PF[year]?.brackets || DEFAULT_TAX_RULES_PF[2026].brackets;
     for (const b of brackets) {
       if (base >= b.min && base <= b.max) {
         const tax = base * b.rate - b.deduction;
@@ -314,8 +315,40 @@ export function calculateMonthlyPfTax(
     return Math.max(0, base * last.rate - last.deduction);
   }
 
-  const irpfRealized = computeIrpf(taxableBaseRealized);
-  const irpfProjected = computeIrpf(taxableBaseProjected);
+  const irpfBeforeReductionRealized = computeIrpf(taxableBaseRealized);
+  const irpfBeforeReductionProjected = computeIrpf(taxableBaseProjected);
+
+  // 5. Redução Adicional 2026 (Lei nº 15.191/2025 e Lei nº 15.270/2025)
+  // Aplica-se a partir de 2026 com base no rendimento bruto tributável
+  let additionalReductionRealized = 0;
+  let reductionFormulaDesc = '';
+
+  if (year >= 2026 && receivedGrossCpf > 0) {
+    if (receivedGrossCpf <= 5000) {
+      additionalReductionRealized = irpfBeforeReductionRealized;
+      reductionFormulaDesc = 'Isenção total até R$ 5.000,00 (Lei nº 15.191/2025): redução zera o imposto apurado.';
+    } else if (receivedGrossCpf <= 7350) {
+      additionalReductionRealized = Math.max(0, 978.62 - (0.133145 * receivedGrossCpf));
+      reductionFormulaDesc = `Redução decrescente (Lei nº 15.191/2025): 978,62 - (0,133145 × ${receivedGrossCpf.toFixed(2)}) = R$ ${additionalReductionRealized.toFixed(2)}`;
+    } else {
+      additionalReductionRealized = 0;
+      reductionFormulaDesc = 'Rendimento superior a R$ 7.350,00: sem redução adicional aplicável (Lei nº 15.191/2025).';
+    }
+  }
+
+  let additionalReductionProjected = 0;
+  if (year >= 2026 && projectedGrossCpf > 0) {
+    if (projectedGrossCpf <= 5000) {
+      additionalReductionProjected = irpfBeforeReductionProjected;
+    } else if (projectedGrossCpf <= 7350) {
+      additionalReductionProjected = Math.max(0, 978.62 - (0.133145 * projectedGrossCpf));
+    } else {
+      additionalReductionProjected = 0;
+    }
+  }
+
+  const irpfRealized = Math.max(0, irpfBeforeReductionRealized - additionalReductionRealized);
+  const irpfProjected = Math.max(0, irpfBeforeReductionProjected - additionalReductionProjected);
   const effectiveRate = receivedGrossCpf > 0 ? (irpfRealized / receivedGrossCpf) : 0;
 
   return {
@@ -329,6 +362,12 @@ export function calculateMonthlyPfTax(
     inssProprioDeduction,
     dependentDeduction,
     simplifiedDiscountUsed: useSimplified,
+    simplifiedDiscountValue: simplifiedDiscount,
+    legalDeductionsValue: legalDeductionsAfterLivroCaixa,
+    selectedDeductionType,
+    additionalReduction2026: additionalReductionRealized,
+    irpfBeforeReduction: irpfBeforeReductionRealized,
+    reductionFormulaDescription: reductionFormulaDesc,
     effectiveDeductions: totalLegalDeductions,
     taxableBaseRealized,
     taxableBaseProjected,
@@ -535,7 +574,18 @@ export function calculateCpfMonthlyTax(
     }
   }
 
-  const carneLeaoEstimated = Math.max(0, taxBase * nominalRate - deductionAmount);
+  const taxBeforeReduction = Math.max(0, taxBase * nominalRate - deductionAmount);
+  let additionalReduction = 0;
+  if (year >= 2026 && grossRevenueReceived > 0) {
+    if (grossRevenueReceived <= 5000) {
+      additionalReduction = taxBeforeReduction;
+    } else if (grossRevenueReceived <= 7350) {
+      additionalReduction = Math.max(0, 978.62 - (0.133145 * grossRevenueReceived));
+    } else {
+      additionalReduction = 0;
+    }
+  }
+  const carneLeaoEstimated = Math.max(0, taxBeforeReduction - additionalReduction);
   const effectiveTaxRate = grossRevenueReceived > 0 ? (carneLeaoEstimated / grossRevenueReceived) * 100 : 0;
 
   return {
@@ -553,6 +603,8 @@ export function calculateCpfMonthlyTax(
     bracketNumber,
     nominalRate,
     deductionAmount,
+    taxBeforeReduction,
+    additionalReduction,
     carneLeaoEstimated,
     effectiveTaxRate,
   };

@@ -87,6 +87,17 @@ export const EditReceivableModal: React.FC<EditReceivableModalProps> = ({
       return;
     }
 
+    if (status === 'RECEBIDO') {
+      if (!bankAccountId || bankAccountId.trim() === '') {
+        toast.warning('A seleção da conta bancária de destino é obrigatória para registrar o recebimento.');
+        return;
+      }
+      if (!paymentDate) {
+        toast.warning('A data do recebimento é obrigatória.');
+        return;
+      }
+    }
+
     const success = db.updateReceivableInstallment(item.installmentId, {
       value,
       dueDate,

@@ -15,11 +15,14 @@ import {
   MessageCircle,
   DollarSign,
   ChevronDown,
+  X,
 } from 'lucide-react';
 import { db } from '../../lib/db';
 import { Appointment, AppointmentStatus } from '../../types';
+import { isSundayOrHoliday } from '../../lib/holidays';
 import { AppointmentModal } from './AppointmentModal';
 import { AppointmentDetailsModal } from './AppointmentDetailsModal';
+import { CustomSelect, SelectOption } from '../UI';
 
 interface AppointmentsViewProps {
   onLaunchSale?: (appointment: Appointment) => void;
@@ -129,8 +132,24 @@ function getMonday(d: Date): Date {
   return new Date(date.setDate(diff));
 }
 
+// Check if a time slot (e.g. "12:00") intersects with lunch break
+function isSlotInLunchBreak(slot: string, start?: string, end?: string): boolean {
+  if (!start || !end) return false;
+  const [sH, sM] = slot.split(':').map(Number);
+  const slotStartMin = sH * 60 + (sM || 0);
+  const slotEndMin = slotStartMin + 60;
+
+  const [bSH, bSM] = start.split(':').map(Number);
+  const [bEH, bEM] = end.split(':').map(Number);
+  const breakStartMin = bSH * 60 + (bSM || 0);
+  const breakEndMin = bEH * 60 + (bEM || 0);
+
+  return slotStartMin < breakEndMin && slotEndMin > breakStartMin;
+}
+
 export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale }) => {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [preferences, setPreferences] = useState(() => db.getPreferences());
   const [viewMode, setViewMode] = useState<CalendarViewMode>('WEEK');
   // Dynamic current date from the actual system environment
   const [currentDate, setCurrentDate] = useState<Date>(() => new Date());
@@ -154,11 +173,16 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
   useEffect(() => {
     const load = () => {
       setAppointments(db.getAppointments());
+      setPreferences(db.getPreferences());
     };
     load();
     const unsub = db.subscribe(load);
     return unsub;
   }, []);
+
+  const lunchBreakEnabled = preferences.lunchBreakEnabled !== false;
+  const lunchBreakStart = preferences.lunchBreakStart || '12:00';
+  const lunchBreakEnd = preferences.lunchBreakEnd || '13:00';
 
   // Filtered appointments by search & status
   const filteredAppointments = useMemo(() => {
@@ -264,7 +288,37 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
     setIsDetailsModalOpen(true);
   };
 
-  // Appointments strictly visible in the current active period
+  // Appointments in current active period regardless of search/status (for accurate KPIs & filter badges)
+  const appointmentsInPeriod = useMemo(() => {
+    if (viewMode === 'DAY') {
+      const dayISO = formatDateISO(currentDate);
+      return appointments.filter((a) => a.date === dayISO);
+    }
+    if (viewMode === 'WEEK') {
+      const weekISOs = new Set(weekDays.map(formatDateISO));
+      return appointments.filter((a) => weekISOs.has(a.date));
+    }
+    // MONTH
+    const curY = currentDate.getFullYear();
+    const curM = String(currentDate.getMonth() + 1).padStart(2, '0');
+    const prefix = `${curY}-${curM}`;
+    return appointments.filter((a) => a.date.startsWith(prefix));
+  }, [appointments, viewMode, currentDate, weekDays]);
+
+  // KPIs strictly reflecting the current active view period
+  const stats = useMemo(() => {
+    const total = appointmentsInPeriod.length;
+    const confirmadas = appointmentsInPeriod.filter((a) => a.status === 'CONFIRMADA').length;
+    const aguardando = appointmentsInPeriod.filter((a) => a.status === 'AGUARDANDO').length;
+    const emAtendimento = appointmentsInPeriod.filter((a) => a.status === 'EM_ATENDIMENTO').length;
+    const pendentes = appointmentsInPeriod.filter((a) => a.status === 'PENDENTE').length;
+    const finalizadas = appointmentsInPeriod.filter((a) => a.status === 'FINALIZADA').length;
+    const canceladas = appointmentsInPeriod.filter((a) => a.status === 'CANCELADA').length;
+    const faltou = appointmentsInPeriod.filter((a) => a.status === 'FALTOU').length;
+    return { total, confirmadas, aguardando, emAtendimento, pendentes, finalizadas, canceladas, faltou };
+  }, [appointmentsInPeriod]);
+
+  // Appointments strictly visible in the current active period (with active filters applied)
   const periodAppointments = useMemo(() => {
     if (viewMode === 'DAY') {
       const dayISO = formatDateISO(currentDate);
@@ -281,15 +335,60 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
     return filteredAppointments.filter((a) => a.date.startsWith(prefix));
   }, [filteredAppointments, viewMode, currentDate, weekDays]);
 
-  // KPIs strictly reflecting the current active view period
-  const stats = useMemo(() => {
-    const total = periodAppointments.length;
-    const confirmadas = periodAppointments.filter((a) => a.status === 'CONFIRMADA').length;
-    const aguardando = periodAppointments.filter((a) => a.status === 'AGUARDANDO').length;
-    const emAtendimento = periodAppointments.filter((a) => a.status === 'EM_ATENDIMENTO').length;
-    const pendentes = periodAppointments.filter((a) => a.status === 'PENDENTE').length;
-    return { total, confirmadas, aguardando, emAtendimento, pendentes };
-  }, [periodAppointments]);
+  // Status options formatted for CustomSelect with icons and period counts
+  const statusFilterOptions: SelectOption[] = useMemo(
+    () => [
+      {
+        value: 'ALL',
+        label: 'Todos os status',
+        icon: <Filter className="w-3.5 h-3.5 text-slate-400" />,
+        badge: stats.total > 0 ? String(stats.total) : undefined,
+      },
+      {
+        value: 'CONFIRMADA',
+        label: 'Confirmada',
+        icon: <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />,
+        badge: stats.confirmadas > 0 ? String(stats.confirmadas) : undefined,
+      },
+      {
+        value: 'AGUARDANDO',
+        label: 'Aguardando na Recepção',
+        icon: <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />,
+        badge: stats.aguardando > 0 ? String(stats.aguardando) : undefined,
+      },
+      {
+        value: 'EM_ATENDIMENTO',
+        label: 'Em Atendimento',
+        icon: <span className="w-2 h-2 rounded-full bg-purple-500 shrink-0" />,
+        badge: stats.emAtendimento > 0 ? String(stats.emAtendimento) : undefined,
+      },
+      {
+        value: 'PENDENTE',
+        label: 'Pendente',
+        icon: <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />,
+        badge: stats.pendentes > 0 ? String(stats.pendentes) : undefined,
+      },
+      {
+        value: 'FINALIZADA',
+        label: 'Finalizada',
+        icon: <span className="w-2 h-2 rounded-full bg-slate-400 shrink-0" />,
+        badge: stats.finalizadas > 0 ? String(stats.finalizadas) : undefined,
+      },
+      {
+        value: 'CANCELADA',
+        label: 'Cancelada',
+        icon: <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />,
+        badge: stats.canceladas > 0 ? String(stats.canceladas) : undefined,
+      },
+      {
+        value: 'FALTOU',
+        label: 'Faltou',
+        icon: <span className="w-2 h-2 rounded-full bg-slate-600 shrink-0" />,
+        badge: stats.faltou > 0 ? String(stats.faltou) : undefined,
+      },
+    ],
+    [stats]
+  );
 
   // Mini-calendar days calculation
   const miniCalDays = useMemo(() => {
@@ -469,36 +568,36 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
         </div>
       </div>
 
-      {/* Filter Bar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3.5 rounded-xl border border-slate-200">
+      {/* Filter Bar with CustomSelect */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-slate-200/90 shadow-2xs">
         <div className="relative flex-1">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             placeholder="Buscar por paciente, procedimento ou telefone..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+            className="w-full pl-9 pr-8 py-2.5 text-xs border border-slate-200/90 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium shadow-2xs transition-all"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 rounded-md cursor-pointer"
+              title="Limpar busca"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
-        <div className="flex items-center gap-2">
-          <Filter className="w-3.5 h-3.5 text-slate-400" />
-          <span className="text-xs font-semibold text-slate-600">Status:</span>
-          <select
+        <div className="w-full sm:w-64 shrink-0">
+          <CustomSelect
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white cursor-pointer"
-          >
-            <option value="ALL">Todos os status</option>
-            <option value="CONFIRMADA">Confirmada</option>
-            <option value="AGUARDANDO">Aguardando na Recepção</option>
-            <option value="EM_ATENDIMENTO">Em Atendimento</option>
-            <option value="PENDENTE">Pendente</option>
-            <option value="FINALIZADA">Finalizada</option>
-            <option value="CANCELADA">Cancelada</option>
-            <option value="FALTOU">Faltou</option>
-          </select>
+            onChange={(val) => setStatusFilter(val as any)}
+            options={statusFilterOptions}
+            searchable={false}
+          />
         </div>
       </div>
 
@@ -518,23 +617,44 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
                   {weekDays.map((day, idx) => {
                     const iso = formatDateISO(day);
                     const isToday = iso === todayISO;
+                    const holidayInfo = isSundayOrHoliday(day);
                     return (
                       <div
                         key={iso}
                         className={`p-3 text-center border-r border-slate-200 last:border-r-0 ${
-                          isToday ? 'bg-emerald-50/70 text-emerald-800' : 'text-slate-700'
+                          isToday
+                            ? 'bg-emerald-50/70 text-emerald-800'
+                            : holidayInfo.isRed
+                            ? 'bg-rose-50/30'
+                            : 'text-slate-700'
                         }`}
                       >
-                        <p className="text-[11px] font-semibold uppercase text-slate-500">
+                        <p
+                          className={`text-[11px] font-semibold uppercase ${
+                            holidayInfo.isRed ? 'text-rose-600 font-bold' : 'text-slate-500'
+                          }`}
+                        >
                           {WEEK_DAYS[idx]}
                         </p>
                         <p
                           className={`text-sm font-bold inline-block px-2.5 py-0.5 rounded-full mt-0.5 ${
-                            isToday ? 'bg-emerald-600 text-white shadow-2xs' : ''
+                            isToday
+                              ? 'bg-emerald-600 text-white shadow-2xs'
+                              : holidayInfo.isRed
+                              ? 'text-rose-600 font-extrabold bg-rose-100/70'
+                              : ''
                           }`}
                         >
                           {day.getDate()}
                         </p>
+                        {holidayInfo.isHoliday && (
+                          <span
+                            className="block text-[9px] text-rose-600 font-bold truncate max-w-[95px] mx-auto mt-0.5"
+                            title={holidayInfo.holidayName}
+                          >
+                            🚩 {holidayInfo.holidayName}
+                          </span>
+                        )}
                       </div>
                     );
                   })}
@@ -543,11 +663,32 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
                 {/* Time Slots & Appointments Grid */}
                 <div className="divide-y divide-slate-100">
                   {TIME_SLOTS.map((slot) => {
+                    const isLunch = lunchBreakEnabled && isSlotInLunchBreak(slot, lunchBreakStart, lunchBreakEnd);
+
                     return (
-                      <div key={slot} className="grid grid-cols-7 min-h-[88px]">
+                      <div
+                        key={slot}
+                        className={`grid grid-cols-7 min-h-[88px] ${
+                          isLunch ? 'bg-amber-50/15' : ''
+                        }`}
+                      >
                         {/* Time label column */}
-                        <div className="p-2 border-r border-slate-200 text-center text-xs font-semibold text-slate-400 flex items-start justify-center pt-2 bg-slate-50/30">
-                          {slot}
+                        <div
+                          className={`p-2 border-r border-slate-200 text-center text-xs font-semibold flex flex-col items-center justify-center pt-2 ${
+                            isLunch
+                              ? 'bg-amber-50/80 text-amber-900 border-amber-200'
+                              : 'bg-slate-50/30 text-slate-400'
+                          }`}
+                        >
+                          <span className={isLunch ? 'font-bold' : ''}>{slot}</span>
+                          {isLunch && (
+                            <span
+                              className="text-[9px] font-bold text-amber-800 mt-1 flex items-center gap-0.5 px-1 py-0.5 rounded bg-amber-100/90 border border-amber-200 shadow-2xs"
+                              title={`Horário de Almoço (${lunchBreakStart} - ${lunchBreakEnd})`}
+                            >
+                              🍽️ Almoço
+                            </span>
+                          )}
                         </div>
 
                         {/* 6 Day columns */}
@@ -564,15 +705,30 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
                             <div
                               key={dateStr + slot}
                               onClick={() => handleEmptySlotClick(dateStr, slot)}
-                              className="p-1 border-r border-slate-100 last:border-r-0 relative group hover:bg-slate-50/80 transition-colors cursor-pointer flex flex-col gap-1 min-h-[88px]"
+                              className={`p-1 border-r border-slate-100 last:border-r-0 relative group transition-colors cursor-pointer flex flex-col gap-1 min-h-[88px] ${
+                                isLunch ? 'hover:bg-amber-50/60' : 'hover:bg-slate-50/80'
+                              }`}
                             >
-                              {/* Add slot hover indicator */}
+                              {/* Add slot hover indicator or lunch indicator */}
                               {slotApts.length === 0 && (
-                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <span className="text-[11px] font-semibold text-emerald-600 bg-white border border-emerald-200 shadow-xs px-2 py-0.5 rounded-md">
-                                    + Agendar
-                                  </span>
-                                </div>
+                                <>
+                                  {isLunch ? (
+                                    <div className="flex-1 flex flex-col items-center justify-center text-center p-1 rounded-lg border border-dashed border-amber-200/80 bg-amber-50/40">
+                                      <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded flex items-center gap-1 shadow-2xs">
+                                        🍽️ Almoço
+                                      </span>
+                                      <span className="text-[9px] text-amber-600 mt-0.5 font-medium">
+                                        {lunchBreakStart} – {lunchBreakEnd}
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <span className="text-[11px] font-semibold text-emerald-600 bg-white border border-emerald-200 shadow-xs px-2 py-0.5 rounded-md">
+                                        + Agendar
+                                      </span>
+                                    </div>
+                                  )}
+                                </>
                               )}
 
                               {slotApts.map((apt) => {
@@ -634,23 +790,57 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
                     (a) => a.date === dateStr && a.startTime.split(':')[0] === slotHour
                   );
 
+                  const isLunch = lunchBreakEnabled && isSlotInLunchBreak(slot, lunchBreakStart, lunchBreakEnd);
+
                   return (
                     <div
                       key={slot}
-                      className="flex items-start gap-4 p-3 rounded-xl border border-slate-100 hover:border-slate-200 hover:bg-slate-50/50 transition-colors"
+                      className={`flex items-start gap-4 p-3 rounded-xl border transition-colors ${
+                        isLunch
+                          ? 'border-amber-200 bg-amber-50/30'
+                          : 'border-slate-100 hover:border-slate-200 hover:bg-slate-50/50'
+                      }`}
                     >
-                      <div className="w-16 text-center font-bold text-xs text-slate-400 pt-1">
-                        {slot}
+                      <div className="w-20 pt-1 shrink-0 text-center sm:text-left">
+                        <span className={`text-sm font-bold block ${isLunch ? 'text-amber-900' : 'text-slate-700'}`}>
+                          {slot}
+                        </span>
+                        {isLunch && (
+                          <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded border border-amber-200 inline-flex items-center gap-1 mt-1 shadow-2xs">
+                            🍽️ Almoço
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex-1 space-y-2">
                         {slotApts.length === 0 ? (
-                          <button
-                            onClick={() => handleEmptySlotClick(dateStr, slot)}
-                            className="w-full py-2.5 border border-dashed border-slate-200 hover:border-emerald-300 rounded-xl text-xs font-medium text-slate-400 hover:text-emerald-600 hover:bg-emerald-50/30 transition-all text-left px-4 cursor-pointer"
-                          >
-                            + Horário livre. Clique para agendar consulta às {slot}
-                          </button>
+                          isLunch ? (
+                            <div className="w-full py-3 px-4 rounded-xl border border-dashed border-amber-300 bg-amber-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 text-xs font-semibold text-amber-900">
+                                <span className="text-base">🍽️</span>
+                                <div>
+                                  <p className="font-bold">Intervalo de Almoço ({lunchBreakStart} às {lunchBreakEnd})</p>
+                                  <p className="text-[11px] text-amber-700 font-normal">
+                                    Horário reservado para descanso da equipe e do profissional.
+                                  </p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleEmptySlotClick(dateStr, slot)}
+                                className="text-[11px] font-bold text-amber-800 hover:text-amber-950 hover:underline cursor-pointer self-end sm:self-center"
+                              >
+                                + Agendar mesmo assim
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => handleEmptySlotClick(dateStr, slot)}
+                              className="w-full py-2.5 border border-dashed border-slate-200 hover:border-emerald-300 rounded-xl text-xs font-medium text-slate-400 hover:text-emerald-600 hover:bg-emerald-50/30 transition-all text-left px-4 cursor-pointer"
+                            >
+                              + Horário livre. Clique para agendar consulta às {slot}
+                            </button>
+                          )
                         ) : (
                           slotApts.map((apt) => {
                             const style = STATUS_COLOR_MAP[apt.status] || STATUS_COLOR_MAP.CONFIRMADA;
@@ -714,34 +904,26 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
           {/* MENSAL */}
           {viewMode === 'MONTH' && (
             <div className="p-6 space-y-4">
-              <div className="grid grid-cols-7 text-center font-bold text-xs text-slate-500 uppercase tracking-wider pb-2 border-b border-slate-100">
-                <span>Dom</span>
-                <span>Seg</span>
-                <span>Ter</span>
-                <span>Qua</span>
-                <span>Qui</span>
-                <span>Sex</span>
-                <span>Sáb</span>
+              <div className="grid grid-cols-7 text-center font-bold text-xs uppercase tracking-wider pb-2 border-b border-slate-100">
+                <span className="text-rose-600 font-extrabold">Dom</span>
+                <span className="text-slate-500">Seg</span>
+                <span className="text-slate-500">Ter</span>
+                <span className="text-slate-500">Qua</span>
+                <span className="text-slate-500">Qui</span>
+                <span className="text-slate-500">Sex</span>
+                <span className="text-slate-500">Sáb</span>
               </div>
 
               {/* Month calendar grid */}
               <div className="grid grid-cols-7 gap-2">
-                {Array.from({ length: 35 }).map((_, i) => {
-                  const firstDayOfMonth = new Date(
-                    currentDate.getFullYear(),
-                    currentDate.getMonth(),
-                    1
-                  );
-                  const startOffset = firstDayOfMonth.getDay();
-                  const d = new Date(
-                    currentDate.getFullYear(),
-                    currentDate.getMonth(),
-                    i - startOffset + 1
-                  );
-                  const iso = formatDateISO(d);
-                  const isCurrentMonth = d.getMonth() === currentDate.getMonth();
+                {miniCalDays.map((item) => {
+                  const d = item.date;
+                  const iso = item.iso;
+                  const isCurrentMonth = item.isCurrentMonth;
                   const isToday = iso === todayISO;
                   const dayApts = filteredAppointments.filter((a) => a.date === iso);
+                  const holidayInfo = isSundayOrHoliday(d);
+                  const isRed = holidayInfo.isRed;
 
                   return (
                     <div
@@ -750,28 +932,51 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
                         setCurrentDate(d);
                         setViewMode('DAY');
                       }}
-                      className={`min-h-[100px] p-2 rounded-xl border border-slate-100 hover:border-emerald-300 hover:shadow-xs transition-all cursor-pointer flex flex-col justify-between ${
+                      className={`min-h-[105px] p-2 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
                         !isCurrentMonth
-                          ? 'opacity-40 bg-slate-50/50'
+                          ? 'opacity-40 bg-slate-50/50 border-slate-100'
                           : isToday
-                          ? 'bg-emerald-50/40 border-emerald-200'
-                          : 'bg-white'
+                          ? 'bg-emerald-50/40 border-emerald-300 ring-1 ring-emerald-200'
+                          : isRed
+                          ? 'bg-rose-50/20 border-rose-100 hover:border-rose-300'
+                          : 'bg-white border-slate-100 hover:border-emerald-300 hover:shadow-xs'
                       }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <span
-                          className={`text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center ${
-                            isToday ? 'bg-emerald-600 text-white' : 'text-slate-700'
-                          }`}
-                        >
-                          {d.getDate()}
-                        </span>
+                      <div className="flex items-center justify-between gap-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className={`text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
+                              isToday
+                                ? 'bg-emerald-600 text-white'
+                                : isRed
+                                ? 'text-rose-600 font-extrabold bg-rose-50'
+                                : 'text-slate-700'
+                            }`}
+                          >
+                            {item.day}
+                          </span>
+                          {holidayInfo.isHoliday && isCurrentMonth && (
+                            <span
+                              className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200 truncate max-w-[85px] hidden sm:inline-flex items-center gap-0.5 shadow-2xs"
+                              title={holidayInfo.holidayName}
+                            >
+                              🚩 {holidayInfo.holidayName}
+                            </span>
+                          )}
+                        </div>
                         {dayApts.length > 0 && (
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 shrink-0">
                             {dayApts.length}
                           </span>
                         )}
                       </div>
+
+                      {/* On mobile screens, show holiday flag if space is tight */}
+                      {holidayInfo.isHoliday && isCurrentMonth && (
+                        <div className="sm:hidden text-[9px] font-bold text-rose-700 truncate mt-0.5" title={holidayInfo.holidayName}>
+                          🚩 {holidayInfo.holidayName}
+                        </div>
+                      )}
 
                       <div className="space-y-1 mt-1 overflow-hidden">
                         {dayApts.slice(0, 2).map((apt) => (
@@ -844,14 +1049,14 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
               {currentDate.toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}
             </div>
 
-            <div className="grid grid-cols-7 text-center text-[10px] font-bold text-slate-400">
-              <span>D</span>
-              <span>S</span>
-              <span>T</span>
-              <span>Q</span>
-              <span>Q</span>
-              <span>S</span>
-              <span>S</span>
+            <div className="grid grid-cols-7 text-center text-[10px] font-bold">
+              <span className="text-rose-600 font-extrabold">D</span>
+              <span className="text-slate-400">S</span>
+              <span className="text-slate-400">T</span>
+              <span className="text-slate-400">Q</span>
+              <span className="text-slate-400">Q</span>
+              <span className="text-slate-400">S</span>
+              <span className="text-slate-400">S</span>
             </div>
 
             <div className="grid grid-cols-7 gap-1 text-center">
@@ -859,6 +1064,8 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
                 const isSelected = item.iso === formatDateISO(currentDate);
                 const isToday = item.iso === todayISO;
                 const hasApt = appointments.some((a) => a.date === item.iso);
+                const holidayInfo = isSundayOrHoliday(item.date);
+                const isRed = holidayInfo.isRed;
 
                 return (
                   <button
@@ -866,11 +1073,24 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
                     onClick={() => {
                       setCurrentDate(item.date);
                     }}
+                    title={
+                      holidayInfo.holidayName
+                        ? `${item.day} - Feriado: ${holidayInfo.holidayName}`
+                        : holidayInfo.isSunday
+                        ? `${item.day} - Domingo`
+                        : undefined
+                    }
                     className={`h-7 w-7 mx-auto rounded-lg text-xs font-semibold flex items-center justify-center transition-all relative cursor-pointer ${
                       isSelected
                         ? 'bg-emerald-600 text-white shadow-xs font-bold'
                         : isToday
-                        ? 'border border-emerald-500 text-emerald-800 font-bold bg-emerald-50/50'
+                        ? isRed
+                          ? 'border border-rose-500 text-rose-700 font-bold bg-rose-50/60'
+                          : 'border border-emerald-500 text-emerald-800 font-bold bg-emerald-50/50'
+                        : isRed
+                        ? !item.isCurrentMonth
+                          ? 'text-rose-300 hover:bg-rose-50/50'
+                          : 'text-rose-600 font-extrabold hover:bg-rose-50'
                         : !item.isCurrentMonth
                         ? 'text-slate-300 hover:bg-slate-50'
                         : 'text-slate-700 hover:bg-slate-100'
@@ -879,6 +1099,9 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
                     {item.day}
                     {hasApt && !isSelected && (
                       <span className="w-1 h-1 rounded-full bg-emerald-500 absolute bottom-1" />
+                    )}
+                    {holidayInfo.isHoliday && !isSelected && (
+                      <span className="w-1 h-1 rounded-full bg-rose-500 absolute top-1 right-1" />
                     )}
                   </button>
                 );

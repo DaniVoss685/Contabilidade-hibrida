@@ -70,7 +70,7 @@ export const Header: React.FC<HeaderProps> = ({
               )}
             </div>
             <p className="text-[11px] text-slate-400 font-medium truncate">
-              {organization.name} • {professional.municipio}
+              {organization.name}
             </p>
           </div>
         </div>

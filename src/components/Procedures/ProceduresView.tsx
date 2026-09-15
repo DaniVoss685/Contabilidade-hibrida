@@ -506,7 +506,14 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
 
                       {/* Code & Name */}
                       <td className="py-3.5 px-4">
-                        <div className="font-bold text-slate-900 text-sm">{proc.name}</div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <div className="font-bold text-slate-900 text-sm">{proc.name}</div>
+                          {proc.isIncomplete && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                              Cadastro Incompleto
+                            </span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold">
                             {proc.code}
@@ -530,7 +537,11 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                       <td className="py-3.5 px-4 text-center">
                         <span className="inline-flex items-center gap-1 font-semibold text-slate-700">
                           <Clock className="w-3 h-3 text-slate-400" />
-                          {proc.clinicalDurationMinutes} min
+                          {proc.clinicalDurationMinutes < 60
+                            ? `${proc.clinicalDurationMinutes} min`
+                            : `${Math.floor(proc.clinicalDurationMinutes / 60)}h${
+                                proc.clinicalDurationMinutes % 60 ? ` ${proc.clinicalDurationMinutes % 60}min` : ''
+                              }`}
                         </span>
                       </td>
 

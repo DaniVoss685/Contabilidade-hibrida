@@ -19,6 +19,8 @@ import {
   Edit,
   Calendar,
   RotateCcw,
+  X,
+  MessageSquareText,
 } from 'lucide-react';
 import { Sale, TaxOrigin, ReceitaSaudeStatus, NfseStatus } from '../../types';
 import { formatCurrency, formatCpf, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
@@ -66,8 +68,14 @@ export const SalesView: React.FC<SalesViewProps> = ({
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [taxOriginFilter, setTaxOriginFilter] = useState<'ALL' | TaxOrigin>('ALL');
+  const [procedureFilter, setProcedureFilter] = useState<string>('ALL');
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState<string>('ALL');
   const [docFilter, setDocFilter] = useState<string>('ALL');
   const [expandedSaleId, setExpandedSaleId] = useState<string | null>(null);
+
+  const uniqueProcedures = useMemo(() => {
+    return Array.from(new Set(sales.map((s) => s.procedureName))).filter(Boolean).sort();
+  }, [sales]);
 
   // Quick edit doc state
   const [editingSaleDocId, setEditingSaleDocId] = useState<string | null>(null);
@@ -76,6 +84,11 @@ export const SalesView: React.FC<SalesViewProps> = ({
   // Bulk selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
+  const [viewingObservation, setViewingObservation] = useState<{
+    patientName: string;
+    procedureName: string;
+    notes: string;
+  } | null>(null);
 
   // Confirm dialog state
   const [confirmState, setConfirmState] = useState<{
@@ -133,7 +146,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
     setConfirmState({
       isOpen: true,
       title: 'Excluir Receita',
-      message: `Deseja realmente excluir a venda do paciente "${patient}"?`,
+      message: `Deseja realmente excluir a receita de ${patient}? Os recebimentos em aberto serão cancelados.`,
       confirmLabel: 'Excluir',
       variant: 'danger',
       onConfirm: () => {
@@ -150,7 +163,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
 
   const handleUnsettleInstallment = (saleId: string, installmentId: string) => {
     db.unsettleInstallment(saleId, installmentId);
-    toast.success('Recebimento da parcela desfeito com sucesso.');
+    toast.success('Recebimento desfeito com sucesso.');
   };
 
   const filteredSales = useMemo(() => {
@@ -161,14 +174,24 @@ export const SalesView: React.FC<SalesViewProps> = ({
       let matchesSearch = true;
       if (trimmed) {
         const patientMatch = normalizeSearchText(sale.patientName).includes(normQuery);
-        const procedureMatch = normalizeSearchText(sale.procedureName).includes(normQuery);
         const cpfMatch = matchDocumentSearch(sale.patientCpf, trimmed);
         const nfseMatch = sale.nfseNumber ? sale.nfseNumber.includes(trimmed) : false;
-        matchesSearch = patientMatch || procedureMatch || cpfMatch || nfseMatch;
+        matchesSearch = patientMatch || cpfMatch || nfseMatch;
       }
 
       const matchesOrigin =
         taxOriginFilter === 'ALL' || sale.taxOrigin === taxOriginFilter;
+
+      const matchesProcedure =
+        procedureFilter === 'ALL' || sale.procedureName === procedureFilter;
+
+      let matchesPaymentMethod = true;
+      if (paymentMethodFilter === 'CARD_WITH_FEE') {
+        const fee = sale.cardFeeAmount || sale.installments.reduce((acc, i) => acc + (i.cardFeeAmount || 0), 0);
+        matchesPaymentMethod = fee > 0;
+      } else if (paymentMethodFilter !== 'ALL') {
+        matchesPaymentMethod = sale.paymentMethod === paymentMethodFilter;
+      }
 
       let matchesDoc = true;
       if (docFilter === 'PENDING') {
@@ -189,9 +212,9 @@ export const SalesView: React.FC<SalesViewProps> = ({
         }
       }
 
-      return matchesSearch && matchesOrigin && matchesDoc;
+      return matchesSearch && matchesOrigin && matchesProcedure && matchesPaymentMethod && matchesDoc;
     });
-  }, [sales, searchTerm, taxOriginFilter, docFilter]);
+  }, [sales, searchTerm, taxOriginFilter, procedureFilter, paymentMethodFilter, docFilter]);
 
   const handleExportCsv = () => {
     const headers = [
@@ -306,13 +329,13 @@ export const SalesView: React.FC<SalesViewProps> = ({
       )}
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+      <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
         {/* Search */}
-        <div className="relative flex-1">
+        <div className="relative flex-1 min-w-[200px]">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
-            placeholder="Buscar por paciente, procedimento, CPF ou documento fiscal..."
+            placeholder="Buscar por paciente ou CPF..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/70 focus:bg-white focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 focus:outline-none transition-all"
@@ -320,7 +343,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
         </div>
 
         {/* Origin Filter Tabs */}
-        <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 text-xs">
+        <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 text-xs shrink-0">
           <button
             onClick={() => setTaxOriginFilter('ALL')}
             className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
@@ -353,14 +376,44 @@ export const SalesView: React.FC<SalesViewProps> = ({
           </button>
         </div>
 
+        {/* Procedure Filter */}
+        <div className="w-44 shrink-0">
+          <CustomSelect
+            value={procedureFilter}
+            onChange={(val) => setProcedureFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Procedimento: Todos' },
+              ...uniqueProcedures.map((p) => ({ value: p, label: p })),
+            ]}
+          />
+        </div>
+
+        {/* Payment Method Filter */}
+        <div className="w-52 shrink-0">
+          <CustomSelect
+            value={paymentMethodFilter}
+            onChange={(val) => setPaymentMethodFilter(val)}
+            options={[
+              { value: 'ALL', label: 'Forma: Todas' },
+              { value: 'CARD_WITH_FEE', label: '💳 Com Taxa de Maquininha' },
+              { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
+              { value: 'PIX', label: 'PIX' },
+              { value: 'CARTAO_DEBITO', label: 'Cartão de Débito' },
+              { value: 'BOLETO', label: 'Boleto Bancário' },
+              { value: 'DINHEIRO', label: 'Dinheiro / Espécie' },
+              { value: 'TRANSFERENCIA', label: 'Transferência Bancária' },
+            ]}
+          />
+        </div>
+
         {/* Document Status Filter */}
-        <div className="w-56">
+        <div className="w-48 shrink-0">
           <CustomSelect
             value={docFilter}
             onChange={(val) => setDocFilter(val)}
             options={[
               { value: 'ALL', label: 'Status Fiscal: Todos' },
-              { value: 'PENDING', label: 'Docs Pendentes de Emissão' },
+              { value: 'PENDING', label: 'Docs Pendentes' },
               { value: 'EMITTED', label: 'Docs Emitidos' },
             ]}
           />
@@ -417,12 +470,12 @@ export const SalesView: React.FC<SalesViewProps> = ({
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4">Data / Comp.</th>
-                <th className="py-3 px-4">Origem</th>
-                <th className="py-3 px-4">Paciente (Beneficiário)</th>
-                <th className="py-3 px-4">Procedimento</th>
-                <th className="py-3 px-4">Documento Fiscal</th>
-                <th className="py-3 px-4 text-right">Valor Total</th>
+                <th className="py-3 px-4 text-center">Data da Venda</th>
+                <th className="py-3 px-4 text-center">Origem</th>
+                <th className="py-3 px-4 text-center">Paciente (Beneficiário)</th>
+                <th className="py-3 px-4 text-center">Procedimento</th>
+                <th className="py-3 px-4 text-center">Documento Fiscal</th>
+                <th className="py-3 px-4 text-center">Valor Total</th>
                 <th className="py-3 px-4 text-center">Parcelas</th>
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
@@ -439,11 +492,11 @@ export const SalesView: React.FC<SalesViewProps> = ({
                   const isExpanded = expandedSaleId === sale.id;
                   const isSelected = selectedIds.has(sale.id);
                   const summary = getSalePaymentSummary(sale);
+                  const receivedInstallments = sale.installments.filter((i) => i.status === 'RECEBIDO');
+                  const isTotallyUnreceived = receivedInstallments.length === 0;
                   const hasPendingReceitaSaude =
                     sale.taxOrigin === 'CPF' &&
-                    sale.installments.some(
-                      (i) => i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO'
-                    );
+                    receivedInstallments.some((i) => i.receitaSaudeStatus !== 'EMITIDO');
 
                   return (
                     <React.Fragment key={sale.id}>
@@ -462,26 +515,70 @@ export const SalesView: React.FC<SalesViewProps> = ({
                           </button>
                         </td>
 
-                        <td className="py-3.5 px-4 font-mono text-slate-600">
+                        <td className="py-3.5 px-4 font-mono text-slate-600 text-center">
                           {formatDateBr(sale.serviceDate)}
                         </td>
 
-                        <td className="py-3.5 px-4">
-                          {sale.taxOrigin === 'CPF' ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200/80">
-                              <User className="w-3 h-3 text-emerald-600" />
-                              CPF
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[10px] bg-blue-50 text-blue-800 border border-blue-200/80">
-                              <Building className="w-3 h-3 text-blue-600" />
-                              CNPJ
-                            </span>
-                          )}
+                        <td className="py-3.5 px-4 text-center">
+                          <div className="flex flex-col items-center gap-1">
+                            {sale.origin === 'AGENDA' || sale.appointmentId ? (
+                              <span
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-bold text-[9px] bg-purple-50 text-purple-700 border border-purple-200"
+                                title="Venda gerada automaticamente via Agenda"
+                              >
+                                📅 Via Agenda
+                              </span>
+                            ) : (
+                              <span
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-bold text-[9px] bg-slate-100 text-slate-600 border border-slate-200"
+                                title="Lançamento manual"
+                              >
+                                ✍️ Manual
+                              </span>
+                            )}
+                            {sale.taxOrigin === 'CPF' ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md font-semibold text-[9px] bg-emerald-50 text-emerald-800 border border-emerald-200/80">
+                                <User className="w-2.5 h-2.5 text-emerald-600" />
+                                CPF
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md font-semibold text-[9px] bg-blue-50 text-blue-800 border border-blue-200/80">
+                                <Building className="w-2.5 h-2.5 text-blue-600" />
+                                CNPJ
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         <td className="py-3.5 px-4">
-                          <div className="font-semibold text-slate-900 text-xs">{sale.patientName}</div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-semibold text-slate-900 text-xs">{sale.patientName}</span>
+                            {(() => {
+                              const note = sale.notes?.trim();
+                              if (!note) return null;
+                              const lower = note.toLowerCase();
+                              const procLower = (sale.procedureName || '').trim().toLowerCase();
+                              if (lower.startsWith('atendimento clínico') || lower === procLower || lower === `atendimento clínico - ${procLower}`) {
+                                return null;
+                              }
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setViewingObservation({
+                                      patientName: sale.patientName,
+                                      procedureName: sale.procedureName,
+                                      notes: note,
+                                    })
+                                  }
+                                  title="Ver observação da venda"
+                                  className="inline-flex items-center justify-center p-1 rounded-md bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 transition-colors cursor-pointer"
+                                >
+                                  <MessageSquareText className="w-3.5 h-3.5" />
+                                </button>
+                              );
+                            })()}
+                          </div>
                           <div className="text-[11px] text-slate-400 font-mono mt-0.5">
                             CPF: {formatCpf(sale.patientCpf, maskCpf)}
                           </div>
@@ -497,17 +594,28 @@ export const SalesView: React.FC<SalesViewProps> = ({
                         </td>
 
                         {/* Documento Fiscal Column */}
-                        <td className="py-3.5 px-4">
+                        <td className="py-3.5 px-4 text-center">
                           {sale.taxOrigin === 'CPF' ? (
                             <div>
-                              {hasPendingReceitaSaude ? (
+                              {isTotallyUnreceived ? (
+                                <span
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200"
+                                  title="O comprovante da Receita Saúde só é emitido após o recebimento financeiro da parcela."
+                                >
+                                  <Clock className="w-3 h-3 text-slate-400" />
+                                  A Emitir (Aguardando Recebimento)
+                                </span>
+                              ) : hasPendingReceitaSaude ? (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-50 text-amber-900 border border-amber-200/80">
+                                  <FileText className="w-3 h-3 text-amber-600" />
                                   Receita Saúde Pendente
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-mono text-emerald-700 font-semibold">
                                   <FileCheck className="w-3.5 h-3.5 text-emerald-600" />
-                                  {sale.installments[0]?.receitaSaudeId || 'Receita Saúde Emitido'}
+                                  {sale.installments.find((i) => i.receitaSaudeId)?.receitaSaudeId
+                                    ? `Receita Saúde #${sale.installments.find((i) => i.receitaSaudeId)?.receitaSaudeId}`
+                                    : 'Receita Saúde Emitido'}
                                 </span>
                               )}
                             </div>
@@ -528,7 +636,15 @@ export const SalesView: React.FC<SalesViewProps> = ({
                         </td>
 
                         <td className="py-3.5 px-4 text-right font-bold text-slate-900 text-xs font-mono">
-                          {formatCurrency(sale.totalValue)}
+                          <div>{formatCurrency(sale.totalValue)}</div>
+                          {sale.originalEstimatedValue && sale.originalEstimatedValue !== sale.totalValue && (
+                            <div
+                              className="text-[10px] font-sans font-medium text-purple-700 mt-0.5"
+                              title={`Valor previsto na agenda: ${formatCurrency(sale.originalEstimatedValue)}`}
+                            >
+                              Previsto: {formatCurrency(sale.originalEstimatedValue)}
+                            </div>
+                          )}
                         </td>
 
                         <td className="py-3.5 px-4 text-center">
@@ -628,11 +744,11 @@ export const SalesView: React.FC<SalesViewProps> = ({
                                         <span
                                           className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
                                             isReceived
-                                              ? 'bg-emerald-100 text-emerald-800'
-                                              : 'bg-amber-100 text-amber-800'
+                                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
+                                              : 'bg-amber-50 text-amber-700 border border-amber-200/80'
                                           }`}
                                         >
-                                          {inst.status}
+                                          {isReceived ? 'Recebida' : 'A Receber'}
                                         </span>
                                       </div>
 
@@ -721,6 +837,44 @@ export const SalesView: React.FC<SalesViewProps> = ({
           patients={db.getPatients()}
           saleToEdit={editingSale}
         />
+      )}
+
+      {/* Observation Modal */}
+      {viewingObservation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md overflow-hidden p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center">
+                  <MessageSquareText className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Observação da Venda</h3>
+                  <p className="text-xs text-slate-500">{viewingObservation.patientName} — {viewingObservation.procedureName}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingObservation(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">
+              {viewingObservation.notes}
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setViewingObservation(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Confirm Dialog */}

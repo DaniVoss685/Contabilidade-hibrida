@@ -249,6 +249,7 @@ export interface DentalProcedure {
   defaultPrice: number; // Preço de tabela / Venda praticado
 
   active: boolean;
+  isIncomplete?: boolean;
   notes?: string;
 }
 
@@ -271,6 +272,9 @@ export interface SaleInstallment {
 
   paymentMethod?: PaymentMethod;
   bankAccountId?: string;
+  cardFeePercent?: number;
+  cardFeeAmount?: number;
+  netValue?: number;
 }
 
 export interface Sale {
@@ -294,6 +298,12 @@ export interface Sale {
   paymentMethod: PaymentMethod;
   installmentsCount: number;
 
+  // Cartão / Taxa de Maquininha
+  cardFeePercent?: number;
+  cardFeeAmount?: number;
+  netValue?: number;
+  bankAccountId?: string;
+
   // CNPJ NFS-e details
   nfseStatus?: NfseStatus;
   nfseNumber?: string;
@@ -303,6 +313,10 @@ export interface Sale {
   installments: SaleInstallment[];
   createdAt: string;
   notes?: string;
+  appointmentId?: string;
+  origin?: 'AGENDA' | 'MANUAL';
+  originalEstimatedValue?: number;
+  priceHistory?: Array<{ date: string; from: number; to: number; note?: string }>;
 }
 
 // 6. Accounts Receivable View
@@ -324,6 +338,17 @@ export interface AccountReceivableItem {
   receitaSaudeId?: string;
   installmentNumber: number;
   totalInstallments: number;
+  notes?: string;
+  appointmentId?: string;
+  origin?: 'AGENDA' | 'MANUAL';
+  serviceDate?: string;
+  cardFeePercent?: number;
+  cardFeeAmount?: number;
+  netValue?: number;
+  paymentMethod?: PaymentMethod;
+  bankAccountId?: string;
+  originalEstimatedValue?: number;
+  priceHistory?: Array<{ date: string; from: number; to: number; note?: string }>;
 }
 
 // 7. Chart of Accounts (Plano de Contas)
@@ -386,6 +411,16 @@ export interface Expense {
   entity: ExpenseEntity;
   splitPercentageCpf?: number; // e.g. 50 (50% CPF, 50% CNPJ)
   splitPercentageCnpj?: number;
+
+  // Parcelamento & Recorrência
+  expenseType?: 'UNICA' | 'PARCELADA' | 'RECORRENTE';
+  installmentNumber?: number;
+  totalInstallments?: number;
+  installmentGroupId?: string;
+  recurrenceId?: string;
+  recurrenceFrequency?: 'MENSAL' | 'SEMANAL' | 'ANUAL';
+  recurrenceCount?: number;
+  recurrenceIndex?: number;
 
   // Attributes snapshot with manual override & justification
   dedutivelLivroCaixaPf: LivroCaixaPfDedutibilidade;
@@ -467,6 +502,12 @@ export interface MonthlyPfTaxSummary {
   inssProprioDeduction: number;
   dependentDeduction: number;
   simplifiedDiscountUsed: boolean;
+  simplifiedDiscountValue?: number;
+  legalDeductionsValue?: number;
+  selectedDeductionType?: 'SIMPLIFICADO' | 'LEGAL';
+  additionalReduction2026?: number;
+  irpfBeforeReduction?: number;
+  reductionFormulaDescription?: string;
   effectiveDeductions: number;
   taxableBaseRealized: number;
   taxableBaseProjected: number;
@@ -632,8 +673,11 @@ export interface FiscalParameter {
 
 // 18. System Operational Preferences & Privacy
 export interface SystemPreferences {
-  hideCpf: boolean; // default: false (visível por padrão)
+  hideCpf?: boolean; // Legado; CPF agora é exibido integralmente por padrão
   alertFatorR: boolean; // default: true
   alertDueDates: boolean; // default: true
   operationalReminders: boolean; // default: true
+  lunchBreakEnabled?: boolean; // default: true
+  lunchBreakStart?: string; // default: '12:00' (ex: '11:00')
+  lunchBreakEnd?: string; // default: '13:00'
 }

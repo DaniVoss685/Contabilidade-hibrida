@@ -13,6 +13,7 @@ import {
   EyeOff,
   Scale,
   Calendar,
+  Clock,
   Stethoscope,
   Info,
 } from 'lucide-react';
@@ -36,7 +37,7 @@ interface SettingsViewProps {
   bankAccounts: BankAccount[];
   payrollHistory: PayrollHistoryEntry[];
   auditLogs: AuditLog[];
-  maskCpf: boolean;
+  maskCpf?: boolean;
   onRefreshData: () => void;
   onNavigateTab?: (tab: any) => void;
 }
@@ -89,12 +90,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setPreferences(db.getPreferences());
   }, [professional]);
 
-  // Handler para atualizar qualquer preferência via Switch
-  const handleTogglePreference = (key: keyof SystemPreferences, value: boolean) => {
-    const updated = db.updatePreferences({ [key]: value });
+  // Handler para atualizar qualquer preferência (Switch ou campos)
+  const handleUpdatePreferences = (partial: Partial<SystemPreferences>) => {
+    const updated = db.updatePreferences(partial);
     setPreferences(updated);
     toast.success('Preferência do sistema atualizada.');
     onRefreshData();
+  };
+
+  const handleTogglePreference = (key: keyof SystemPreferences, value: boolean) => {
+    handleUpdatePreferences({ [key]: value });
   };
 
   // Salvar formulário (apenas os 5 campos profissionais + deduções PF)
@@ -391,29 +396,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             <div className="space-y-3.5 text-xs">
-              {/* Switch 1: Ocultar CPF */}
-              <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
-                <div className="space-y-0.5 pr-2">
-                  <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                    {preferences.hideCpf ? (
-                      <EyeOff className="w-3.5 h-3.5 text-slate-500" />
-                    ) : (
-                      <Eye className="w-3.5 h-3.5 text-emerald-600" />
-                    )}
-                    Ocultar CPF em Telas e Relatórios
-                  </span>
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Mascarar dígitos centrais do CPF (ex: 123.***.***-00) para proteção contra olhares indiscretos
-                  </p>
-                </div>
-                <Switch
-                  checked={preferences.hideCpf}
-                  onChange={(val) => handleTogglePreference('hideCpf', val)}
-                  ariaLabel="Ocultar CPF em Telas e Relatórios"
-                />
-              </div>
-
-              {/* Switch 2: Alerta Fator R */}
+              {/* Switch 1: Alerta Fator R */}
               <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
                 <div className="space-y-0.5 pr-2">
                   <span className="font-bold text-slate-900 flex items-center gap-1.5">
@@ -465,6 +448,53 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   onChange={(val) => handleTogglePreference('operationalReminders', val)}
                   ariaLabel="Lembretes Contábeis e Conciliação"
                 />
+              </div>
+
+              {/* Switch 5: Horário de Almoço na Agenda */}
+              <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/80 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-0.5 pr-2">
+                    <span className="font-bold text-slate-900 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-amber-600" />
+                      Horário de Almoço na Agenda
+                    </span>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Destacar o intervalo de almoço na agenda e exibir alerta ao tentar agendar consultas nesse período
+                    </p>
+                  </div>
+                  <Switch
+                    checked={preferences.lunchBreakEnabled !== false}
+                    onChange={(val) => handleUpdatePreferences({ lunchBreakEnabled: val })}
+                    ariaLabel="Horário de Almoço na Agenda"
+                  />
+                </div>
+
+                {preferences.lunchBreakEnabled !== false && (
+                  <div className="pt-2.5 border-t border-slate-200/70 grid grid-cols-2 gap-3 items-center">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Início do Almoço
+                      </label>
+                      <input
+                        type="time"
+                        value={preferences.lunchBreakStart || '12:00'}
+                        onChange={(e) => handleUpdatePreferences({ lunchBreakStart: e.target.value })}
+                        className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2 bg-white text-slate-900 font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 shadow-2xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Fim do Almoço
+                      </label>
+                      <input
+                        type="time"
+                        value={preferences.lunchBreakEnd || '13:00'}
+                        onChange={(e) => handleUpdatePreferences({ lunchBreakEnd: e.target.value })}
+                        className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2 bg-white text-slate-900 font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 shadow-2xs"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -81,6 +81,9 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   const [serviceDate, setServiceDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
+  const [paymentDate, setPaymentDate] = useState<string>(
+    new Date().toISOString().split('T')[0]
+  );
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
   const [installmentsCount, setInstallmentsCount] = useState<number>(1);
 
@@ -92,6 +95,14 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   const [nfseStatus, setNfseStatus] = useState<NfseStatus>('EMITIDA');
   const [nfseNumber, setNfseNumber] = useState<string>('');
   const [nfseVerificationCode, setNfseVerificationCode] = useState<string>('');
+
+  // Bank Accounts & Card Fee
+  const bankAccounts = db.getBankAccounts();
+  const [bankAccountId, setBankAccountId] = useState<string>(() => {
+    const defaultBank = bankAccounts.find((b) => b.accountType === 'CORRENTE_PF') || bankAccounts[0];
+    return defaultBank?.id || '';
+  });
+  const [cardFeePercent, setCardFeePercent] = useState<number>(0);
 
   // Form states
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -119,6 +130,9 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
     setInstallmentsCount(1);
     setReceivedNow(true);
     setReceiptIdentifier('');
+    const defaultBank = bankAccounts.find((b) => b.accountType === 'CORRENTE_PF') || bankAccounts[0];
+    setBankAccountId(defaultBank?.id || '');
+    setCardFeePercent(0);
     setNfseStatus('EMITIDA');
     setNfseNumber('');
     setNfseVerificationCode('');
@@ -147,11 +161,39 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
       setPatientCpf(saleToEdit.patientCpf || '');
       setPayerIsBeneficiary(saleToEdit.payerIsBeneficiary !== undefined ? saleToEdit.payerIsBeneficiary : true);
       setPayerName(saleToEdit.payerName || '');
-      setPayerCpf(saleToEdit.payerCpf || '');
-      setSelectedProcedureId('CUSTOM');
-      setIsCustomProcedure(true);
-      setProcedureName(saleToEdit.procedureName || '');
-      setDescription(saleToEdit.description || '');
+      // Localiza o procedimento no catálogo por ID ou por Nome
+      const matchedProc = procedures.find(
+        (p) =>
+          (saleToEdit.procedureId && p.id === saleToEdit.procedureId) ||
+          (p.name &&
+            saleToEdit.procedureName &&
+            p.name.trim().toLowerCase() === saleToEdit.procedureName.trim().toLowerCase())
+      );
+
+      if (matchedProc) {
+        setSelectedProcedureId(matchedProc.id);
+        setIsCustomProcedure(false);
+        setProcedureName(matchedProc.name);
+      } else {
+        setSelectedProcedureId('CUSTOM');
+        setIsCustomProcedure(true);
+        setProcedureName(saleToEdit.procedureName || '');
+      }
+
+      // Sanitizar descrição: não preencher texto gerado automaticamente
+      const rawDesc = saleToEdit.description || '';
+      const lowerDesc = rawDesc.toLowerCase().trim();
+      const procLower = (saleToEdit.procedureName || '').toLowerCase().trim();
+      if (
+        lowerDesc.startsWith('atendimento clínico') ||
+        lowerDesc === procLower ||
+        lowerDesc === `atendimento clínico - ${procLower}`
+      ) {
+        setDescription('');
+      } else {
+        setDescription(rawDesc);
+      }
+
       setTotalValue(saleToEdit.totalValue || 0);
       setServiceDate(saleToEdit.serviceDate || new Date().toISOString().split('T')[0]);
       setPaymentMethod(saleToEdit.paymentMethod || 'PIX');
@@ -162,12 +204,24 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
       setNfseStatus(saleToEdit.nfseStatus || 'EMITIDA');
       setNfseNumber(saleToEdit.nfseNumber || '');
       setNfseVerificationCode(saleToEdit.nfseVerificationCode || '');
+      setCardFeePercent(saleToEdit.cardFeePercent || saleToEdit.installments?.[0]?.cardFeePercent || 0);
+      setBankAccountId(saleToEdit.bankAccountId || saleToEdit.installments?.[0]?.bankAccountId || bankAccounts[0]?.id || '');
     } else {
       resetForm();
     }
   }, [saleToEdit, isOpen, initialPatientId, patients]);
 
   const selectedProcedure = procedures.find((p) => p.id === selectedProcedureId);
+
+  const isCard = paymentMethod === 'CARTAO_CREDITO' || paymentMethod === 'CARTAO_DEBITO';
+  const cardFeeAmount = isCard && cardFeePercent > 0 ? Number(((totalValue * cardFeePercent) / 100).toFixed(2)) : 0;
+  const netValue = isCard ? Math.max(0, Number((totalValue - cardFeeAmount).toFixed(2))) : totalValue;
+
+  const bankAccountOptions = bankAccounts.map((b) => ({
+    value: b.id,
+    label: b.name,
+    description: `Saldo atual: ${formatCurrency(b.currentBalance)}`,
+  }));
 
   const handleProcedureSelect = (procId: string) => {
     setSelectedProcedureId(procId);
@@ -179,9 +233,6 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
       const found = procedures.find((p) => p.id === procId);
       if (found) {
         setProcedureName(found.name);
-        if (found.description) {
-          setDescription(found.description);
-        }
       }
     }
   };
@@ -219,151 +270,216 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
       return;
     }
 
+    if (receivedNow && (!bankAccountId || bankAccountId.trim() === '')) {
+      toast.warning('A seleção da conta bancária de recebimento é obrigatória para receitas recebidas no ato.');
+      return;
+    }
+
+    if (paymentMethod === 'CARTAO_CREDITO' && installmentsCount > 1 && cardFeePercent <= 0) {
+      toast.warning('Para vendas parceladas no cartão de crédito, informe a taxa da maquininha (%).');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
+      const effectiveInstallmentsCount = paymentMethod === 'CARTAO_CREDITO' ? installmentsCount : 1;
+
+      // Auto-cadastrar procedimento avulso no catálogo com status "Cadastro Incompleto"
+      let finalProcId = selectedProcedureId;
+      if (isCustomProcedure || selectedProcedureId === 'CUSTOM' || !selectedProcedureId) {
+        const existing = procedures.find(
+          (p) => p.name.trim().toLowerCase() === procedureName.trim().toLowerCase()
+        );
+        if (existing) {
+          finalProcId = existing.id;
+        } else {
+          const createdProc = db.addProcedure({
+            code: `AVULSO-${Date.now().toString().slice(-4)}`,
+            name: procedureName.trim(),
+            category: 'OUTROS',
+            description: description || 'Procedimento avulso registrado em receita',
+            clinicalDurationMinutes: 30,
+            professionalHourlyRate: 150,
+            inputs: [],
+            labCost: 0,
+            suggestedPrice: totalValue,
+            defaultPrice: totalValue,
+            active: true,
+            isIncomplete: true,
+          });
+          finalProcId = createdProc.id;
+          toast.info(`Procedimento "${procedureName}" adicionado ao catálogo como "Cadastro Incompleto".`);
+        }
+      }
+
       if (isEditing && saleToEdit) {
-      const existingInstallments = saleToEdit.installments || [];
-      const installments: SaleInstallment[] = [];
-      const installmentValue = Number((totalValue / installmentsCount).toFixed(2));
-      let accumulated = 0;
+        const existingInstallments = saleToEdit.installments || [];
+        const installments: SaleInstallment[] = [];
+        const installmentValue = Number((totalValue / effectiveInstallmentsCount).toFixed(2));
+        let accumulated = 0;
 
-      for (let i = 1; i <= installmentsCount; i++) {
-        const val = i === installmentsCount ? totalValue - accumulated : installmentValue;
-        accumulated += val;
+        for (let i = 1; i <= effectiveInstallmentsCount; i++) {
+          const val = i === effectiveInstallmentsCount ? totalValue - accumulated : installmentValue;
+          accumulated += val;
 
-        const prevInst = existingInstallments[i - 1];
-        const dueDateObj = new Date(serviceDate);
-        dueDateObj.setMonth(dueDateObj.getMonth() + (i - 1));
-        const dueDateStr = prevInst ? prevInst.dueDate : dueDateObj.toISOString().split('T')[0];
+          const prevInst = existingInstallments[i - 1];
+          const dueDateObj = new Date(serviceDate);
+          dueDateObj.setMonth(dueDateObj.getMonth() + (i - 1));
+          const dueDateStr = prevInst ? prevInst.dueDate : dueDateObj.toISOString().split('T')[0];
 
-        const wasPaid = prevInst ? prevInst.status === 'RECEBIDO' : (receivedNow && i === 1);
+          const wasPaid = prevInst ? prevInst.status === 'RECEBIDO' : (receivedNow && i === 1);
 
-        let receitaStatus: ReceitaSaudeStatus | undefined = prevInst?.receitaSaudeStatus;
-        let receitaId: string | undefined = prevInst?.receitaSaudeId;
+          let receitaStatus: ReceitaSaudeStatus | undefined = prevInst?.receitaSaudeStatus;
+          let receitaId: string | undefined = prevInst?.receitaSaudeId;
 
-        if (taxOrigin === 'CPF') {
-          if (wasPaid) {
-            receitaStatus = receiptIdentifier.trim() ? 'EMITIDO' : (prevInst?.receitaSaudeStatus || 'A_EMITIR');
-            receitaId = receiptIdentifier.trim() || prevInst?.receitaSaudeId;
-          } else {
-            receitaStatus = 'A_EMITIR';
+          if (taxOrigin === 'CPF') {
+            if (wasPaid) {
+              receitaStatus = receiptIdentifier.trim() ? 'EMITIDO' : (prevInst?.receitaSaudeStatus || 'A_EMITIR');
+              receitaId = receiptIdentifier.trim() || prevInst?.receitaSaudeId || undefined;
+            } else {
+              receitaStatus = prevInst?.receitaSaudeStatus || 'A_EMITIR';
+            }
           }
+
+          const instCardFee = isCard && cardFeePercent > 0 ? Number(((val * cardFeePercent) / 100).toFixed(2)) : 0;
+          const instNetVal = isCard ? Number((val - instCardFee).toFixed(2)) : val;
+
+          installments.push({
+            id: prevInst ? prevInst.id : `inst_${Date.now()}_${i}`,
+            saleId: saleToEdit.id,
+            installmentNumber: i,
+            totalInstallments: effectiveInstallmentsCount,
+            value: val,
+            cardFeePercent: isCard && cardFeePercent > 0 ? cardFeePercent : undefined,
+            cardFeeAmount: isCard && instCardFee > 0 ? instCardFee : undefined,
+            netValue: instNetVal,
+            dueDate: dueDateStr,
+            paymentDate: wasPaid ? (prevInst?.paymentDate || serviceDate) : undefined,
+            amountReceived: wasPaid ? (prevInst?.amountReceived || instNetVal) : undefined,
+            status: wasPaid ? 'RECEBIDO' : 'A_RECEBER',
+            receitaSaudeStatus: receitaStatus,
+            receitaSaudeId: receitaId,
+            receitaSaudeEmittedAt: receitaStatus === 'EMITIDO' ? (prevInst?.receitaSaudeEmittedAt || new Date().toISOString()) : undefined,
+            paymentMethod: paymentMethod,
+            bankAccountId,
+          });
         }
 
-        installments.push({
-          id: prevInst ? prevInst.id : `inst_${Date.now()}_${i}`,
-          saleId: saleToEdit.id,
-          installmentNumber: i,
-          totalInstallments: installmentsCount,
-          value: val,
-          dueDate: dueDateStr,
-          paymentDate: wasPaid ? (prevInst?.paymentDate || serviceDate) : undefined,
-          amountReceived: wasPaid ? val : undefined,
-          status: wasPaid ? 'RECEBIDO' : 'A_RECEBER',
-          receitaSaudeStatus: receitaStatus,
-          receitaSaudeId: receitaId,
-          receitaSaudeEmittedAt: receitaStatus === 'EMITIDO' ? (prevInst?.receitaSaudeEmittedAt || new Date().toISOString()) : undefined,
-          paymentMethod: paymentMethod,
-          bankAccountId: prevInst?.bankAccountId || (taxOrigin === 'CPF' ? 'bank_01' : 'bank_02'),
+        db.updateSale(saleToEdit.id, {
+          taxOrigin,
+          patientId: finalPatientId,
+          patientName: finalPatientName,
+          patientCpf: finalPatientCpf,
+          payerIsBeneficiary,
+          payerName: !payerIsBeneficiary ? payerName : undefined,
+          payerCpf: !payerIsBeneficiary ? payerCpf.replace(/\D/g, '') : undefined,
+          procedureId: finalProcId,
+          procedureName,
+          description: description || procedureName,
+          totalValue,
+          cardFeePercent: isCard && cardFeePercent > 0 ? cardFeePercent : undefined,
+          cardFeeAmount: isCard && cardFeeAmount > 0 ? cardFeeAmount : undefined,
+          netValue: isCard ? netValue : totalValue,
+          bankAccountId,
+          serviceDate,
+          paymentMethod,
+          installmentsCount: effectiveInstallmentsCount,
+          nfseStatus: taxOrigin === 'CNPJ' ? nfseStatus : undefined,
+          nfseNumber: taxOrigin === 'CNPJ' ? nfseNumber : undefined,
+          nfseVerificationCode: taxOrigin === 'CNPJ' ? nfseVerificationCode : undefined,
+          nfseEmittedAt:
+            taxOrigin === 'CNPJ' && nfseStatus === 'EMITIDA'
+              ? (saleToEdit.nfseEmittedAt || new Date().toISOString())
+              : undefined,
+          notes: description?.trim() || undefined,
+          installments,
         });
-      }
+        toast.success('Receita atualizada com sucesso.');
+      } else {
+        // Generate installments
+        const installments: SaleInstallment[] = [];
+        const installmentValue = Number((totalValue / effectiveInstallmentsCount).toFixed(2));
+        let accumulated = 0;
 
-      db.updateSale(saleToEdit.id, {
-        taxOrigin,
-        patientId: finalPatientId,
-        patientName: finalPatientName,
-        patientCpf: finalPatientCpf,
-        payerIsBeneficiary,
-        payerName: !payerIsBeneficiary ? payerName : undefined,
-        payerCpf: !payerIsBeneficiary ? payerCpf.replace(/\D/g, '') : undefined,
-        procedureName,
-        description: description || procedureName,
-        totalValue,
-        serviceDate,
-        paymentMethod,
-        installmentsCount,
-        nfseStatus: taxOrigin === 'CNPJ' ? nfseStatus : undefined,
-        nfseNumber: taxOrigin === 'CNPJ' ? nfseNumber : undefined,
-        nfseVerificationCode: taxOrigin === 'CNPJ' ? nfseVerificationCode : undefined,
-        nfseEmittedAt:
-          taxOrigin === 'CNPJ' && nfseStatus === 'EMITIDA'
-            ? (saleToEdit.nfseEmittedAt || new Date().toISOString())
-            : undefined,
-        installments,
-      });
-      toast.success('Receita atualizada com sucesso.');
-    } else {
-      // Generate installments
-      const installments: SaleInstallment[] = [];
-      const installmentValue = Number((totalValue / installmentsCount).toFixed(2));
-      let accumulated = 0;
+        for (let i = 1; i <= effectiveInstallmentsCount; i++) {
+          const val = i === effectiveInstallmentsCount ? totalValue - accumulated : installmentValue;
+          accumulated += val;
 
-      for (let i = 1; i <= installmentsCount; i++) {
-        const val = i === installmentsCount ? totalValue - accumulated : installmentValue;
-        accumulated += val;
+          const dueDateObj = new Date(serviceDate);
+          dueDateObj.setMonth(dueDateObj.getMonth() + (i - 1));
+          const dueDateStr = dueDateObj.toISOString().split('T')[0];
 
-        const dueDateObj = new Date(serviceDate);
-        dueDateObj.setMonth(dueDateObj.getMonth() + (i - 1));
-        const dueDateStr = dueDateObj.toISOString().split('T')[0];
+          // If marked as received now and it's installment 1
+          const isPaidNow = receivedNow && i === 1;
 
-        // If marked as received now and it's installment 1
-        const isPaidNow = receivedNow && i === 1;
+          let receitaStatus: ReceitaSaudeStatus | undefined = undefined;
+          let receitaId: string | undefined = undefined;
 
-        let receitaStatus: ReceitaSaudeStatus | undefined = undefined;
-        let receitaId: string | undefined = undefined;
-
-        if (taxOrigin === 'CPF') {
-          if (isPaidNow) {
-            receitaStatus = receiptIdentifier.trim() ? 'EMITIDO' : 'A_EMITIR';
-            receitaId = receiptIdentifier.trim() || undefined;
-          } else {
-            receitaStatus = 'A_EMITIR';
+          if (taxOrigin === 'CPF') {
+            if (isPaidNow) {
+              receitaStatus = receiptIdentifier.trim() ? 'EMITIDO' : 'A_EMITIR';
+              receitaId = receiptIdentifier.trim() || undefined;
+            } else {
+              receitaStatus = 'A_EMITIR';
+            }
           }
+
+          const instCardFee = isCard && cardFeePercent > 0 ? Number(((val * cardFeePercent) / 100).toFixed(2)) : 0;
+          const instNetVal = isCard ? Number((val - instCardFee).toFixed(2)) : val;
+
+          installments.push({
+            id: `inst_${Date.now()}_${i}`,
+            saleId: '', // will be set by db or model
+            installmentNumber: i,
+            totalInstallments: effectiveInstallmentsCount,
+            value: val,
+            cardFeePercent: isCard && cardFeePercent > 0 ? cardFeePercent : undefined,
+            cardFeeAmount: isCard && instCardFee > 0 ? instCardFee : undefined,
+            netValue: instNetVal,
+            dueDate: dueDateStr,
+            paymentDate: isPaidNow ? paymentDate : undefined,
+            amountReceived: isPaidNow ? instNetVal : undefined,
+            status: isPaidNow ? 'RECEBIDO' : 'A_RECEBER',
+            receitaSaudeStatus: receitaStatus,
+            receitaSaudeId: receitaId,
+            receitaSaudeEmittedAt: receitaStatus === 'EMITIDO' ? new Date().toISOString() : undefined,
+            paymentMethod: paymentMethod,
+            bankAccountId: isPaidNow ? bankAccountId : (bankAccountId || undefined),
+          });
         }
 
-        installments.push({
-          id: `inst_${Date.now()}_${i}`,
-          saleId: '', // will be set by db or model
-          installmentNumber: i,
-          totalInstallments: installmentsCount,
-          value: val,
-          dueDate: dueDateStr,
-          paymentDate: isPaidNow ? serviceDate : undefined,
-          amountReceived: isPaidNow ? val : undefined,
-          status: isPaidNow ? 'RECEBIDO' : 'A_RECEBER',
-          receitaSaudeStatus: receitaStatus,
-          receitaSaudeId: receitaId,
-          receitaSaudeEmittedAt: receitaStatus === 'EMITIDO' ? new Date().toISOString() : undefined,
-          paymentMethod: paymentMethod,
-          bankAccountId: taxOrigin === 'CPF' ? 'bank_01' : 'bank_02',
+        db.addSale({
+          taxOrigin,
+          patientId: finalPatientId,
+          patientName: finalPatientName,
+          patientCpf: finalPatientCpf,
+          payerIsBeneficiary,
+          payerName: !payerIsBeneficiary ? payerName : undefined,
+          payerCpf: !payerIsBeneficiary ? payerCpf.replace(/\D/g, '') : undefined,
+          procedureId: finalProcId,
+          procedureName,
+          description: description || procedureName,
+          totalValue,
+          cardFeePercent: isCard && cardFeePercent > 0 ? cardFeePercent : undefined,
+          cardFeeAmount: isCard && cardFeeAmount > 0 ? cardFeeAmount : undefined,
+          netValue: isCard ? netValue : totalValue,
+          bankAccountId,
+          serviceDate,
+          paymentMethod,
+          installmentsCount: effectiveInstallmentsCount,
+          nfseStatus: taxOrigin === 'CNPJ' ? nfseStatus : undefined,
+          nfseNumber: taxOrigin === 'CNPJ' ? nfseNumber : undefined,
+          nfseVerificationCode: taxOrigin === 'CNPJ' ? nfseVerificationCode : undefined,
+          nfseEmittedAt:
+            taxOrigin === 'CNPJ' && nfseStatus === 'EMITIDA'
+              ? new Date().toISOString()
+              : undefined,
+          origin: 'MANUAL',
+          notes: description?.trim() || undefined,
+          installments,
         });
+        toast.success('Receita cadastrada com sucesso.');
       }
-
-      db.addSale({
-        taxOrigin,
-        patientId: finalPatientId,
-        patientName: finalPatientName,
-        patientCpf: finalPatientCpf,
-        payerIsBeneficiary,
-        payerName: !payerIsBeneficiary ? payerName : undefined,
-        payerCpf: !payerIsBeneficiary ? payerCpf.replace(/\D/g, '') : undefined,
-        procedureName,
-        description: description || procedureName,
-        totalValue,
-        serviceDate,
-        paymentMethod,
-        installmentsCount,
-        nfseStatus: taxOrigin === 'CNPJ' ? nfseStatus : undefined,
-        nfseNumber: taxOrigin === 'CNPJ' ? nfseNumber : undefined,
-        nfseVerificationCode: taxOrigin === 'CNPJ' ? nfseVerificationCode : undefined,
-        nfseEmittedAt:
-          taxOrigin === 'CNPJ' && nfseStatus === 'EMITIDA'
-            ? new Date().toISOString()
-            : undefined,
-        installments,
-      });
-      toast.success('Receita cadastrada com sucesso.');
-    }
 
     setIsDirty(false);
     resetForm();
@@ -670,7 +786,18 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                   placeholder="Selecione um procedimento cadastrado..."
                 />
 
-                {selectedProcedure && (() => {
+                {selectedProcedure && selectedProcedure.isIncomplete && (
+                  <div className="p-3 bg-amber-50/90 border border-amber-200/90 rounded-xl text-xs flex items-center justify-between gap-3 animate-in fade-in">
+                    <div className="flex items-center gap-2 text-amber-900">
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>
+                        Este procedimento possui <strong>Cadastro Incompleto</strong> no catálogo (sem insumos ou custos detalhados). Você pode salvar a receita normalmente.
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {selectedProcedure && !selectedProcedure.isIncomplete && (() => {
                   const procMargin = safeMargin(selectedProcedure.defaultPrice, selectedProcedure.totalDirectCost);
                   return (
                     <div className="p-3 bg-emerald-50/60 rounded-xl border border-emerald-200/70 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -698,6 +825,10 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                   className="w-full text-xs rounded-xl border border-slate-200 p-2.5 bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none shadow-2xs"
                   required
                 />
+                <p className="text-[11px] text-slate-500 mt-1.5 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>Este procedimento avulso será salvo no catálogo com o status <strong>"Cadastro Incompleto"</strong> para precificação futura.</span>
+                </p>
               </div>
             )}
           </div>
@@ -711,7 +842,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {/* DatePicker Customizado */}
               <DatePicker
-                label="Data (Competência)"
+                label="Data de Vencimento"
                 value={serviceDate}
                 onChange={setServiceDate}
                 required
@@ -720,7 +851,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
               {/* CurrencyInput BRL em Tempo Real com Referência de Tabela */}
               <div>
                 <CurrencyInput
-                  label="Valor Total"
+                  label="Valor Total (Bruto)"
                   value={totalValue}
                   onChange={(val) => {
                     setTotalValue(val);
@@ -763,6 +894,54 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
               />
             </div>
 
+            {/* Conta Bancária e Quitação Imediata */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+              <CustomSelect
+                label={receivedNow ? "Conta Bancária de Recebimento *" : "Conta Bancária de Recebimento (Opcional)"}
+                options={bankAccountOptions}
+                value={bankAccountId}
+                onChange={(val) => {
+                  setBankAccountId(val);
+                  setIsDirty(true);
+                }}
+                required={receivedNow}
+                placeholder={receivedNow ? "Selecione a conta bancária..." : "Conta bancária opcional..."}
+              />
+
+              <div className="p-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 flex items-center h-[42px]">
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={receivedNow}
+                    onChange={(e) => {
+                      setReceivedNow(e.target.checked);
+                      setIsDirty(true);
+                    }}
+                    className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
+                  />
+                  <span>
+                    {paymentMethod === 'CARTAO_CREDITO' && installmentsCount > 1
+                      ? '1ª parcela já recebida no ato'
+                      : 'Valor recebido integralmente no ato'}
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {receivedNow && (
+              <div className="max-w-xs animate-in fade-in">
+                <DatePicker
+                  label="Data do Recebimento"
+                  value={paymentDate}
+                  onChange={(d) => {
+                    setPaymentDate(d);
+                    setIsDirty(true);
+                  }}
+                  required
+                />
+              </div>
+            )}
+
             {/* Descrição do serviço */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
@@ -780,46 +959,86 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
               />
             </div>
 
-            {/* Parcelamento e Quitação com revelação progressiva */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end pt-1">
-              <CustomSelect
-                label="Quantidade de Parcelas"
-                options={installmentOptions}
-                value={String(installmentsCount)}
-                onChange={(val) => {
-                  setInstallmentsCount(parseInt(val, 10));
-                  setIsDirty(true);
-                }}
-              />
-
-              <div className="p-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 flex items-center h-[42px]">
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={receivedNow}
-                    onChange={(e) => {
-                      setReceivedNow(e.target.checked);
+            {/* Parcelamento e Taxa de Maquininha - Exclusivo para Cartão de Crédito */}
+            {paymentMethod === 'CARTAO_CREDITO' && (
+              <div className="space-y-3 pt-1">
+                <div className="max-w-xs">
+                  <CustomSelect
+                    label="Quantidade de Parcelas"
+                    options={installmentOptions}
+                    value={String(installmentsCount)}
+                    onChange={(val) => {
+                      setInstallmentsCount(parseInt(val, 10));
                       setIsDirty(true);
                     }}
-                    className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
                   />
-                  <span>
-                    {installmentsCount === 1
-                      ? 'Valor recebido integralmente hoje'
-                      : '1ª parcela já recebida na data de hoje'}
-                  </span>
-                </label>
-              </div>
-            </div>
+                </div>
 
-            {installmentsCount > 1 && totalValue > 0 && (
-              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl text-xs flex items-center justify-between animate-in fade-in">
-                <span className="text-slate-600">
-                  Plano de Pagamento: <strong className="font-bold text-slate-800">{installmentsCount} parcelas mensais</strong>
-                </span>
-                <span className="font-bold text-slate-900 font-mono">
-                  {installmentsCount}x de {formatCurrency(totalValue / installmentsCount)}
-                </span>
+                {/* Taxa de Maquininha */}
+                <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3 animate-in fade-in">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-indigo-600" />
+                      <span className="font-bold text-xs text-slate-900">
+                        Taxa da Maquininha / Operadora de Cartão
+                      </span>
+                    </div>
+                    {installmentsCount > 1 && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                        Taxa obrigatória para {installmentsCount}x
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Taxa da Maquininha (%)
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max="100"
+                          placeholder="Ex: 3.5"
+                          value={cardFeePercent || ''}
+                          onChange={(e) => {
+                            setCardFeePercent(parseFloat(e.target.value) || 0);
+                            setIsDirty(true);
+                          }}
+                          className="w-full text-xs rounded-xl border border-slate-300 p-2.5 bg-white text-slate-900 focus:ring-2 focus:ring-indigo-500 font-mono"
+                        />
+                        <span className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">%</span>
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 bg-white rounded-xl border border-slate-200 text-center font-mono">
+                      <span className="block text-[10px] text-slate-500 font-sans">Desconto da Taxa</span>
+                      <span className="font-bold text-rose-600 text-xs">− {formatCurrency(cardFeeAmount)}</span>
+                    </div>
+
+                    <div className="p-2.5 bg-emerald-50 rounded-xl border border-emerald-200 text-center font-mono">
+                      <span className="block text-[10px] text-emerald-800 font-sans font-bold">Líquido a Receber</span>
+                      <span className="font-black text-emerald-900 text-xs">{formatCurrency(netValue)}</span>
+                    </div>
+                  </div>
+
+                  <div className="text-[10.5px] text-slate-500 bg-white p-2.5 rounded-xl border border-slate-200/80 leading-relaxed">
+                    <strong>Regra Fiscal vs Financeira:</strong> A base tributária ({taxOrigin === 'CPF' ? 'Carnê-Leão' : 'Simples Nacional / NFS-e'}) preserva o <strong>valor bruto ({formatCurrency(totalValue)})</strong>. O crédito bancário registra o <strong>valor líquido ({formatCurrency(netValue)})</strong>.
+                  </div>
+                </div>
+
+                {installmentsCount > 1 && totalValue > 0 && (
+                  <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl text-xs flex items-center justify-between animate-in fade-in">
+                    <span className="text-slate-600">
+                      Plano de Pagamento: <strong className="font-bold text-slate-800">{installmentsCount} parcelas mensais</strong>
+                    </span>
+                    <span className="font-bold text-slate-900 font-mono">
+                      {installmentsCount}x de {formatCurrency(totalValue / installmentsCount)}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>
