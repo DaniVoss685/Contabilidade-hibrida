@@ -72,6 +72,11 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (bankAccounts.length === 0) {
+      toast.warning('É necessário cadastrar uma conta bancária em Configurações > Contas Bancárias antes de registrar o recebimento.');
+      return;
+    }
+
     if (amountReceived <= 0) {
       toast.warning('O valor recebido deve ser maior que zero.');
       return;
@@ -167,6 +172,18 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
             />
           </div>
 
+          {bankAccounts.length === 0 && (
+            <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div className="text-xs text-amber-900 space-y-1">
+                <p className="font-bold">Nenhuma conta bancária cadastrada</p>
+                <p>
+                  Para liquidar o recebimento, é necessário ter ao menos uma conta bancária cadastrada. Acesse <strong>Configurações &gt; Contas Bancárias</strong> para cadastrar sua conta.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <CustomSelect
               label="Forma de Pagamento"
@@ -181,6 +198,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
               value={bankAccountId}
               onChange={setBankAccountId}
               required
+              placeholder={bankAccounts.length === 0 ? "Nenhuma conta cadastrada" : "Selecione..."}
             />
           </div>
 
@@ -231,7 +249,12 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
             </button>
             <button
               type="submit"
-              className="px-5 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-xl shadow-xs transition-colors cursor-pointer"
+              disabled={bankAccounts.length === 0}
+              className={`px-5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer ${
+                bankAccounts.length === 0
+                  ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                  : 'text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
+              }`}
             >
               Confirmar Recebimento
             </button>

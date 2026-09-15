@@ -180,9 +180,12 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
     return unsub;
   }, []);
 
-  const lunchBreakEnabled = preferences.lunchBreakEnabled !== false;
-  const lunchBreakStart = preferences.lunchBreakStart || '12:00';
-  const lunchBreakEnd = preferences.lunchBreakEnd || '13:00';
+  const lunchBreakEnabled =
+    preferences.lunchBreakEnabled === true &&
+    Boolean(preferences.lunchBreakStart) &&
+    Boolean(preferences.lunchBreakEnd);
+  const lunchBreakStart = preferences.lunchBreakStart || '';
+  const lunchBreakEnd = preferences.lunchBreakEnd || '';
 
   // Filtered appointments by search & status
   const filteredAppointments = useMemo(() => {

@@ -50,12 +50,16 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
     isOpen: boolean;
     title: string;
     message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
     variant?: 'danger' | 'warning' | 'primary';
     onConfirm: () => void;
   }>({
     isOpen: false,
     title: '',
     message: '',
+    confirmLabel: 'Confirmar',
+    cancelLabel: 'Cancelar',
     onConfirm: () => {},
   });
 
@@ -112,7 +116,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
     setIsModalOpen(true);
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nameInput.trim()) {
       toast.warning('Informe a identificação da conta bancária.');
@@ -120,7 +124,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
     }
 
     if (editingAccountId) {
-      db.updateBankAccount(editingAccountId, {
+      await db.updateBankAccount(editingAccountId, {
         name: nameInput.trim(),
         bankName: institutionInput.trim() || 'Banco',
         accountType: accountTypeInput,
@@ -129,7 +133,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
       });
       toast.success('Conta bancária atualizada com sucesso.');
     } else {
-      db.addBankAccount({
+      await db.addBankAccountAsync({
         name: nameInput.trim(),
         bankName: institutionInput.trim() || 'Banco',
         accountType: accountTypeInput,
@@ -144,23 +148,47 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
     onRefreshData();
   };
 
-  const handleToggleActive = (acc: BankAccount) => {
+  const handleToggleActive = async (acc: BankAccount) => {
     const nextState = acc.isActive === false ? true : false;
-    db.updateBankAccount(acc.id, { isActive: nextState });
+    await db.updateBankAccount(acc.id, { isActive: nextState });
     toast.info(nextState ? `Conta "${acc.name}" reativada.` : `Conta "${acc.name}" desativada temporariamente.`);
     onRefreshData();
   };
 
   const handleDelete = (acc: BankAccount) => {
+    const hasTransactions = db.hasBankTransactions(acc.id);
+    if (hasTransactions) {
+      setConfirmDialog({
+        isOpen: true,
+        title: 'Conta com Movimentações Vinculadas',
+        message: `Esta conta possui movimentações vinculadas e não pode ser excluída fisicamente para preservar o histórico financeiro e fiscal. Deseja desativá-la para ocultá-la de novos lançamentos?`,
+        variant: 'warning',
+        confirmLabel: 'Desativar Conta',
+        cancelLabel: 'Fechar',
+        onConfirm: async () => {
+          await db.updateBankAccount(acc.id, { isActive: false });
+          toast.info(`Conta "${acc.name}" desativada.`);
+          onRefreshData();
+        },
+      });
+      return;
+    }
+
     setConfirmDialog({
       isOpen: true,
       title: 'Excluir Conta Bancária',
-      message: `Deseja realmente excluir a conta "${acc.name}"? Esta ação removerá a conta do catálogo, mas os lançamentos históricos vinculados a ela serão preservados.`,
+      message: `Deseja realmente excluir a conta "${acc.name}"? Esta ação removerá a conta permanentemente do sistema.`,
       variant: 'danger',
-      onConfirm: () => {
-        db.deleteBankAccount(acc.id);
-        toast.success('Conta bancária excluída com sucesso.');
-        onRefreshData();
+      confirmLabel: 'Excluir Definitivamente',
+      cancelLabel: 'Cancelar',
+      onConfirm: async () => {
+        const res = await db.deleteBankAccountAsync(acc.id);
+        if (res.success) {
+          toast.success('Conta bancária excluída com sucesso.');
+          onRefreshData();
+        } else {
+          toast.error(res.error || 'Falha ao excluir conta bancária.');
+        }
       },
     });
   };
@@ -326,8 +354,30 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
       </div>
 
       {/* Accounts List / Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {filteredAccounts.length === 0 ? (
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        {bankAccounts.length === 0 && (
+          <div className="col-span-full bg-white rounded-2xl border border-dashed border-slate-200 p-12 text-center space-y-4 shadow-2xs">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <Wallet className="w-7 h-7" />
+            </div>
+            <div className="max-w-md mx-auto space-y-1.5">
+              <h3 className="text-base font-bold text-slate-800">Nenhuma conta bancária cadastrada</h3>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Cadastre suas contas correntes (Pessoa Física para Carnê-Leão e Pessoa Jurídica para a Clínica) para habilitar o controle de conciliação e liquidação financeira.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleOpenAdd}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Cadastrar Conta Bancária</span>
+            </button>
+          </div>
+        )}
+
+        {bankAccounts.length > 0 && filteredAccounts.length === 0 && (
           <div className="col-span-full bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-400 space-y-3">
             <Wallet className="w-10 h-10 mx-auto text-slate-300" />
             <p className="text-sm font-medium text-slate-600">Nenhuma conta bancária encontrada para os filtros aplicados.</p>
@@ -339,7 +389,9 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
               + Cadastrar nova conta bancária
             </button>
           </div>
-        ) : (
+        )}
+
+        {bankAccounts.length > 0 &&
           filteredAccounts.map((acc) => {
             const isPf = acc.accountType === 'CORRENTE_PF';
             const isActive = acc.isActive !== false;
@@ -459,8 +511,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                 </div>
               </div>
             );
-          })
-        )}
+          })}
       </div>
 
       {/* Add / Edit Modal */}
@@ -607,7 +658,8 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
         title={confirmDialog.title}
         message={confirmDialog.message}
         variant={confirmDialog.variant}
-        confirmLabel="Excluir"
+        confirmLabel={confirmDialog.confirmLabel || 'Confirmar'}
+        cancelLabel={confirmDialog.cancelLabel || 'Cancelar'}
         onConfirm={confirmDialog.onConfirm}
         onCancel={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
       />

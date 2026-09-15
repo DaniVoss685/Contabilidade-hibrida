@@ -131,9 +131,10 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
     return db.getPreferences();
   }, [isOpen]);
 
-  const lunchBreakStart = preferences.lunchBreakStart || '12:00';
-  const lunchBreakEnd = preferences.lunchBreakEnd || '13:00';
-  const isLunchBreakEnabled = preferences.lunchBreakEnabled !== false;
+  const lunchBreakStart = preferences.lunchBreakStart;
+  const lunchBreakEnd = preferences.lunchBreakEnd;
+  const isLunchBreakEnabled =
+    preferences.lunchBreakEnabled === true && Boolean(lunchBreakStart) && Boolean(lunchBreakEnd);
 
   const conflictAppointment = useMemo(() => {
     if (!date || !startTime || !endTime) return null;
@@ -154,7 +155,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
   }, [existingAppointments, appointmentToEdit, date, startTime, endTime, dentistName]);
 
   const isLunchConflict = useMemo(() => {
-    if (!isLunchBreakEnabled || !startTime || !endTime) return false;
+    if (!isLunchBreakEnabled || !startTime || !endTime || !lunchBreakStart || !lunchBreakEnd) return false;
     const startMin = timeToMinutes(startTime);
     const endMin = timeToMinutes(endTime);
     const lunchStartMin = timeToMinutes(lunchBreakStart);
