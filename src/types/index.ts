@@ -382,6 +382,8 @@ export interface AttachmentMetadata {
   extension: AllowedReceiptExtension;
   dataUrl?: string; // payload base64 para preview imediato
   url?: string; // URL externa ou blob URL
+  storagePath?: string; // Caminho seguro no bucket dental-private (ex: tenant_id/expenses/xxx.pdf)
+  signedUrl?: string; // Signed URL temporária autenticada
   uploadedAt?: string; // ISO 8601
 }
 
