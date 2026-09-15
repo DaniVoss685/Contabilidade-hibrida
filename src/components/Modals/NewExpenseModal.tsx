@@ -251,7 +251,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
   const [dueDate, setDueDate] = useState(
     new Date().toISOString().split('T')[0]
   );
-  const [isPaid, setIsPaid] = useState(true);
+  const [isPaid, setIsPaid] = useState(bankAccounts.length > 0);
   const [paymentDate, setPaymentDate] = useState(
     new Date().toISOString().split('T')[0]
   );
@@ -519,7 +519,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     }
 
     if (isPaid && (!bankAccountId || bankAccountId.trim() === '')) {
-      toast.warning('A conta bancária é obrigatória para despesas pagas.');
+      toast.warning('A conta bancária é obrigatória para despesas pagas. Desmarque a liquidação imediata para salvar como "A Pagar" ou cadastre uma conta bancária.');
       return;
     }
 
@@ -1148,7 +1148,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
                     setIsDirty(true);
                   }}
                   required={isPaid}
-                  placeholder={isPaid ? "Selecione a conta bancária..." : "Conta bancária opcional..."}
+                  placeholder={bankAccounts.length === 0 ? "Nenhuma conta cadastrada" : isPaid ? "Selecione a conta bancária..." : "Conta bancária opcional..."}
                 />
               </div>
             </div>
@@ -1345,21 +1345,33 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
           {/* Section 7: Settlement / Payment */}
           <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/40 space-y-4">
-            <label className="flex items-center gap-2.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={isPaid}
-                onChange={(e) => setIsPaid(e.target.checked)}
-                className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500"
-              />
-              <span className="text-xs font-bold text-slate-800">
-                {expenseType === 'PARCELADA'
-                  ? 'Quitar 1ª parcela imediatamente'
-                  : expenseType === 'RECORRENTE'
-                  ? 'Quitar 1ª ocorrência imediatamente'
-                  : 'Despesa já foi paga (Liquidação imediata)'}
-              </span>
-            </label>
+            {bankAccounts.length === 0 ? (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-900">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold">Nenhuma conta bancária cadastrada</p>
+                  <p className="mt-0.5 text-[11px] text-amber-800">
+                    A despesa será registrada como <strong>"A Pagar"</strong>. Para registrar despesas pagas imediatamente, cadastre uma conta em <em>Configurações &gt; Contas Bancárias</em>.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isPaid}
+                  onChange={(e) => setIsPaid(e.target.checked)}
+                  className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500"
+                />
+                <span className="text-xs font-bold text-slate-800">
+                  {expenseType === 'PARCELADA'
+                    ? 'Quitar 1ª parcela imediatamente'
+                    : expenseType === 'RECORRENTE'
+                    ? 'Quitar 1ª ocorrência imediatamente'
+                    : 'Despesa já foi paga (Liquidação imediata)'}
+                </span>
+              </label>
+            )}
 
             {isPaid && (
               <>

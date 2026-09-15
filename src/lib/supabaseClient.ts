@@ -671,6 +671,9 @@ export function mapDbPreferencesToApp(db: any): SystemPreferences {
     alertFatorR: db.alert_fator_r !== false,
     alertDueDates: db.alert_due_dates !== false,
     operationalReminders: db.operational_reminders !== false,
+    lunchBreakEnabled: Boolean(db.lunch_break_enabled),
+    lunchBreakStart: db.lunch_break_start || undefined,
+    lunchBreakEnd: db.lunch_break_end || undefined,
   };
 }
 
@@ -681,6 +684,9 @@ export function mapAppPreferencesToDb(app: SystemPreferences, tenantId: string):
     alert_fator_r: app.alertFatorR !== false,
     alert_due_dates: app.alertDueDates !== false,
     operational_reminders: app.operationalReminders !== false,
+    lunch_break_enabled: Boolean(app.lunchBreakEnabled),
+    lunch_break_start: app.lunchBreakStart || null,
+    lunch_break_end: app.lunchBreakEnd || null,
     updated_at: new Date().toISOString(),
   };
 }
@@ -1089,6 +1095,14 @@ export const SupabaseService = {
       method: 'POST',
       headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
       body: payloads,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteBankAccount(id: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const { error } = await supabaseFetch(`df_bank_accounts?id=eq.${id}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
     });
     return { success: !error, error: error || undefined };
   },

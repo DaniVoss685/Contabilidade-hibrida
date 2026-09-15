@@ -746,14 +746,9 @@ export class DentalFinanceDB {
         } else if (res.clinicalInputs && res.clinicalInputs.length === 0 && this.clinicalInputs.length > 0) {
           this.clinicalInputs.forEach((i) => SupabaseService.saveClinicalInput(i, tenantId).catch(console.warn));
         }
-        if (res.bankAccounts && res.bankAccounts.length > 0) {
+        if (res.bankAccounts) {
           this.bankAccounts = res.bankAccounts;
           saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, tenantId);
-        } else if (!res.error && res.bankAccounts && res.bankAccounts.length === 0) {
-          const banksToSync = this.getBankAccounts();
-          if (banksToSync.length > 0) {
-            SupabaseService.saveBankAccountsBulk(banksToSync, tenantId).catch(console.warn);
-          }
         }
         if (res.appointments) {
           this.appointments = res.appointments;
@@ -1800,16 +1795,14 @@ export class DentalFinanceDB {
         alertFatorR: true,
         alertDueDates: true,
         operationalReminders: true,
-        lunchBreakEnabled: true,
-        lunchBreakStart: '12:00',
-        lunchBreakEnd: '13:00',
+        lunchBreakEnabled: false,
+        lunchBreakStart: undefined,
+        lunchBreakEnd: undefined,
       };
     }
     return {
       operationalReminders: true,
-      lunchBreakEnabled: true,
-      lunchBreakStart: '12:00',
-      lunchBreakEnd: '13:00',
+      lunchBreakEnabled: false,
       ...this.preferences,
     };
   }
@@ -1819,7 +1812,18 @@ export class DentalFinanceDB {
     saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, this.preferences, this.activeTenantId);
     this.log('ATUALIZACAO_PREFERENCIAS', 'PREFERENCES', 'sys', 'Preferências e privacidade do sistema atualizadas.');
     this.notify();
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.savePreferences(this.preferences, this.activeTenantId).catch(console.warn);
+    }
     return { ...this.preferences };
+  }
+
+  public async updatePreferencesAsync(updates: Partial<SystemPreferences>): Promise<SystemPreferences> {
+    const updated = this.updatePreferences(updates);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      await SupabaseService.savePreferences(updated, this.activeTenantId);
+    }
+    return updated;
   }
 
   // Versioned Fiscal Parameters (Platform Governance)
@@ -1903,94 +1907,90 @@ export class DentalFinanceDB {
   }
 
   public getBankAccounts(): BankAccount[] {
-    if (!this.bankAccounts || this.bankAccounts.length === 0) {
-      const defaultBanks: BankAccount[] = [
-        {
-          id: `bank_itau_${this.activeTenantId}`,
-          orgId: this.org?.id || 'org_dental',
-          name: 'Banco Itaú (PF)',
-          bankName: 'Banco Itaú',
-          accountType: 'CORRENTE_PF',
-          initialBalance: 0,
-          currentBalance: 0,
-        },
-        {
-          id: `bank_inter_${this.activeTenantId}`,
-          orgId: this.org?.id || 'org_dental',
-          name: 'Banco Inter (PJ)',
-          bankName: 'Banco Inter',
-          accountType: 'CORRENTE_PJ',
-          initialBalance: 0,
-          currentBalance: 0,
-        },
-        {
-          id: `bank_caixa_${this.activeTenantId}`,
-          orgId: this.org?.id || 'org_dental',
-          name: 'Caixa Físico (PF)',
-          bankName: 'Caixa Físico',
-          accountType: 'CORRENTE_PF',
-          initialBalance: 0,
-          currentBalance: 0,
-        },
-      ];
-      this.bankAccounts = defaultBanks;
-      saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
-      SupabaseService.saveBankAccountsBulk(this.bankAccounts, this.activeTenantId).catch(console.error);
-    } else {
-      let migrated = false;
-      this.bankAccounts = this.bankAccounts.map((b) => {
-        if (b.name === 'Itaú - Conta Principal (PF)' || b.name === 'Itaú - Conta Principal') {
-          migrated = true;
-          return { ...b, name: 'Banco Itaú (PF)' };
-        }
-        if (b.name === 'Banco Inter - Clínica PJ' || b.name === 'Banco Inter') {
-          migrated = true;
-          return { ...b, name: 'Banco Inter (PJ)' };
-        }
-        if (b.name === 'Caixa Geral (Dinheiro em Espécie)' || b.name === 'Caixa Geral') {
-          migrated = true;
-          return { ...b, name: 'Caixa Físico (PF)' };
-        }
-        return b;
-      });
-      if (migrated) {
-        saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
-        SupabaseService.saveBankAccountsBulk(this.bankAccounts, this.activeTenantId).catch(console.error);
-      }
-    }
-    return this.bankAccounts;
+    return this.bankAccounts || [];
+  }
+
+  public hasBankTransactions(id: string): boolean {
+    const hasLinkedExpenses = (this.expenses || []).some((e) => e.bankAccountId === id);
+    const hasLinkedSales = (this.sales || []).some(
+      (s) => s.bankAccountId === id || s.installments?.some((inst) => inst.bankAccountId === id)
+    );
+    return hasLinkedExpenses || hasLinkedSales;
   }
 
   public addBankAccount(account: Omit<BankAccount, 'id' | 'orgId'>): BankAccount {
     const newAccount: BankAccount = {
       ...account,
-      id: `bank_${Date.now()}`,
-      orgId: this.org.id,
+      id: `bank_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      orgId: this.org?.id || 'org_dental',
     };
-    this.bankAccounts = [...this.bankAccounts, newAccount];
+    this.bankAccounts = [...(this.bankAccounts || []), newAccount];
     saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
     this.log('CRIACAO_CONTA_BANCARIA', 'BANK_ACCOUNT', newAccount.id, `Conta bancária "${newAccount.name}" (${newAccount.accountType}) cadastrada.`);
     this.notify();
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveBankAccount(newAccount, this.activeTenantId).catch(console.warn);
+    }
     return newAccount;
   }
 
-  public updateBankAccount(id: string, updates: Partial<BankAccount>) {
-    this.bankAccounts = this.bankAccounts.map((b) => (b.id === id ? { ...b, ...updates } : b));
+  public async addBankAccountAsync(account: Omit<BankAccount, 'id' | 'orgId'>): Promise<BankAccount> {
+    const newAccount = this.addBankAccount(account);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      await SupabaseService.saveBankAccount(newAccount, this.activeTenantId);
+    }
+    return newAccount;
+  }
+
+  public async updateBankAccount(id: string, updates: Partial<BankAccount>): Promise<void> {
+    this.bankAccounts = (this.bankAccounts || []).map((b) => (b.id === id ? { ...b, ...updates } : b));
     saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
     this.log('ATUALIZACAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária atualizada.`);
     this.notify();
+    const updated = this.bankAccounts.find((b) => b.id === id);
+    if (updated && !this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      await SupabaseService.saveBankAccount(updated, this.activeTenantId);
+    }
   }
 
   public deleteBankAccount(id: string): boolean {
-    const prevLen = this.bankAccounts.length;
-    this.bankAccounts = this.bankAccounts.filter((b) => b.id !== id);
-    if (this.bankAccounts.length !== prevLen) {
-      saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
-      this.log('EXCLUSAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária excluída.`);
-      this.notify();
-      return true;
+    if (this.hasBankTransactions(id)) {
+      return false;
     }
-    return false;
+    this.bankAccounts = (this.bankAccounts || []).filter((b) => b.id !== id);
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
+    this.log('EXCLUSAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária excluída.`);
+    this.notify();
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.deleteBankAccount(id, this.activeTenantId).catch(console.warn);
+    }
+    return true;
+  }
+
+  public async deleteBankAccountAsync(id: string): Promise<{ success: boolean; error?: string; hasTransactions?: boolean }> {
+    if (this.hasBankTransactions(id)) {
+      return {
+        success: false,
+        hasTransactions: true,
+        error: 'Esta conta possui movimentações vinculadas e não pode ser excluída.',
+      };
+    }
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const { success, error } = await SupabaseService.deleteBankAccount(id, this.activeTenantId);
+      if (!success) {
+        return {
+          success: false,
+          error: error || 'Erro ao excluir conta bancária no servidor.',
+        };
+      }
+    }
+
+    this.bankAccounts = (this.bankAccounts || []).filter((b) => b.id !== id);
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
+    this.log('EXCLUSAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária excluída.`);
+    this.notify();
+    return { success: true };
   }
 
   public getPayrollHistory(): PayrollHistoryEntry[] {

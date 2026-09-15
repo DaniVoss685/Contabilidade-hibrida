@@ -91,8 +91,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   }, [professional]);
 
   // Handler para atualizar qualquer preferência (Switch ou campos)
-  const handleUpdatePreferences = (partial: Partial<SystemPreferences>) => {
-    const updated = db.updatePreferences(partial);
+  const handleUpdatePreferences = async (partial: Partial<SystemPreferences>) => {
+    const updated = await db.updatePreferencesAsync(partial);
     setPreferences(updated);
     toast.success('Preferência do sistema atualizada.');
     onRefreshData();
@@ -463,13 +463,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </p>
                   </div>
                   <Switch
-                    checked={preferences.lunchBreakEnabled !== false}
-                    onChange={(val) => handleUpdatePreferences({ lunchBreakEnabled: val })}
+                    checked={preferences.lunchBreakEnabled === true}
+                    onChange={(val) => {
+                      if (val) {
+                        handleUpdatePreferences({
+                          lunchBreakEnabled: true,
+                          lunchBreakStart: preferences.lunchBreakStart || undefined,
+                          lunchBreakEnd: preferences.lunchBreakEnd || undefined,
+                        });
+                      } else {
+                        handleUpdatePreferences({ lunchBreakEnabled: false });
+                      }
+                    }}
                     ariaLabel="Horário de Almoço na Agenda"
                   />
                 </div>
 
-                {preferences.lunchBreakEnabled !== false && (
+                {preferences.lunchBreakEnabled === true && (
                   <div className="pt-2.5 border-t border-slate-200/70 grid grid-cols-2 gap-3 items-center">
                     <div>
                       <label className="block text-[11px] font-bold text-slate-700 mb-1">
@@ -477,8 +487,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       </label>
                       <input
                         type="time"
-                        value={preferences.lunchBreakStart || '12:00'}
-                        onChange={(e) => handleUpdatePreferences({ lunchBreakStart: e.target.value })}
+                        value={preferences.lunchBreakStart || ''}
+                        placeholder="--:--"
+                        onChange={(e) => {
+                          const newStart = e.target.value;
+                          if (preferences.lunchBreakEnd && newStart && newStart >= preferences.lunchBreakEnd) {
+                            toast.warning('O horário de início deve ser anterior ao término.');
+                            return;
+                          }
+                          handleUpdatePreferences({ lunchBreakStart: newStart || undefined });
+                        }}
                         className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2 bg-white text-slate-900 font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 shadow-2xs"
                       />
                     </div>
@@ -488,8 +506,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       </label>
                       <input
                         type="time"
-                        value={preferences.lunchBreakEnd || '13:00'}
-                        onChange={(e) => handleUpdatePreferences({ lunchBreakEnd: e.target.value })}
+                        value={preferences.lunchBreakEnd || ''}
+                        placeholder="--:--"
+                        onChange={(e) => {
+                          const newEnd = e.target.value;
+                          if (preferences.lunchBreakStart && newEnd && newEnd <= preferences.lunchBreakStart) {
+                            toast.warning('O horário de término deve ser posterior ao início.');
+                            return;
+                          }
+                          handleUpdatePreferences({ lunchBreakEnd: newEnd || undefined });
+                        }}
                         className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2 bg-white text-slate-900 font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 shadow-2xs"
                       />
                     </div>

@@ -87,15 +87,6 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
   const [installmentsCount, setInstallmentsCount] = useState<number>(1);
 
-  // Cash / immediate receipt toggle (se já foi recebido no ato)
-  const [receivedNow, setReceivedNow] = useState<boolean>(true);
-  const [receiptIdentifier, setReceiptIdentifier] = useState<string>(''); // e.g. RS-2025-05-... or NFS-e
-
-  // CNPJ Specific: NFS-e
-  const [nfseStatus, setNfseStatus] = useState<NfseStatus>('EMITIDA');
-  const [nfseNumber, setNfseNumber] = useState<string>('');
-  const [nfseVerificationCode, setNfseVerificationCode] = useState<string>('');
-
   // Bank Accounts & Card Fee
   const bankAccounts = db.getBankAccounts();
   const [bankAccountId, setBankAccountId] = useState<string>(() => {
@@ -103,6 +94,15 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
     return defaultBank?.id || '';
   });
   const [cardFeePercent, setCardFeePercent] = useState<number>(0);
+
+  // Cash / immediate receipt toggle (se já foi recebido no ato)
+  const [receivedNow, setReceivedNow] = useState<boolean>(() => bankAccounts.length > 0);
+  const [receiptIdentifier, setReceiptIdentifier] = useState<string>(''); // e.g. RS-2025-05-... or NFS-e
+
+  // CNPJ Specific: NFS-e
+  const [nfseStatus, setNfseStatus] = useState<NfseStatus>('EMITIDA');
+  const [nfseNumber, setNfseNumber] = useState<string>('');
+  const [nfseVerificationCode, setNfseVerificationCode] = useState<string>('');
 
   // Form states
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -128,7 +128,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
     setServiceDate(new Date().toISOString().split('T')[0]);
     setPaymentMethod('PIX');
     setInstallmentsCount(1);
-    setReceivedNow(true);
+    setReceivedNow(bankAccounts.length > 0);
     setReceiptIdentifier('');
     const defaultBank = bankAccounts.find((b) => b.accountType === 'CORRENTE_PF') || bankAccounts[0];
     setBankAccountId(defaultBank?.id || '');
@@ -271,7 +271,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
     }
 
     if (receivedNow && (!bankAccountId || bankAccountId.trim() === '')) {
-      toast.warning('A seleção da conta bancária de recebimento é obrigatória para receitas recebidas no ato.');
+      toast.warning('A seleção da conta bancária de recebimento é obrigatória para receitas recebidas no ato. Desmarque o recebimento imediato para salvar como "A Receber" ou cadastre uma conta.');
       return;
     }
 
@@ -905,27 +905,36 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                   setIsDirty(true);
                 }}
                 required={receivedNow}
-                placeholder={receivedNow ? "Selecione a conta bancária..." : "Conta bancária opcional..."}
+                placeholder={bankAccounts.length === 0 ? "Nenhuma conta cadastrada" : receivedNow ? "Selecione a conta bancária..." : "Conta bancária opcional..."}
               />
 
-              <div className="p-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 flex items-center h-[42px]">
-                <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={receivedNow}
-                    onChange={(e) => {
-                      setReceivedNow(e.target.checked);
-                      setIsDirty(true);
-                    }}
-                    className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
-                  />
+              {bankAccounts.length === 0 ? (
+                <div className="p-2.5 rounded-xl border border-amber-200 bg-amber-50 text-[11px] text-amber-900 flex items-start gap-2 h-[42px] overflow-hidden">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                   <span>
-                    {paymentMethod === 'CARTAO_CREDITO' && installmentsCount > 1
-                      ? '1ª parcela já recebida no ato'
-                      : 'Valor recebido integralmente no ato'}
+                    Sem contas bancárias. A receita será salva como <strong>"A Receber"</strong>.
                   </span>
-                </label>
-              </div>
+                </div>
+              ) : (
+                <div className="p-2.5 rounded-xl border border-slate-200/80 bg-slate-50/70 flex items-center h-[42px]">
+                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={receivedNow}
+                      onChange={(e) => {
+                        setReceivedNow(e.target.checked);
+                        setIsDirty(true);
+                      }}
+                      className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
+                    />
+                    <span>
+                      {paymentMethod === 'CARTAO_CREDITO' && installmentsCount > 1
+                        ? '1ª parcela já recebida no ato'
+                        : 'Valor recebido integralmente no ato'}
+                    </span>
+                  </label>
+                </div>
+              )}
             </div>
 
             {receivedNow && (
