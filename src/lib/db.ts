@@ -151,6 +151,7 @@ export function getScopedStorageKey(baseKey: string, tenantId: string = globalAc
 // Safe storage accessors with automatic multi-tenant scoping
 function loadItem<T>(key: string, fallback: T, tenantId?: string): T {
   try {
+    if (typeof localStorage === 'undefined') return fallback;
     const scopedKey = getScopedStorageKey(key, tenantId || globalActiveTenantId);
     const raw = localStorage.getItem(scopedKey);
     if (!raw) return fallback;
@@ -161,51 +162,163 @@ function loadItem<T>(key: string, fallback: T, tenantId?: string): T {
   }
 }
 
-// Auto-limpeza inteligente e segura para evitar QuotaExceededError no localStorage
-export function pruneLocalStorage(keepTenantId?: string): void {
+// Verificador universal de chaves protegidas (NUNCA DELETAR)
+export function isProtectedStorageKey(key: string): boolean {
+  if (!key) return true;
+  // Sessão oficial e tokens do Supabase Auth (sb-*)
+  if (key.startsWith('sb-') || key.includes('-auth-token')) {
+    return true;
+  }
+  // Chaves de infraestrutura mínimas do sistema
+  if (
+    key === GLOBAL_STORAGE_KEYS.ACTIVE_TENANT ||
+    key === GLOBAL_STORAGE_KEYS.AUTH_SESSION ||
+    key === GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS ||
+    key === GLOBAL_STORAGE_KEYS.STORED_USERS ||
+    key === GLOBAL_STORAGE_KEYS.FISCAL_PARAMETERS
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// Detecção universal de erro de quota de armazenamento local
+export function isStorageQuotaError(e: any): boolean {
+  if (!e) return false;
+  return (
+    e.name === 'QuotaExceededError' ||
+    e.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    e.code === 22 ||
+    e.code === 1014 ||
+    (typeof e.message === 'string' &&
+      (e.message.toLowerCase().includes('quota') ||
+        e.message.toLowerCase().includes('exceeded')))
+  );
+}
+
+// Inspeção de métricas de armazenamento (sem imprimir conteúdos confidenciais)
+export function getLocalStorageStats(): {
+  totalBytes: number;
+  keyCount: number;
+  keys: Array<{ key: string; bytes: number }>;
+} {
+  if (typeof localStorage === 'undefined') {
+    return { totalBytes: 0, keyCount: 0, keys: [] };
+  }
+  const keys: Array<{ key: string; bytes: number }> = [];
+  let totalBytes = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    const val = localStorage.getItem(key) || '';
+    const bytes = (key.length + val.length) * 2;
+    totalBytes += bytes;
+    keys.push({ key, bytes });
+  }
+  keys.sort((a, b) => b.bytes - a.bytes);
+  return { totalBytes, keyCount: keys.length, keys };
+}
+
+// Limpeza emergencial de caches dispensáveis do Dental Finance
+export function pruneAllDispensableCaches(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (isProtectedStorageKey(key)) continue;
+
+      if (
+        key.startsWith('df_clinic_') ||
+        key.startsWith('df_tenant_') ||
+        key.startsWith('df_expenses_') ||
+        key.startsWith('df_sales_') ||
+        key.startsWith('df_patients_') ||
+        key.startsWith('df_audit_') ||
+        key.startsWith('df_appointments_') ||
+        key.startsWith('df_clinical_inputs_') ||
+        key.includes('_df_audit_v1') ||
+        key.includes('_df_expenses_v1') ||
+        key.includes('_df_sales_v1') ||
+        key.includes('_df_appointments_v1') ||
+        key.includes('_df_patients_v1') ||
+        key.includes('tenant_demo') ||
+        key === 'df_audit_v1' ||
+        key === 'df_expenses_v1' ||
+        key === 'df_sales_v1' ||
+        key === 'df_appointments_v1' ||
+        key === 'df_patients_v1'
+      ) {
+        toRemove.push(key);
+      }
+    }
+    toRemove.forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {}
+    });
+  } catch (err) {
+    console.warn('[Storage] Falha ao executar pruneAllDispensableCaches:', err);
+  }
+}
+
+// Auto-limpeza inteligente e hierárquica para evitar QuotaExceededError
+export function pruneLocalStorage(keepTenantId?: string, aggressive: boolean = false): void {
   try {
     if (typeof localStorage === 'undefined') return;
     const active = keepTenantId || globalActiveTenantId;
     const keysToRemove: string[] = [];
 
-    // Chaves protegidas que nunca devem ser removidas
-    const protectedKeys = new Set([
-      GLOBAL_STORAGE_KEYS.ACTIVE_TENANT,
-      GLOBAL_STORAGE_KEYS.AUTH_SESSION,
-      GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS,
-      GLOBAL_STORAGE_KEYS.STORED_USERS,
-      GLOBAL_STORAGE_KEYS.FISCAL_PARAMETERS,
-    ]);
-
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (!key) continue;
 
-      if (protectedKeys.has(key)) continue;
+      // 1. Chaves protegidas nunca são removidas
+      if (isProtectedStorageKey(key)) continue;
 
-      // Não remover chaves do tenant ativo nem as chaves legadas do demo
-      if (
-        key.startsWith(`df_${active}_`) ||
-        key === 'df_prof_v1' ||
-        key === 'df_org_v1' ||
-        key === 'df_user_v1' ||
-        key.includes('tenant_demo')
-      ) {
+      // 2. Descartar caches de outros tenants inativos
+      const isOtherTenant =
+        (key.startsWith('df_clinic_') || key.startsWith('df_tenant_')) &&
+        !key.startsWith(`df_${active}_`);
+
+      if (isOtherTenant) {
+        keysToRemove.push(key);
         continue;
       }
 
-      // Remover partições locais de outros tenants antigos
-      if (key.startsWith('df_clinic_') || key.startsWith('df_tenant_')) {
+      // 3. Descartar caches legados de demo quando operando em tenant real
+      if (
+        active !== 'tenant_demo' &&
+        (key.includes('tenant_demo') ||
+          key === 'df_audit_v1' ||
+          key === 'df_expenses_v1' ||
+          key === 'df_sales_v1' ||
+          key === 'df_appointments_v1' ||
+          key === 'df_patients_v1')
+      ) {
         keysToRemove.push(key);
+        continue;
+      }
+
+      // 4. Limpeza agressiva: descarta coleções pesadas reconstruíveis do tenant ativo
+      if (aggressive) {
+        if (
+          key.includes('_df_audit_v1') ||
+          key.includes('_df_expenses_v1') ||
+          key.includes('_df_sales_v1') ||
+          key.includes('_df_appointments_v1') ||
+          key.includes('_df_patients_v1')
+        ) {
+          keysToRemove.push(key);
+        }
       }
     }
 
     keysToRemove.forEach((k) => {
       try {
         localStorage.removeItem(k);
-      } catch {
-        // ignore
-      }
+      } catch {}
     });
 
     // Truncar coleções de logs volumosos no localStorage
@@ -217,43 +330,102 @@ export function pruneLocalStorage(keepTenantId?: string): void {
         if (Array.isArray(parsed) && parsed.length > 20) {
           localStorage.setItem(auditKey, JSON.stringify(parsed.slice(0, 20)));
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
   } catch (err) {
     console.warn('[Storage] Falha ao executar pruneLocalStorage:', err);
   }
 }
 
+// Assegura capacidade de armazenamento em localStorage ANTES de acionar a persistência do Supabase Auth
+export function ensureAuthStorageCapacity(requiredBytes: number = 32768): boolean {
+  if (typeof localStorage === 'undefined') return true;
+
+  const probeKey = '__df_auth_probe__';
+  try {
+    const probe = 'X'.repeat(requiredBytes);
+    localStorage.setItem(probeKey, probe);
+    localStorage.removeItem(probeKey);
+    return true;
+  } catch {
+    console.warn('[Storage] Capacidade reduzida para persistir sessão Auth. Executando limpeza preventiva...');
+  }
+
+  // Nível 1: limpeza normal
+  pruneLocalStorage(undefined, false);
+  try {
+    const probe = 'X'.repeat(requiredBytes);
+    localStorage.setItem(probeKey, probe);
+    localStorage.removeItem(probeKey);
+    return true;
+  } catch {}
+
+  // Nível 2: limpeza agressiva
+  pruneLocalStorage(undefined, true);
+  try {
+    const probe = 'X'.repeat(requiredBytes);
+    localStorage.setItem(probeKey, probe);
+    localStorage.removeItem(probeKey);
+    return true;
+  } catch {}
+
+  // Nível 3: remoção de todos os caches dispensáveis do Dental Finance
+  pruneAllDispensableCaches();
+  try {
+    const probe = 'X'.repeat(requiredBytes);
+    localStorage.setItem(probeKey, probe);
+    localStorage.removeItem(probeKey);
+    return true;
+  } catch {
+    console.warn('[Storage] Não foi possível reservar espaço de probe antes do login.');
+    return false;
+  }
+}
+
+// Higieniza payloads pesados (como base64 em anexos) antes de gravar no cache de localStorage
+function sanitizeForCache<T>(key: string, value: T): T {
+  if (!value) return value;
+  if (key.includes('df_expenses_v1') && Array.isArray(value)) {
+    return value.map((exp: any) => {
+      if (exp?.attachment?.dataUrl && exp.attachment.dataUrl.length > 50000) {
+        const { dataUrl, ...restAtt } = exp.attachment;
+        return {
+          ...exp,
+          attachment: restAtt,
+        };
+      }
+      return exp;
+    }) as any;
+  }
+  if (key.includes('df_audit_v1') && Array.isArray(value)) {
+    return value.slice(0, 20) as any;
+  }
+  return value;
+}
+
 function saveItem<T>(key: string, value: T, tenantId?: string): void {
+  if (typeof localStorage === 'undefined') return;
   const targetTenant = tenantId || globalActiveTenantId;
   const scopedKey = getScopedStorageKey(key, targetTenant);
+  const cacheValue = sanitizeForCache(key, value);
+
   try {
-    localStorage.setItem(scopedKey, JSON.stringify(value));
-    // If saving for demo tenant and scopedKey differs, keep legacy key in sync
+    localStorage.setItem(scopedKey, JSON.stringify(cacheValue));
     if (targetTenant === 'tenant_demo' && scopedKey !== key) {
-      localStorage.setItem(key, JSON.stringify(value));
+      localStorage.setItem(key, JSON.stringify(cacheValue));
     }
   } catch (e: any) {
-    const isQuota =
-      e &&
-      (e.name === 'QuotaExceededError' ||
-        e.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
-        e.code === 22 ||
-        e.code === 1014);
-
-    if (isQuota) {
-      console.warn(`[Storage] QuotaExceededError ao persistir ${scopedKey}. Executando auto-limpeza...`);
-      pruneLocalStorage(targetTenant);
+    if (isStorageQuotaError(e)) {
+      console.warn(`[Storage] QuotaExceededError ao persistir cache de ${scopedKey}. Executando auto-limpeza...`);
+      pruneLocalStorage(targetTenant, true);
       try {
-        localStorage.setItem(scopedKey, JSON.stringify(value));
+        localStorage.setItem(scopedKey, JSON.stringify(cacheValue));
         if (targetTenant === 'tenant_demo' && scopedKey !== key) {
-          localStorage.setItem(key, JSON.stringify(value));
+          localStorage.setItem(key, JSON.stringify(cacheValue));
         }
-      } catch (retryErr) {
-        // O banco PostgreSQL no Supabase é a fonte da verdade definitiva.
-        console.warn(`[Storage] Cache local não pôde ser gravado para ${scopedKey}, persistência garantida no PostgreSQL:`, retryErr);
+      } catch {
+        // PostgreSQL no Supabase é a fonte da verdade definitiva. O cache local falhar nunca interrompe o app!
+        console.warn(`[Storage] Cache local não pôde ser gravado para ${scopedKey}, persistência garantida no PostgreSQL.`);
       }
     } else {
       console.warn(`Failed to save ${key} to storage:`, e);
@@ -397,6 +569,7 @@ export class DentalFinanceDB {
     }
 
     this.loadTenant(initialTenant, isDemo);
+    pruneLocalStorage(initialTenant, false);
 
     if (this.currentSession && !isDemo && initialTenant !== 'tenant_demo') {
       // Barreira de hidratação: indica carregamento até restauração da sessão oficial Supabase Auth
@@ -933,24 +1106,66 @@ export class DentalFinanceDB {
     }
 
     // 2. Autenticação REAL e Segura via Supabase Auth Oficial
+    let authData: any = null;
+    let authError: any = null;
+
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      // 2.1 Assegura capacidade de armazenamento para a sessão oficial antes de chamar o SDK
+      ensureAuthStorageCapacity();
+
+      const res = await supabase.auth.signInWithPassword({
         email: cleanId,
         password: cleanSecret,
       });
-
-      if (error || !data.user || !data.session) {
-        this.log('LOGIN_FALHA', 'AUTH', cleanId, `Falha de autenticação via Supabase Auth: ${error?.message || 'Credenciais inválidas'}`);
+      authData = res.data;
+      authError = res.error;
+    } catch (err: any) {
+      if (isStorageQuotaError(err)) {
+        console.warn('[Supabase Auth] QuotaExceededError na primeira tentativa de login. Executando limpeza emergencial de cache...');
+        pruneAllDispensableCaches();
+        try {
+          // 1 retry automático conforme especificação
+          const retryRes = await supabase.auth.signInWithPassword({
+            email: cleanId,
+            password: cleanSecret,
+          });
+          authData = retryRes.data;
+          authError = retryRes.error;
+        } catch (retryErr: any) {
+          if (isStorageQuotaError(retryErr)) {
+            return {
+              success: false,
+              error: 'Não foi possível preparar o armazenamento local para iniciar sua sessão. Tente novamente.',
+            };
+          }
+          console.error('[Auth Error pós-retry]', retryErr);
+          return {
+            success: false,
+            error: 'Erro de comunicação com o servidor de autenticação.',
+          };
+        }
+      } else {
+        console.error('[Auth Error]', err);
         return {
           success: false,
-          error: 'E-mail ou senha inválidos. Por favor, verifique suas credenciais.',
+          error: 'Erro de comunicação com o servidor de autenticação.',
         };
       }
+    }
 
+    if (authError || !authData?.user || !authData?.session) {
+      this.log('LOGIN_FALHA', 'AUTH', cleanId, `Falha de autenticação via Supabase Auth: ${authError?.message || 'Credenciais inválidas'}`);
+      return {
+        success: false,
+        error: 'E-mail ou senha inválidos. Por favor, verifique suas credenciais.',
+      };
+    }
+
+    try {
       // Buscar perfil mapeado na df_users
-      const userProfile = await SupabaseService.fetchUserProfileByAuthId(data.user.id, data.user.email);
+      const userProfile = await SupabaseService.fetchUserProfileByAuthId(authData.user.id, authData.user.email);
       if (!userProfile) {
-        this.log('LOGIN_FALHA', 'AUTH', data.user.id, `Usuário autenticado no Supabase Auth mas sem perfil mapeado na df_users.`);
+        this.log('LOGIN_FALHA', 'AUTH', authData.user.id, `Usuário autenticado no Supabase Auth mas sem perfil mapeado na df_users.`);
         return {
           success: false,
           error: 'Perfil de clínica não configurado para este usuário. Entre em contato com o suporte.',
@@ -978,8 +1193,8 @@ export class DentalFinanceDB {
       };
 
       const session: AuthSession = {
-        token: data.session.access_token,
-        authUserId: data.user.id,
+        token: authData.session.access_token,
+        authUserId: authData.user.id,
         user: {
           id: userProfile.id,
           orgId: `org_${tenantId}`,
@@ -991,7 +1206,7 @@ export class DentalFinanceDB {
         tenantId,
         isDemo: false,
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(data.session.expires_at ? data.session.expires_at * 1000 : Date.now() + 3600 * 1000).toISOString(),
+        expiresAt: new Date(authData.session.expires_at ? authData.session.expires_at * 1000 : Date.now() + 3600 * 1000).toISOString(),
       };
 
       this.currentSession = session;
