@@ -48,9 +48,11 @@ function AppContent() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!db.getCurrentSession());
   const [hasRecoveryUrlParams, setHasRecoveryUrlParams] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
+    const pathname = window.location.pathname || '';
     const hash = window.location.hash || '';
     const search = window.location.search || '';
     return (
+      pathname.includes('/auth/recovery') ||
       hash.includes('type=recovery') ||
       hash.includes('otp_expired') ||
       hash.includes('access_denied') ||
@@ -289,10 +291,20 @@ function AppContent() {
         <LoginView
           onLoginSuccess={() => {
             setHasRecoveryUrlParams(false);
+            if (typeof window !== 'undefined' && window.location.pathname.includes('/auth/recovery')) {
+              try {
+                window.history.replaceState({}, document.title, '/');
+              } catch (e) {}
+            }
             setIsAuthenticated(true);
           }}
           onRecoveryDone={() => {
             setHasRecoveryUrlParams(false);
+            if (typeof window !== 'undefined' && window.location.pathname.includes('/auth/recovery')) {
+              try {
+                window.history.replaceState({}, document.title, '/');
+              } catch (e) {}
+            }
           }}
         />
         <ToastContainer />

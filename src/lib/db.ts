@@ -732,9 +732,23 @@ export class DentalFinanceDB {
           return;
         }
 
+        if (res.organization) {
+          this.org = res.organization;
+          saveItem(STORAGE_KEYS.ORGANIZATION, this.org, tenantId);
+        }
+
         if (res.professional) {
           this.professional = res.professional;
           saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, tenantId);
+          const cName = (res.professional.nomeFantasia || res.professional.razaoSocial || '').trim();
+          if (cName && (!this.org.name || this.org.name === 'Minha Clínica Odontológica' || this.org.name === 'Clínica Odontológica' || this.org.name === 'Minha Clínica')) {
+            this.org = {
+              ...this.org,
+              name: cName,
+              tradeName: cName,
+            };
+            saveItem(STORAGE_KEYS.ORGANIZATION, this.org, tenantId);
+          }
         }
         if (res.payrollHistory && res.payrollHistory.length > 0) {
           this.payrollHistory = res.payrollHistory;
@@ -901,6 +915,16 @@ export class DentalFinanceDB {
       this.org = loadItem<Organization>(STORAGE_KEYS.ORGANIZATION, defaultOrg, tenantId);
       this.user = loadItem<User>(STORAGE_KEYS.USER, defaultUser, tenantId);
       this.professional = loadItem<Professional>(STORAGE_KEYS.PROFESSIONAL, defaultProf, tenantId);
+
+      const candidateRealName = (this.professional.nomeFantasia || this.professional.razaoSocial || clinic?.tradeName || clinic?.name || '').trim();
+      if (candidateRealName && (!this.org.name || this.org.name === 'Minha Clínica Odontológica' || this.org.name === 'Clínica Odontológica' || this.org.name === 'Minha Clínica')) {
+        this.org = {
+          ...this.org,
+          name: candidateRealName,
+          tradeName: candidateRealName,
+        };
+        saveItem(STORAGE_KEYS.ORGANIZATION, this.org, tenantId);
+      }
       this.patients = loadItem<Patient[]>(STORAGE_KEYS.PATIENTS, [], tenantId);
       this.sales = loadItem<Sale[]>(STORAGE_KEYS.SALES, [], tenantId);
       this.expenses = loadItem<Expense[]>(STORAGE_KEYS.EXPENSES, [], tenantId);
@@ -2334,6 +2358,35 @@ export class DentalFinanceDB {
   public updateProfessional(updates: Partial<Professional>): void {
     this.professional = { ...this.professional, ...updates };
     saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+
+    const clinicName = (updates.nomeFantasia || updates.razaoSocial || '').trim();
+    if (clinicName) {
+      this.org = {
+        ...this.org,
+        name: clinicName,
+        tradeName: clinicName,
+      };
+      saveItem(STORAGE_KEYS.ORGANIZATION, this.org, this.activeTenantId);
+
+      const clinicIdx = this.registeredClinics.findIndex((c) => c.id === this.activeTenantId);
+      if (clinicIdx >= 0) {
+        this.registeredClinics[clinicIdx].name = clinicName;
+        this.registeredClinics[clinicIdx].tradeName = clinicName;
+        saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+      }
+
+      if (this.currentSession) {
+        if (this.currentSession.supportSession && this.currentSession.supportSession.targetTenantId === this.activeTenantId) {
+          this.currentSession.supportSession.targetTenantName = clinicName;
+        }
+        if (this.currentSession.clinic && this.currentSession.tenantId === this.activeTenantId) {
+          this.currentSession.clinic.name = clinicName;
+          this.currentSession.clinic.tradeName = clinicName;
+        }
+        saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
+      }
+    }
+
     this.log('ATUALIZACAO_PERFIL', 'PROFESSIONAL', this.professional.id, 'Dados cadastrais ou tributários atualizados.');
     this.notify();
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
@@ -2342,13 +2395,16 @@ export class DentalFinanceDB {
   }
 
   public async updateProfessionalAsync(updates: Partial<Professional>): Promise<{ success: boolean; error?: string }> {
-    const previous = { ...this.professional };
+    const previousProf = { ...this.professional };
+    const previousOrg = { ...this.org };
     this.updateProfessional(updates);
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
       const res = await SupabaseService.saveProfessional(this.professional, this.activeTenantId);
       if (!res.success) {
-        this.professional = previous;
+        this.professional = previousProf;
+        this.org = previousOrg;
         saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
+        saveItem(STORAGE_KEYS.ORGANIZATION, this.org, this.activeTenantId);
         this.notify();
         return { success: false, error: res.error || 'Erro ao persistir no servidor' };
       }

@@ -14,6 +14,7 @@ import {
   SystemPreferences,
   AuditLog,
   DentalTenantOption,
+  Organization,
 } from '../types';
 
 export const SUPABASE_URL =
@@ -926,6 +927,7 @@ export const SupabaseService = {
 
   // Dados do Tenant Específico (Clínica)
   async getTenantData(tenantId: string): Promise<{
+    organization: Organization | null;
     professional: Professional | null;
     payrollHistory: PayrollHistoryEntry[];
     patients: Patient[];
@@ -940,6 +942,7 @@ export const SupabaseService = {
     error: string | null;
   }> {
     const [
+      tenantRes,
       profRes,
       payrollRes,
       patientsRes,
@@ -952,6 +955,7 @@ export const SupabaseService = {
       prefsRes,
       logsRes,
     ] = await Promise.all([
+      supabaseFetch<any[]>(`df_tenants?id=eq.${tenantId}&select=*`),
       supabaseFetch<any[]>(`df_professionals?tenant_id=eq.${tenantId}&select=*`),
       supabaseFetch<any[]>(`df_payroll_history?tenant_id=eq.${tenantId}&order=month.asc&select=*`),
       supabaseFetch<any[]>(`df_patients?tenant_id=eq.${tenantId}&order=created_at.desc&select=*`),
@@ -974,8 +978,31 @@ export const SupabaseService = {
       proceduresRes.error ||
       inputsRes.error;
 
+    const rawTenant = tenantRes.data && tenantRes.data.length > 0 ? tenantRes.data[0] : null;
+    const rawProf = profRes.data && profRes.data.length > 0 ? profRes.data[0] : null;
+    const mappedProf = rawProf ? mapDbProfessionalToApp(rawProf, tenantId) : null;
+
+    const orgClinicName =
+      (rawTenant?.name && rawTenant.name !== 'Clínica Odontológica' ? rawTenant.name : '') ||
+      (rawTenant?.trade_name && rawTenant.trade_name !== 'Clínica Odontológica' ? rawTenant.trade_name : '') ||
+      mappedProf?.nomeFantasia ||
+      mappedProf?.razaoSocial ||
+      mappedProf?.name ||
+      rawTenant?.name ||
+      'Clínica sem nome';
+
+    const orgEntity: Organization | null = rawTenant
+      ? {
+          id: `org_${tenantId}`,
+          name: orgClinicName,
+          tradeName: rawTenant.trade_name || orgClinicName,
+          createdAt: rawTenant.created_at || new Date().toISOString(),
+        }
+      : null;
+
     return {
-      professional: profRes.data && profRes.data.length > 0 ? mapDbProfessionalToApp(profRes.data[0], tenantId) : null,
+      organization: orgEntity,
+      professional: mappedProf,
       payrollHistory: payrollRes.data ? payrollRes.data.map(mapDbPayrollToApp) : [],
       patients: patientsRes.data ? patientsRes.data.map(mapDbPatientToApp) : null,
       sales: salesRes.data ? salesRes.data.map(mapDbSaleToApp) : null,
@@ -997,10 +1024,13 @@ export const SupabaseService = {
   ): Promise<{ success: boolean; error?: string }> {
     if (!tenantId) return { success: false, error: 'tenant_id é obrigatório' };
 
+    const initialName = fallback?.name || fallback?.tradeName || 'Clínica sem nome';
+    const initialTradeName = fallback?.tradeName || fallback?.name || initialName;
+
     const payload: any = {
       id: tenantId,
-      name: fallback?.name || fallback?.tradeName || 'Clínica Odontológica',
-      trade_name: fallback?.tradeName || fallback?.name || 'Clínica Odontológica',
+      name: initialName,
+      trade_name: initialTradeName,
       cnpj: fallback?.cnpj || '',
       cpf_cnpj: fallback?.cpfCnpj || fallback?.cnpj || '',
       cro: fallback?.cro || '',
@@ -1027,11 +1057,33 @@ export const SupabaseService = {
     return { success: true };
   },
 
+  // Atualização direta do nome da clínica em df_tenants e df_professionals
+  async updateTenantClinicName(tenantId: string, clinicName: string): Promise<{ success: boolean; error?: string }> {
+    const trimmed = clinicName.trim();
+    if (!trimmed) return { success: false, error: 'Nome da clínica é obrigatório.' };
+
+    const [tRes, pRes] = await Promise.all([
+      supabaseFetch(`df_tenants?id=eq.${tenantId}`, {
+        method: 'PATCH',
+        body: { name: trimmed, trade_name: trimmed },
+      }),
+      supabaseFetch(`df_professionals?tenant_id=eq.${tenantId}`, {
+        method: 'PATCH',
+        body: { nome_fantasia: trimmed, razao_social: trimmed },
+      }),
+    ]);
+
+    const err = tRes.error || pRes.error;
+    return { success: !err, error: err || undefined };
+  },
+
   // Gravações no PostgreSQL por Tenant com Proteção de FK
   async saveProfessional(prof: Professional, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const realClinicName = (prof.nomeFantasia || prof.razaoSocial || prof.name || 'Clínica sem nome').trim();
+
     await this.ensureTenantExists(tenantId, {
-      name: prof.razaoSocial || prof.name || 'Clínica Dental Finance',
-      tradeName: prof.nomeFantasia || prof.razaoSocial || prof.name || 'Clínica Odontológica',
+      name: realClinicName,
+      tradeName: realClinicName,
       cnpj: prof.cnpj || '',
       cro: prof.cro || '',
       croUf: prof.croUf || prof.uf || 'SP',
@@ -1041,6 +1093,17 @@ export const SupabaseService = {
       city: prof.municipio || 'São Paulo - SP',
       isDemo: tenantId === 'tenant_demo',
     });
+
+    // Atualiza explicitamente df_tenants para garantir que o nome real persista imediatamente
+    if (realClinicName && realClinicName !== 'Clínica Odontológica') {
+      supabaseFetch(`df_tenants?id=eq.${tenantId}`, {
+        method: 'PATCH',
+        body: {
+          name: realClinicName,
+          trade_name: realClinicName,
+        },
+      }).catch(console.warn);
+    }
 
     const payload = mapAppProfessionalToDb(prof, tenantId);
     const { error } = await supabaseFetch('df_professionals?on_conflict=tenant_id', {

@@ -16,6 +16,7 @@ import {
   ShieldAlert,
   ArrowLeft,
   AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import { db } from '../../lib/db';
 import { User, ClinicTenant } from '../../types';
@@ -51,18 +52,36 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
   const [showRegConfirmPassword, setShowRegConfirmPassword] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(true);
 
-  // Password Recovery form states
+  // Password Recovery linear state machine
+  type RecoveryViewStage =
+    | 'request'                 // 1. Digitar e-mail
+    | 'sent'                    // 2. Confirmação elegante "Verifique seu e-mail"
+    | 'expired'                 // 3. "Link de Redefinição Expirado"
+    | 'invalid_link'            // 4. "Este link de redefinição não é válido ou expirou"
+    | 'set_new_password'        // 5. "Definir Nova Senha" (apenas com contexto válido)
+    | 'password_updated';       // 6. "Senha alterada com sucesso"
+
   const [recoveryEmail, setRecoveryEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false);
-  const [forceResetMode, setForceResetMode] = useState(false);
-  const [isLinkExpired, setIsLinkExpired] = useState(false);
+  const [recoveryStage, setRecoveryStage] = useState<RecoveryViewStage>('request');
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
+
+  // Cooldown timer para o botão "Reenviar link"
+  React.useEffect(() => {
+    if (cooldownSeconds <= 0) return;
+    const timer = setInterval(() => {
+      setCooldownSeconds((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldownSeconds]);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
 
+    const pathname = window.location.pathname || '';
     const hash = window.location.hash ? window.location.hash.substring(1) : '';
     const search = window.location.search ? window.location.search.substring(1) : '';
     const hashParams = new URLSearchParams(hash);
@@ -80,10 +99,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
       (error === 'access_denied' && (errorCode === 'otp_expired' || errorDesc.includes('expired')));
 
     if (hasOtpExpired) {
-      setIsLinkExpired(true);
       setMode('recovery');
-      setForceResetMode(false);
-      // Limpar URL para não repetir o erro no F5
+      setRecoveryStage('expired');
       try {
         window.history.replaceState({}, document.title, window.location.pathname);
       } catch (e) {}
@@ -91,10 +108,25 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
     }
 
     const isRecovery = db.getIsPasswordRecovery();
-    if (isRecovery || type === 'recovery' || hash.includes('type=recovery') || search.includes('type=recovery')) {
+    const hasRecoveryTokens =
+      type === 'recovery' ||
+      hash.includes('type=recovery') ||
+      search.includes('type=recovery') ||
+      hash.includes('access_token=');
+
+    if (isRecovery || hasRecoveryTokens) {
       setMode('recovery');
-      setForceResetMode(true);
-      setIsLinkExpired(false);
+      setRecoveryStage('set_new_password');
+      try {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (e) {}
+      return;
+    }
+
+    // Se o usuário navegou diretamente para a rota /auth/recovery sem contexto válido de recuperação:
+    if (pathname.includes('/auth/recovery')) {
+      setMode('recovery');
+      setRecoveryStage('invalid_link');
       try {
         window.history.replaceState({}, document.title, window.location.pathname);
       } catch (e) {}
@@ -105,8 +137,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
     const unsub = db.subscribe(() => {
       if (db.getIsPasswordRecovery()) {
         setMode('recovery');
-        setForceResetMode(true);
-        setIsLinkExpired(false);
+        setRecoveryStage('set_new_password');
       }
     });
     return () => unsub();
@@ -212,8 +243,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
   };
 
   // 4. Handle Password Recovery Email Request (Supabase Auth)
-  const handleRequestRecoveryToken = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleRequestRecoveryToken = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
 
@@ -226,7 +257,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
     try {
       const res = await db.requestPasswordReset(recoveryEmail);
       setIsLoading(false);
-      setSuccessMsg(res.message);
+      // Muda imediatamente para o estado de confirmação elegante
+      setRecoveryStage('sent');
+      setCooldownSeconds(60);
     } catch (err: any) {
       setIsLoading(false);
       setErrorMsg(err.message || 'Erro ao processar solicitação de recuperação.');
@@ -258,18 +291,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
       }
 
       toast.success('Senha redefinida com sucesso! Você já pode entrar com sua nova senha.');
-      setSuccessMsg('Senha atualizada com sucesso. Faça login com suas novas credenciais.');
       db.setIsPasswordRecovery(false);
-      setMode('login');
-      setForceResetMode(false);
-      setIsLinkExpired(false);
-      if (recoveryEmail) {
-        setIdentifier(recoveryEmail);
-      }
-      setPassword(newPassword);
-      if (onRecoveryDone) {
-        onRecoveryDone();
-      }
+      setRecoveryStage('password_updated');
     } catch (err: any) {
       setIsLoading(false);
       setErrorMsg(err.message || 'Erro ao processar nova senha.');
@@ -489,6 +512,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
                     onClick={() => {
                       setErrorMsg('');
                       setSuccessMsg('');
+                      setRecoveryStage('request');
                       setMode('recovery');
                     }}
                     className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
@@ -738,8 +762,129 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
           {/* MODE 3: PASSWORD RECOVERY */}
           {mode === 'recovery' && (
             <div className="space-y-6">
-              {isLinkExpired ? (
-                /* CARD DEDICADO: LINK EXPIRADO OU JÁ UTILIZADO */
+              {/* ETAPA 1: CONFIRMAÇÃO DE ENVIO DO LINK */}
+              {recoveryStage === 'sent' && (
+                <div className="space-y-6">
+                  <div className="text-center space-y-3">
+                    <div className="w-14 h-14 bg-emerald-50 border border-emerald-200 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto shadow-xs">
+                      <Mail className="w-7 h-7" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                        Verifique seu e-mail
+                      </h2>
+                      <p className="text-sm text-slate-600 leading-relaxed max-w-sm mx-auto">
+                        Se o endereço informado estiver cadastrado em nossa plataforma, enviamos um link seguro para redefinição de sua senha.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-2">
+                    <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      <span>Instruções de segurança:</span>
+                    </div>
+                    <p className="text-slate-500 leading-relaxed">
+                      Clique no link recebido para cadastrar sua nova senha. Caso não localize a mensagem na caixa de entrada em até 2 minutos, verifique sua pasta de Spam ou Lixo Eletrônico.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    <button
+                      type="button"
+                      disabled={cooldownSeconds > 0 || isLoading}
+                      onClick={() => handleRequestRecoveryToken()}
+                      className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+                      <span>
+                        {cooldownSeconds > 0
+                          ? `Reenviar link (${cooldownSeconds}s)`
+                          : isLoading
+                          ? 'Reenviando...'
+                          : 'Reenviar link'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecoveryStage('request');
+                        setMode('login');
+                        setErrorMsg('');
+                        setSuccessMsg('');
+                        if (onRecoveryDone) onRecoveryDone();
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      <span>Voltar ao login</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ETAPA 2: LINK INVÁLIDO OU ACESSO DIRETO SEM TOKEN */}
+              {recoveryStage === 'invalid_link' && (
+                <div className="space-y-6">
+                  <div className="text-center space-y-3">
+                    <div className="w-14 h-14 bg-amber-50 border border-amber-200 text-amber-600 rounded-2xl flex items-center justify-center mx-auto shadow-xs">
+                      <ShieldAlert className="w-7 h-7" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                        Link Inválido ou Inexistente
+                      </h2>
+                      <p className="text-sm text-slate-600 leading-relaxed max-w-sm mx-auto">
+                        Este link de redefinição não é válido ou expirou.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-2">
+                    <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-500" />
+                      <span>Acesso protegido:</span>
+                    </div>
+                    <p className="text-slate-500 leading-relaxed">
+                      Por motivos de segurança e integridade criptográfica, a definição de nova senha exige um link de uso único enviado diretamente ao seu e-mail cadastrado.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecoveryStage('request');
+                        setErrorMsg('');
+                        setSuccessMsg('');
+                      }}
+                      className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <KeyRound className="w-4 h-4" />
+                      <span>Enviar novo link</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecoveryStage('request');
+                        setMode('login');
+                        setErrorMsg('');
+                        setSuccessMsg('');
+                        if (onRecoveryDone) onRecoveryDone();
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      <span>Voltar ao login</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ETAPA 3: LINK EXPIRADO OU OTP EXPIRADO */}
+              {recoveryStage === 'expired' && (
                 <div className="space-y-6">
                   <div className="text-center space-y-3">
                     <div className="w-14 h-14 bg-amber-50 border border-amber-200 text-amber-600 rounded-2xl flex items-center justify-center mx-auto shadow-xs">
@@ -769,8 +914,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
                     <button
                       type="button"
                       onClick={() => {
-                        setIsLinkExpired(false);
-                        setForceResetMode(false);
+                        setRecoveryStage('request');
                         setErrorMsg('');
                         setSuccessMsg('');
                       }}
@@ -783,10 +927,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
                     <button
                       type="button"
                       onClick={() => {
-                        setIsLinkExpired(false);
+                        setRecoveryStage('request');
                         setMode('login');
                         setErrorMsg('');
                         setSuccessMsg('');
+                        if (onRecoveryDone) onRecoveryDone();
                       }}
                       className="w-full py-2.5 px-4 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
                     >
@@ -795,14 +940,19 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
                     </button>
                   </div>
                 </div>
-              ) : (
-                <>
+              )}
+
+              {/* ETAPA 4: DEFINIR NOVA SENHA (COM CONTEXTO VÁLIDO DE RECUPERAÇÃO) */}
+              {recoveryStage === 'set_new_password' && (
+                <div className="space-y-6">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
                         db.setIsPasswordRecovery(false);
+                        setRecoveryStage('request');
                         setMode('login');
+                        if (onRecoveryDone) onRecoveryDone();
                       }}
                       className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 cursor-pointer"
                       title="Voltar ao login"
@@ -811,143 +961,197 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
                     </button>
                     <div>
                       <h2 className="text-2xl font-black text-slate-900 tracking-tight">
-                        {forceResetMode ? 'Definir Nova Senha' : 'Recuperação de Senha'}
+                        Definir Nova Senha
                       </h2>
                       <p className="text-xs text-slate-500">
-                        {forceResetMode
-                          ? 'Crie uma nova senha de acesso segura para sua conta'
-                          : 'Redefina sua senha de acesso com segurança criptográfica'}
+                        Crie uma nova senha de acesso segura para sua conta
                       </p>
                     </div>
                   </div>
 
-                  {!forceResetMode ? (
-                    <form onSubmit={handleRequestRecoveryToken} className="space-y-4">
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                          E-mail Cadastrado
+                  <form onSubmit={handleResetPassword} className="space-y-4">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                          Nova Senha
                         </label>
-                        <div className="relative">
-                          <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                          <input
-                            type="email"
-                            required
-                            value={recoveryEmail}
-                            onChange={(e) => setRecoveryEmail(e.target.value)}
-                            placeholder="seu.email@clinica.com.br"
-                            className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                          />
-                        </div>
+                        <span className="text-[11px] text-slate-400 font-medium">Mínimo 6 caracteres</span>
                       </div>
-
-                      <button
-                        type="submit"
-                        disabled={isLoading}
-                        className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                      >
-                        <KeyRound className="w-4 h-4" />
-                        <span>{isLoading ? 'Enviando...' : 'Enviar Link de Recuperação'}</span>
-                      </button>
-
-                      <div className="text-center pt-1">
+                      <div className="relative">
+                        <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type={showNewPassword ? 'text' : 'password'}
+                          required
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="••••••••"
+                          minLength={6}
+                          className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                        />
                         <button
                           type="button"
-                          onClick={() => setForceResetMode(true)}
-                          className="text-[11px] text-slate-500 hover:text-emerald-700 underline cursor-pointer"
+                          onClick={() => setShowNewPassword(!showNewPassword)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
                         >
-                          Já recebi o link por e-mail? Cadastrar nova senha
+                          {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
-                    </form>
-                  ) : (
-                    <form onSubmit={handleResetPassword} className="space-y-4">
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                            Nova Senha
-                          </label>
-                          <span className="text-[11px] text-slate-400 font-medium">Mínimo 6 caracteres</span>
-                        </div>
-                        <div className="relative">
-                          <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                          <input
-                            type={showNewPassword ? 'text' : 'password'}
-                            required
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="••••••••"
-                            minLength={6}
-                            className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowNewPassword(!showNewPassword)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-                          >
-                            {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                      </div>
+                    </div>
 
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                          Confirmar Nova Senha
-                        </label>
-                        <div className="relative">
-                          <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                          <input
-                            type={showConfirmNewPassword ? 'text' : 'password'}
-                            required
-                            value={confirmNewPassword}
-                            onChange={(e) => setConfirmNewPassword(e.target.value)}
-                            placeholder="••••••••"
-                            minLength={6}
-                            className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowConfirmNewPassword(!showConfirmNewPassword)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-                          >
-                            {showConfirmNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                      </div>
-
-                      <button
-                        type="submit"
-                        disabled={isLoading}
-                        className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                      >
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>{isLoading ? 'Salvando...' : 'Salvar Nova Senha & Entrar'}</span>
-                      </button>
-
-                      <div className="text-center pt-1">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                        Confirmar Nova Senha
+                      </label>
+                      <div className="relative">
+                        <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type={showConfirmNewPassword ? 'text' : 'password'}
+                          required
+                          value={confirmNewPassword}
+                          onChange={(e) => setConfirmNewPassword(e.target.value)}
+                          placeholder="••••••••"
+                          minLength={6}
+                          className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                        />
                         <button
                           type="button"
-                          onClick={() => setForceResetMode(false)}
-                          className="text-[11px] text-slate-500 hover:text-slate-700 underline cursor-pointer"
+                          onClick={() => setShowConfirmNewPassword(!showConfirmNewPassword)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
                         >
-                          Voltar para solicitação de link
+                          {showConfirmNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
-                    </form>
-                  )}
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isLoading}
+                      className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>{isLoading ? 'Salvando...' : 'Salvar Nova Senha & Entrar'}</span>
+                    </button>
+                  </form>
 
                   <div className="text-center pt-2">
                     <button
                       type="button"
                       onClick={() => {
                         db.setIsPasswordRecovery(false);
+                        setRecoveryStage('request');
                         setMode('login');
+                        if (onRecoveryDone) onRecoveryDone();
                       }}
                       className="text-xs text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
                     >
                       Voltar para o Login
                     </button>
                   </div>
-                </>
+                </div>
+              )}
+
+              {/* ETAPA 5: SUCESSO APÓS ALTERAÇÃO DA SENHA */}
+              {recoveryStage === 'password_updated' && (
+                <div className="space-y-6">
+                  <div className="text-center space-y-3">
+                    <div className="w-14 h-14 bg-emerald-50 border border-emerald-200 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto shadow-xs">
+                      <CheckCircle2 className="w-7 h-7" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                        Senha alterada com sucesso!
+                      </h2>
+                      <p className="text-sm text-slate-600 leading-relaxed max-w-sm mx-auto">
+                        Sua nova senha de acesso foi registrada com segurança. Você já pode entrar em sua conta utilizando suas novas credenciais.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecoveryStage('request');
+                        setMode('login');
+                        setErrorMsg('');
+                        setSuccessMsg('Senha alterada com sucesso. Faça login para continuar.');
+                        if (onRecoveryDone) onRecoveryDone();
+                      }}
+                      className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <span>Ir para o Login</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ETAPA 6: FORMULÁRIO DE SOLICITAÇÃO DE LINK (SEM LINK PREMATURO) */}
+              {recoveryStage === 'request' && (
+                <div className="space-y-6">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('login');
+                        if (onRecoveryDone) onRecoveryDone();
+                      }}
+                      className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 cursor-pointer"
+                      title="Voltar ao login"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <div>
+                      <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                        Recuperação de Senha
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        Informe seu e-mail para receber um link seguro de redefinição
+                      </p>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleRequestRecoveryToken} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                        E-mail Cadastrado
+                      </label>
+                      <div className="relative">
+                        <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="email"
+                          required
+                          value={recoveryEmail}
+                          onChange={(e) => setRecoveryEmail(e.target.value)}
+                          placeholder="seu.email@clinica.com.br"
+                          className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isLoading}
+                      className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      <KeyRound className="w-4 h-4" />
+                      <span>{isLoading ? 'Enviando...' : 'Enviar Link de Recuperação'}</span>
+                    </button>
+                  </form>
+
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMode('login');
+                        if (onRecoveryDone) onRecoveryDone();
+                      }}
+                      className="text-xs text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
+                    >
+                      Voltar para o Login
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
           )}

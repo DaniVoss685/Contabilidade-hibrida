@@ -57,11 +57,8 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-sm font-bold text-slate-900 tracking-tight leading-snug truncate">
-                {professional.name}
+                {organization.name || professional.nomeFantasia || professional.razaoSocial || 'Clínica sem nome'}
               </h1>
-              <span className="hidden sm:inline-flex items-center px-1.5 py-0.2 rounded-md text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200/70">
-                CRO-{professional.croUf} {professional.cro}
-              </span>
               {isDemo && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs" title="Ambiente com dados fictícios para demonstração">
                   <Sparkles className="w-3 h-3 text-amber-600" />
@@ -69,8 +66,14 @@ export const Header: React.FC<HeaderProps> = ({
                 </span>
               )}
             </div>
-            <p className="text-[11px] text-slate-400 font-medium truncate">
-              {organization.name}
+            <p className="text-[11px] text-slate-500 font-medium truncate flex items-center gap-1.5">
+              <span>{professional.name}</span>
+              {professional.cro && (
+                <>
+                  <span className="opacity-40">•</span>
+                  <span>CRO-{professional.croUf} {professional.cro}</span>
+                </>
+              )}
             </p>
           </div>
         </div>

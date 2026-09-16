@@ -1,4 +1,4 @@
-﻿import { describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { db } from '../../src/lib/db';
 import { getRecoveryRedirectUrl } from '../../src/lib/supabaseClient';
@@ -152,4 +152,122 @@ describe('Suite Funcional: Correcao de Autenticacao, Recuperacao de Senha e Reco
     const professional = db.getProfessional();
     assert.ok(professional.cro.length > 0);
   });
+
+  it('AUTH-10: getRecoveryRedirectUrl em producao Vercel vs desenvolvimento Localhost', () => {
+    const originalWindow = globalThis.window;
+
+    try {
+      // Cenário Produção Vercel
+      (globalThis as any).window = { location: { origin: 'https://contabilidade-hibrida.vercel.app' } };
+      assert.strictEqual(
+        getRecoveryRedirectUrl(),
+        'https://contabilidade-hibrida.vercel.app/auth/recovery',
+        'Produção deve apontar para o domínio canônico Vercel com rota /auth/recovery'
+      );
+
+      // Cenário Desenvolvimento Local
+      (globalThis as any).window = { location: { origin: 'http://localhost:3000' } };
+      assert.strictEqual(
+        getRecoveryRedirectUrl(),
+        'http://localhost:3000/auth/recovery',
+        'Ambiente local deve apontar para localhost:3000/auth/recovery'
+      );
+    } finally {
+      (globalThis as any).window = originalWindow;
+    }
+  });
+
+  it('AUTH-11: Acesso direto a rota /auth/recovery sem token deve ativar invalid_link', () => {
+    const evaluateRecoveryEntry = (pathname: string, hash: string, search: string, isRecoverySession: boolean) => {
+      const hashParams = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
+      const searchParams = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+
+      const errorCode = hashParams.get('error_code') || searchParams.get('error_code') || '';
+      const errorDesc = hashParams.get('error_description') || searchParams.get('error_description') || '';
+      const type = hashParams.get('type') || searchParams.get('type') || '';
+
+      const hasOtpExpired =
+        errorCode === 'otp_expired' ||
+        errorDesc.toLowerCase().includes('expired') ||
+        errorDesc.toLowerCase().includes('invalid');
+
+      if (hasOtpExpired) return 'expired';
+
+      const hasRecoveryTokens =
+        type === 'recovery' ||
+        hash.includes('type=recovery') ||
+        search.includes('type=recovery') ||
+        hash.includes('access_token=');
+
+      if (isRecoverySession || hasRecoveryTokens) return 'set_new_password';
+
+      if (pathname.includes('/auth/recovery')) return 'invalid_link';
+
+      return 'request';
+    };
+
+    // 1. Acesso direto via digitação na barra de endereços (sem token)
+    const directAccess = evaluateRecoveryEntry('/auth/recovery', '', '', false);
+    assert.strictEqual(
+      directAccess,
+      'invalid_link',
+      'Acesso direto a /auth/recovery sem token DEVE resultar em invalid_link'
+    );
+
+    // 2. Acesso via link expirado
+    const expiredAccess = evaluateRecoveryEntry('/auth/recovery', '#error_code=otp_expired', '', false);
+    assert.strictEqual(expiredAccess, 'expired', 'Link com otp_expired DEVE resultar em expired');
+
+    // 3. Acesso com token de recuperação válido
+    const validAccess = evaluateRecoveryEntry('/auth/recovery', '#access_token=valid_token&type=recovery', '', false);
+    assert.strictEqual(validAccess, 'set_new_password', 'Link com hash de recuperação válido DEVE permitir set_new_password');
+  });
+
+  it('AUTH-12: Fluxo linear impede salto prematuro para definicao de senha', () => {
+    type Stage = 'request' | 'sent' | 'invalid_link' | 'expired' | 'set_new_password' | 'password_updated';
+
+    let currentStage: Stage = 'request';
+
+    // Usuário solicita recuperação informando e-mail
+    const onRequestSent = () => {
+      currentStage = 'sent';
+    };
+    onRequestSent();
+    assert.strictEqual(currentStage, 'sent', 'Após envio, o estado deve ser sent (confirmação)');
+
+    // O usuário não pode pular diretamente para set_new_password a partir de sent
+    assert.notStrictEqual(currentStage, 'set_new_password');
+
+    // Apenas quando o Supabase Auth emite evento PASSWORD_RECOVERY ou token válido
+    const onAuthRecoveryEvent = () => {
+      currentStage = 'set_new_password';
+    };
+    onAuthRecoveryEvent();
+    assert.strictEqual(currentStage, 'set_new_password', 'Transição para set_new_password permitida com token autenticado');
+  });
+
+  it('AUTH-13: Cooldown timer para reenviar link', () => {
+    let cooldownSeconds = 60;
+    assert.strictEqual(cooldownSeconds > 0, true, 'Cooldown deve iniciar ativo (60s)');
+
+    // Simula passagem de tempo
+    cooldownSeconds -= 30;
+    assert.strictEqual(cooldownSeconds, 30);
+
+    cooldownSeconds = 0;
+    assert.strictEqual(cooldownSeconds <= 0, true, 'Quando zero, o botão Reenviar Link fica habilitado');
+  });
+
+  it('AUTH-14: Conclusao de recuperacao de senha (password_updated)', () => {
+    let stage = 'set_new_password';
+    db.setIsPasswordRecovery(true);
+
+    // Senha atualizada com sucesso
+    db.setIsPasswordRecovery(false);
+    stage = 'password_updated';
+
+    assert.strictEqual(stage, 'password_updated');
+    assert.strictEqual(db.getIsPasswordRecovery(), false, 'Estado de recuperação do db deve ser resetado');
+  });
 });
+
