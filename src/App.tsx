@@ -71,7 +71,14 @@ function AppContent() {
       SupabaseService.getAllTenantsForSupport()
         .then((tenants) => {
           if (tenants && tenants.length > 0) {
-            setAvailableClinics(tenants);
+            // Filtrar rigorosamente clínicas de demonstração e teste para manter apenas reais
+            const filtered = tenants.filter(
+              (t) =>
+                t.tenant_id !== 'tenant_demo' &&
+                !t.clinic_name.toLowerCase().includes('demo') &&
+                !t.clinic_name.toLowerCase().includes('teste')
+            );
+            setAvailableClinics(filtered);
           }
         })
         .catch((err) => {
@@ -134,6 +141,7 @@ function AppContent() {
   };
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [maskCpf, setMaskCpf] = useState(false); // CPF always displayed completely as required
 
   // Global Period Filter State - Dynamic real environment date
@@ -282,86 +290,6 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased">
-      {/* Primary Account Consulting Switcher Bar */}
-      {isPrimaryAccount && (
-        <div className={`px-4 py-2 text-xs font-semibold flex flex-wrap items-center justify-between gap-3 shadow-xs sticky top-0 z-50 transition-colors ${
-          currentSession?.supportSession ? 'bg-amber-500 text-slate-950' : 'bg-slate-900 text-white'
-        }`}>
-          <div className="flex items-center gap-2">
-            {currentSession?.supportSession ? (
-              <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
-            ) : (
-              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-            )}
-            <span>
-              {currentSession?.supportSession ? (
-                <>
-                  <strong>MODO CONSULTORIA ATIVO:</strong> Gerenciando a clínica <u>{currentSession.supportSession.targetTenantName || organization.name}</u> (Todas as alterações refletem na conta do cliente).
-                </>
-              ) : (
-                <>
-                  <strong>ACESSO PRIMÁRIO CONSULTORIA:</strong> {currentSession?.user?.email} — Clínica Atual: {organization.name}
-                </>
-              )}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2 ml-auto">
-            <label className="text-[11px] opacity-90 hidden sm:inline">
-              Alternar Clínica:
-            </label>
-            <select
-              value={currentSession?.supportSession?.targetTenantId || currentSession?.tenantId || ''}
-              onChange={(e) => handleSelectClinic(e.target.value)}
-              disabled={isSwitchingClinic}
-              className={`text-xs rounded-lg px-2.5 py-1 font-medium cursor-pointer border focus:outline-none ${
-                currentSession?.supportSession
-                  ? 'bg-amber-100 text-slate-900 border-amber-600 focus:ring-2 focus:ring-amber-700'
-                  : 'bg-slate-800 text-white border-slate-700 focus:ring-2 focus:ring-emerald-500'
-              }`}
-            >
-              <option value="" disabled>Selecione um cliente...</option>
-              {availableClinics.map((c) => (
-                <option key={c.tenant_id} value={c.tenant_id}>
-                  {c.clinic_name} {c.trade_name && c.trade_name !== c.clinic_name ? `(${c.trade_name})` : ''}
-                </option>
-              ))}
-            </select>
-
-            {currentSession?.supportSession && (
-              <button
-                onClick={handleReturnToPrimary}
-                disabled={isSwitchingClinic}
-                className="px-3 py-1 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0"
-              >
-                Voltar à Minha Conta
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Non-Primary Support Banner */}
-      {!isPrimaryAccount && currentSession?.supportSession && (
-        <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-xs sticky top-0 z-50">
-          <div className="flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
-            <span>
-              <strong>MODO SUPORTE ATIVO:</strong> Você está acessando a clínica <u>{currentSession.supportSession.targetTenantName || organization.name}</u> como suporte ({currentSession.supportSession.originalAdminName}). Motivo: "{currentSession.supportSession.reason}". Todas as ações são auditadas.
-            </span>
-          </div>
-          <button
-            onClick={() => {
-              db.endSupportSession();
-              toast.info('Sessão de suporte encerrada com sucesso.');
-            }}
-            className="px-3 py-1 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0 ml-4"
-          >
-            Sair do modo suporte
-          </button>
-        </div>
-      )}
-
       <div className="flex-1 flex min-w-0">
         {/* Sidebar Navigation */}
         <Sidebar
@@ -373,10 +301,119 @@ function AppContent() {
           isOpenMobile={mobileMenuOpen}
           onCloseMobile={() => setMobileMenuOpen(false)}
           onLogout={handleLogout}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapse={setIsSidebarCollapsed}
         />
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0 lg:pl-64">
+        <div
+          className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${
+            isSidebarCollapsed ? 'lg:pl-20' : 'lg:pl-68'
+          }`}
+        >
+          {/* Primary Account Consulting Switcher Bar (sem corte de layout e sem exibição de email) */}
+          {isPrimaryAccount && (
+            <div
+              className={`px-4 py-2.5 text-xs font-semibold flex flex-wrap items-center justify-between gap-3 shadow-xs sticky top-0 z-40 transition-colors ${
+                currentSession?.supportSession
+                  ? 'bg-amber-500 text-slate-950'
+                  : 'bg-slate-900 text-white'
+              }`}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                {currentSession?.supportSession ? (
+                  <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
+                ) : (
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                )}
+                <div className="flex items-center gap-2 truncate">
+                  {currentSession?.supportSession ? (
+                    <span>
+                      <strong className="uppercase font-bold tracking-wide">Modo Consultoria Ativo:</strong>{' '}
+                      Gerenciando <u>{currentSession.supportSession.targetTenantName || organization.name}</u>
+                    </span>
+                  ) : (
+                    <span>
+                      <strong className="uppercase font-bold tracking-wide text-emerald-400">
+                        Consultoria & Acesso Contábil
+                      </strong>
+                      <span className="mx-2 opacity-50">•</span>
+                      <span className="opacity-90">Clínica Ativa:</span>{' '}
+                      <strong className="text-white font-bold">{organization.name}</strong>
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 ml-auto shrink-0">
+                <label className="text-[11px] opacity-90 hidden sm:inline">
+                  Alternar Clínica:
+                </label>
+                <select
+                  value={
+                    currentSession?.supportSession?.targetTenantId ||
+                    currentSession?.tenantId ||
+                    ''
+                  }
+                  onChange={(e) => handleSelectClinic(e.target.value)}
+                  disabled={isSwitchingClinic}
+                  className={`text-xs rounded-lg px-3 py-1.5 font-semibold cursor-pointer border shadow-xs focus:outline-none transition-all ${
+                    currentSession?.supportSession
+                      ? 'bg-white text-slate-900 border-amber-600 focus:ring-2 focus:ring-amber-800'
+                      : 'bg-slate-800 text-white border-slate-700 hover:bg-slate-750 focus:ring-2 focus:ring-emerald-500'
+                  }`}
+                >
+                  <option value="" disabled>
+                    Selecione uma clínica...
+                  </option>
+                  {availableClinics.map((c) => {
+                    const subtitle =
+                      c.owner_name || c.owner_email
+                        ? ` — ${c.owner_name || c.owner_email}`
+                        : '';
+                    return (
+                      <option key={c.tenant_id} value={c.tenant_id}>
+                        {c.clinic_name}
+                        {subtitle}
+                      </option>
+                    );
+                  })}
+                </select>
+
+                {currentSession?.supportSession && (
+                  <button
+                    onClick={handleReturnToPrimary}
+                    disabled={isSwitchingClinic}
+                    className="px-3 py-1.5 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0 shadow-xs"
+                  >
+                    Voltar à Minha Conta
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Non-Primary Support Banner */}
+          {!isPrimaryAccount && currentSession?.supportSession && (
+            <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-xs sticky top-0 z-40">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
+                <span>
+                  <strong>MODO SUPORTE ATIVO:</strong> Visualizando{' '}
+                  <u>{currentSession.supportSession.targetTenantName || organization.name}</u>
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  db.endSupportSession();
+                  toast.info('Sessão de suporte encerrada com sucesso.');
+                }}
+                className="px-3 py-1 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0 ml-4 shadow-xs"
+              >
+                Sair do modo suporte
+              </button>
+            </div>
+          )}
           {/* Top Header */}
           <Header
             organization={organization}

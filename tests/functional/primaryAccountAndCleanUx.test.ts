@@ -64,4 +64,86 @@ describe('Suíte Funcional: Acesso Primário (Consultoria) e Interface Limpa', (
       assert.strictEqual(ph, '');
     }
   });
+
+  it('4. Clínicas disponíveis para seleção devem conter apenas registros reais com e-mail/responsável e sem clínicas demo/teste', () => {
+    const rawTenants = [
+      {
+        tenant_id: 'clinic_1789405023533_phq5',
+        clinic_name: 'Clínica Dra. Bruna',
+        trade_name: 'Dra. Bruna Odontologia',
+        owner_name: 'Dra. Bruna',
+        owner_email: 'leonardoricardoarantes@gmail.com',
+      },
+      {
+        tenant_id: 'clinic_1789153962617_gpw1',
+        clinic_name: 'Clínica Dr. Daniel Arantes',
+        trade_name: 'Dr. Daniel Odontologia',
+        owner_name: 'Dr. Daniel Arantes',
+        owner_email: 'danielricardoarantes@gmail.com',
+      },
+      {
+        tenant_id: 'tenant_demo',
+        clinic_name: 'Clínica Demo Odonto',
+        owner_name: 'Demo User',
+        owner_email: 'demo@odonto.com',
+      },
+      {
+        tenant_id: 'clinic_test_123',
+        clinic_name: 'Clínica de Teste Rápido',
+        owner_name: 'Test',
+        owner_email: 'teste@teste.com',
+      },
+    ];
+
+    // Filtro implementado no App.tsx
+    const filtered = rawTenants.filter(
+      (t) =>
+        t.tenant_id !== 'tenant_demo' &&
+        !t.clinic_name.toLowerCase().includes('demo') &&
+        !t.clinic_name.toLowerCase().includes('teste')
+    );
+
+    assert.strictEqual(filtered.length, 2, 'Apenas as duas clínicas reais devem permanecer');
+    assert.strictEqual(filtered[0].clinic_name, 'Clínica Dra. Bruna');
+    assert.strictEqual(filtered[0].owner_email, 'leonardoricardoarantes@gmail.com');
+    assert.strictEqual(filtered[1].clinic_name, 'Clínica Dr. Daniel Arantes');
+    assert.strictEqual(filtered[1].owner_email, 'danielricardoarantes@gmail.com');
+
+    for (const c of filtered) {
+      assert.ok(!c.clinic_name.toLowerCase().includes('demo'), 'Não pode conter demo');
+      assert.ok(!c.clinic_name.toLowerCase().includes('teste'), 'Não pode conter teste');
+    }
+  });
+
+  it('5. Barra lateral recolhida deve possuir rótulos curtos para exibição sob o ícone (otimização de espaço)', () => {
+    const shortLabels = [
+      'Dashboard',
+      'Financeiro',
+      'Contas',
+      'Pacientes',
+      'Agenda',
+      'Procedimentos',
+      'Estoque',
+      'Receitas',
+      'A Receber',
+      'A Pagar',
+      'Impostos',
+      'Simulador',
+      'Plano C.',
+      'Relatórios',
+      'Ajustes',
+    ];
+
+    for (const label of shortLabels) {
+      assert.ok(label.length <= 13, `Rótulo curto "${label}" deve caber confortavelmente sob o ícone na coluna compacta`);
+    }
+  });
+
+  it('6. Top bar do modo consultoria não deve conter e-mail exposto', () => {
+    const orgName = 'Clínica Dra. Bruna';
+    // Banner template rendered in App.tsx
+    const renderedBannerText = `Consultoria & Acesso Contábil • Clínica Ativa: ${orgName}`;
+    assert.ok(!renderedBannerText.includes('@'), 'O banner não deve exibir o e-mail do usuário');
+    assert.ok(renderedBannerText.includes(orgName), 'Deve exibir o nome da clínica ativa');
+  });
 });

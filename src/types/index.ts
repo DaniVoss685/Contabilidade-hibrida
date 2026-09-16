@@ -52,6 +52,8 @@ export interface DentalTenantOption {
   tenant_id: string;
   clinic_name: string;
   trade_name?: string;
+  owner_name?: string;
+  owner_email?: string;
   total_users: number;
   created_at: string;
 }

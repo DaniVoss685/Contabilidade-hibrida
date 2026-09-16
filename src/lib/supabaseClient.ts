@@ -804,6 +804,8 @@ export const SupabaseService = {
         tenant_id: t.tenant_id,
         clinic_name: t.clinic_name || t.trade_name || 'Clínica',
         trade_name: t.trade_name,
+        owner_name: t.owner_name,
+        owner_email: t.owner_email,
         total_users: Number(t.total_users || 0),
         created_at: t.created_at,
       }));
