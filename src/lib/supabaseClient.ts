@@ -815,6 +815,65 @@ export const SupabaseService = {
     }
   },
 
+  /**
+   * Reconcilia um usuário existente (caso legado) ou provisiona atômica e seguramente
+   * uma nova clínica para novo cadastro no Supabase.
+   */
+  async reconcileOrProvisionDentalUser(params?: {
+    clinicName?: string;
+    tradeName?: string;
+  }): Promise<{
+    success: boolean;
+    is_reconciled: boolean;
+    tenant_id: string;
+    user_id: string;
+    role: string;
+    clinic_name: string;
+    trade_name?: string;
+    error?: string;
+  }> {
+    try {
+      const { data, error } = await supabase.rpc('reconcile_or_provision_dental_user', {
+        p_clinic_name: params?.clinicName || null,
+        p_trade_name: params?.tradeName || null,
+      });
+
+      if (error) {
+        console.error('[SupabaseService] Erro no RPC reconcile_or_provision_dental_user:', error);
+        return {
+          success: false,
+          is_reconciled: false,
+          tenant_id: '',
+          user_id: '',
+          role: '',
+          clinic_name: '',
+          error: error.message,
+        };
+      }
+
+      return data as {
+        success: boolean;
+        is_reconciled: boolean;
+        tenant_id: string;
+        user_id: string;
+        role: string;
+        clinic_name: string;
+        trade_name?: string;
+      };
+    } catch (err: any) {
+      console.error('[SupabaseService] Exceção em reconcileOrProvisionDentalUser:', err);
+      return {
+        success: false,
+        is_reconciled: false,
+        tenant_id: '',
+        user_id: '',
+        role: '',
+        clinic_name: '',
+        error: err?.message || 'Falha na comunicação de provisionamento com o servidor.',
+      };
+    }
+  },
+
   async getClinic(clinicId: string): Promise<ClinicTenant | null> {
     try {
       const { data, error } = await supabase
@@ -1178,4 +1237,14 @@ export const SupabaseService = {
 
 export const supabaseClient = SupabaseService;
 export default SupabaseService;
+
+/**
+ * Retorna a URL canônica para redirecionamento de recuperação de senha,
+ * adaptando-se automaticamente a localhost ou produção Vercel sem hardcode.
+ */
+export const getRecoveryRedirectUrl = (): string => {
+  if (typeof window === 'undefined') return '';
+  return `${window.location.origin}/auth/recovery`;
+};
+
 

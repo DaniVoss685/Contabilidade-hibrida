@@ -46,6 +46,19 @@ function AppContent() {
   const isDemoMode = db.getIsDemoMode();
   // UI state
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!db.getCurrentSession());
+  const [hasRecoveryUrlParams, setHasRecoveryUrlParams] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const hash = window.location.hash || '';
+    const search = window.location.search || '';
+    return (
+      hash.includes('type=recovery') ||
+      hash.includes('otp_expired') ||
+      hash.includes('access_denied') ||
+      search.includes('type=recovery') ||
+      search.includes('otp_expired') ||
+      search.includes('access_denied')
+    );
+  });
 
   useEffect(() => {
     setIsAuthenticated(!!db.getCurrentSession());
@@ -268,10 +281,20 @@ function AppContent() {
     setIsNewSaleOpen(true);
   };
 
-  if (!isAuthenticated) {
+  const isRecoveryMode = db.getIsPasswordRecovery();
+
+  if (!isAuthenticated || isRecoveryMode || hasRecoveryUrlParams) {
     return (
       <div className="min-h-screen bg-slate-50">
-        <LoginView onLoginSuccess={() => setIsAuthenticated(true)} />
+        <LoginView
+          onLoginSuccess={() => {
+            setHasRecoveryUrlParams(false);
+            setIsAuthenticated(true);
+          }}
+          onRecoveryDone={() => {
+            setHasRecoveryUrlParams(false);
+          }}
+        />
         <ToastContainer />
       </div>
     );

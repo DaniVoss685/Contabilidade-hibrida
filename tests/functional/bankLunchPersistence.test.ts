@@ -152,16 +152,22 @@ async function runBankLunchSuite() {
   }
   if (itauDaniel && !db.hasBankTransactions(itauDaniel.id)) {
     db.addExpense({
+      supplierName: 'Fornecedor Teste',
+      supplierCpfCnpj: '',
       description: 'Despesa Teste Conta Bancária',
       categoryId: 'cat_01_01',
+      categoryCode: '01.01',
+      categoryName: 'Salários',
       value: 100,
-      type: 'UNICA',
+      expenseType: 'UNICA',
       status: 'PAGO',
       dueDate: '2026-09-16',
       paymentDate: '2026-09-16',
       competenceDate: '2026-09-16',
-      isDeductible: true,
-      taxDeductibleType: 'DEDUTIVEL_INTEGRAL',
+      entity: 'CNPJ',
+      dedutivelLivroCaixaPf: 'SIM',
+      impactaFatorRPj: true,
+      despesaOperacionalPj: true,
       bankAccountId: itauDaniel.id,
     });
   }

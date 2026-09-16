@@ -61,7 +61,7 @@ import {
 import { augmentYearlyDataset } from './annualFinanceData';
 import { hashPassword, verifyPassword, generateSalt } from './authCrypto';
 import { isValidEmail } from './masks';
-import { SupabaseService, supabase } from './supabaseClient';
+import { SupabaseService, supabase, getRecoveryRedirectUrl } from './supabaseClient';
 
 export const GLOBAL_STORAGE_KEYS = {
   ACTIVE_TENANT: 'df_active_tenant_v1',
@@ -568,6 +568,15 @@ export class DentalFinanceDB {
       }
     }
 
+    // Previne hidratação precoce caso o usuário acesse link oficial de recuperação de senha
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash || '';
+      const search = window.location.search || '';
+      if (hash.includes('type=recovery') || search.includes('type=recovery')) {
+        this.isPasswordRecoveryMode = true;
+      }
+    }
+
     this.loadTenant(initialTenant, isDemo);
     pruneLocalStorage(initialTenant, false);
 
@@ -593,6 +602,10 @@ export class DentalFinanceDB {
       }
 
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        // Se estiver em modo de recuperação de senha, NÃO sincronizar a sessão de trabalho nem redirecionar para o dashboard!
+        if (this.isPasswordRecoveryMode) {
+          return;
+        }
         if (session?.user && (!this.currentSession || !this.currentSession.isDemo)) {
           await this.syncSessionFromSupabase(session);
         }
@@ -614,6 +627,10 @@ export class DentalFinanceDB {
     supabase.auth.getSession().then(async ({ data: { session }, error }) => {
       if (error) {
         console.warn('[Supabase Auth] Erro ao recuperar sessão no boot:', error);
+      }
+      if (this.isPasswordRecoveryMode) {
+        // Modo de recuperação de senha ativo: preserva a tela de redefinição
+        return;
       }
       if (session?.user && (!this.currentSession || !this.currentSession.isDemo)) {
         await this.syncSessionFromSupabase(session, true /* forceHydrate */);
@@ -1302,20 +1319,98 @@ export class DentalFinanceDB {
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: normalizedEmail,
         password: params.password,
+        options: {
+          data: {
+            app: 'dental_finance',
+            origin: 'dental_finance',
+          },
+        },
       });
 
       if (authError) {
+        console.error('[Supabase Auth] Erro no cadastro:', authError);
+        const msg = authError.message || '';
+        if (msg.toLowerCase().includes('database error saving new user')) {
+          return {
+            success: false,
+            error: 'Não foi possível concluir seu cadastro no momento. Por favor, tente novamente ou contate o suporte.',
+          };
+        }
         return { success: false, error: authError.message };
       }
 
       const authUserId = authData.user?.id;
-      const tenantId = `clinic_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      const userId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
+      // Executa reconciliação segura (caso legado) ou provisionamento atômico (novo usuário) via backend RPC
+      const provRes = await SupabaseService.reconcileOrProvisionDentalUser({
+        clinicName: 'Minha Clínica',
+        tradeName: 'Minha Clínica Odontológica',
+      });
+
+      if (!provRes.success || !provRes.tenant_id) {
+        return {
+          success: false,
+          error: provRes.error || 'Não foi possível vincular sua conta à clínica.',
+        };
+      }
+
+      const tenantId = provRes.tenant_id;
+      const userId = provRes.user_id;
+      const role = (provRes.role || 'OWNER') as any;
+
+      if (provRes.is_reconciled) {
+        // CASO B: Conta reconciliada com sucesso (usuário previamente excluído do Auth mantendo clínica intacta)
+        this.loadTenant(tenantId, false);
+        await this.hydrateTenantAsync(tenantId);
+
+        const currentOrg = this.getOrg();
+        const session: AuthSession = {
+          token: authData.session?.access_token || `sess_${Date.now()}`,
+          authUserId,
+          user: {
+            id: userId,
+            orgId: `org_${tenantId}`,
+            name: normalizedEmail.split('@')[0],
+            email: normalizedEmail,
+            role,
+          },
+          clinic: {
+            id: tenantId,
+            name: provRes.clinic_name || currentOrg.name || 'Minha Clínica',
+            tradeName: provRes.trade_name || currentOrg.tradeName || 'Minha Clínica Odontológica',
+            cnpj: this.professional.cnpj || '',
+            cro: this.professional.cro || '',
+            croUf: this.professional.croUf || 'SP',
+            uf: this.professional.croUf || 'SP',
+            email: normalizedEmail,
+            phone: '',
+            createdAt: currentOrg.createdAt || new Date().toISOString(),
+            isActive: true,
+            isDemo: false,
+          },
+          tenantId,
+          isDemo: false,
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(authData.session?.expires_at ? authData.session.expires_at * 1000 : Date.now() + 3600 * 1000).toISOString(),
+        };
+
+        this.currentSession = session;
+        saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
+        this.log(
+          'CONTA_RECONCILIADA',
+          'USER',
+          userId,
+          `Acesso de usuário legado reconectado com sucesso para ${normalizedEmail}. Dados da clínica preservados.`
+        );
+        this.notify();
+        return { success: true, session };
+      }
+
+      // CASO A: Nova clínica provisionada de forma atômica
       const newClinic: ClinicTenant = {
         id: tenantId,
-        name: 'Minha Clínica',
-        tradeName: 'Minha Clínica Odontológica',
+        name: provRes.clinic_name || 'Minha Clínica',
+        tradeName: provRes.trade_name || 'Minha Clínica Odontológica',
         cnpj: '',
         cro: '',
         croUf: 'SP',
@@ -1332,7 +1427,7 @@ export class DentalFinanceDB {
         email: normalizedEmail,
         authUserId,
         name: normalizedEmail.split('@')[0],
-        role: 'OWNER',
+        role,
         clinicId: tenantId,
         createdAt: new Date().toISOString(),
         isActive: true,
@@ -1439,8 +1534,6 @@ export class DentalFinanceDB {
       saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
       this.loadTenant(tenantId, false);
 
-      await SupabaseService.saveClinic(newClinic);
-      await SupabaseService.saveUser(newUser);
       await SupabaseService.saveProfessional(this.professional, tenantId);
       await SupabaseService.savePreferences(this.preferences, tenantId);
 
@@ -1625,8 +1718,9 @@ export class DentalFinanceDB {
     const cleanEmail = email.trim().toLowerCase();
 
     try {
+      const canonicalRedirect = getRecoveryRedirectUrl();
       await supabase.auth.resetPasswordForEmail(cleanEmail, {
-        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined,
+        redirectTo: canonicalRedirect || (typeof window !== 'undefined' ? window.location.origin : undefined),
       });
     } catch (err) {
       console.warn('[Supabase Auth] Erro na solicitação de reset de senha:', err);
@@ -1656,6 +1750,12 @@ export class DentalFinanceDB {
         return { success: false, error: error.message };
       }
       this.isPasswordRecoveryMode = false;
+      this.log(
+        'PASSWORD_UPDATED',
+        'AUTH',
+        this.currentSession?.user?.email || 'AUTH_USER',
+        'Senha de acesso atualizada com sucesso no Supabase Auth.'
+      );
       this.notify();
       return { success: true };
     } catch (err: any) {

@@ -18,6 +18,9 @@ import {
   Info,
   CreditCard,
   Percent,
+  Lock,
+  KeyRound,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   Professional,
@@ -76,6 +79,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // Mensagem de feedback temporária
   const [scenarioMessage, setScenarioMessage] = useState<string | null>(null);
   const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false);
+
+  // 4. Segurança e Alteração de Senha (Autenticado)
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false);
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+
+  const handleUpdatePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 6) {
+      toast.error('A nova senha deve possuir no mínimo 6 caracteres.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      toast.error('A confirmação de senha não confere com a nova senha digitada.');
+      return;
+    }
+
+    setIsUpdatingPassword(true);
+    try {
+      const res = await db.updatePassword(newPassword);
+      setIsUpdatingPassword(false);
+      if (res.success) {
+        toast.success('Sua senha foi atualizada com sucesso!');
+        setNewPassword('');
+        setConfirmNewPassword('');
+        onRefreshData();
+      } else {
+        toast.error(res.error || 'Não foi possível atualizar a senha.');
+      }
+    } catch (err: any) {
+      setIsUpdatingPassword(false);
+      toast.error(err?.message || 'Erro ao processar a atualização da senha.');
+    }
+  };
 
   // Modal de confirmação para Reset Demo
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -679,6 +718,85 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <p className="text-[11px] text-slate-400 leading-relaxed">
               O Dental Finance adota parâmetros legais auditados e versionados, sem projeções inflacionárias fictícias, garantindo estrita conformidade legal.
             </p>
+          </div>
+
+          {/* Card: Segurança & Alteração de Senha */}
+          <div className="bg-white rounded-2xl border border-slate-200/90 p-5 sm:p-6 shadow-xs space-y-3.5">
+            <div className="pb-3 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
+                <Lock className="w-4 h-4 text-emerald-600" />
+                Segurança & Alteração de Senha
+              </h3>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                <ShieldCheck className="w-3 h-3" /> Supabase Auth
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Altere sua senha de acesso diretamente com segurança criptográfica.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Nova Senha
+                </label>
+                <div className="relative">
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="••••••••"
+                    minLength={6}
+                    className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2 pr-9 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword(!showNewPassword)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                  >
+                    {showNewPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                  Confirmar Nova Senha
+                </label>
+                <div className="relative">
+                  <input
+                    type={showConfirmNewPassword ? 'text' : 'password'}
+                    value={confirmNewPassword}
+                    onChange={(e) => setConfirmNewPassword(e.target.value)}
+                    placeholder="••••••••"
+                    minLength={6}
+                    className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2 pr-9 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmNewPassword(!showConfirmNewPassword)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                  >
+                    {showConfirmNewPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleUpdatePassword}
+                disabled={isUpdatingPassword || !newPassword}
+                className={`w-full py-2.5 px-3 ${
+                  isUpdatingPassword || !newPassword
+                    ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white cursor-pointer shadow-xs hover:shadow'
+                } font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5`}
+              >
+                <CheckCircle className={`w-3.5 h-3.5 ${isUpdatingPassword ? 'animate-spin' : ''}`} />
+                <span>{isUpdatingPassword ? 'Salvando senha...' : 'Salvar Nova Senha'}</span>
+              </button>
+            </div>
           </div>
 
           {/* Card 3: Trilha de Auditoria */}

@@ -15,6 +15,7 @@ import {
   UserPlus,
   ShieldAlert,
   ArrowLeft,
+  AlertTriangle,
 } from 'lucide-react';
 import { db } from '../../lib/db';
 import { User, ClinicTenant } from '../../types';
@@ -22,11 +23,12 @@ import { useToast } from '../UI';
 
 interface LoginViewProps {
   onLoginSuccess: (user: User) => void;
+  onRecoveryDone?: () => void;
 }
 
 type AuthMode = 'login' | 'register' | 'recovery' | 'support';
 
-export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
+export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecoveryDone }) => {
   const toast = useToast();
   const [mode, setMode] = useState<AuthMode>('login');
 
@@ -56,14 +58,58 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false);
   const [forceResetMode, setForceResetMode] = useState(false);
+  const [isLinkExpired, setIsLinkExpired] = useState(false);
 
   React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const hash = window.location.hash ? window.location.hash.substring(1) : '';
+    const search = window.location.search ? window.location.search.substring(1) : '';
+    const hashParams = new URLSearchParams(hash);
+    const searchParams = new URLSearchParams(search);
+
+    const errorCode = hashParams.get('error_code') || searchParams.get('error_code') || '';
+    const error = hashParams.get('error') || searchParams.get('error') || '';
+    const errorDesc = hashParams.get('error_description') || searchParams.get('error_description') || '';
+    const type = hashParams.get('type') || searchParams.get('type') || '';
+
+    const hasOtpExpired =
+      errorCode === 'otp_expired' ||
+      errorDesc.toLowerCase().includes('expired') ||
+      errorDesc.toLowerCase().includes('invalid') ||
+      (error === 'access_denied' && (errorCode === 'otp_expired' || errorDesc.includes('expired')));
+
+    if (hasOtpExpired) {
+      setIsLinkExpired(true);
+      setMode('recovery');
+      setForceResetMode(false);
+      // Limpar URL para não repetir o erro no F5
+      try {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (e) {}
+      return;
+    }
+
     const isRecovery = db.getIsPasswordRecovery();
-    const hash = typeof window !== 'undefined' ? window.location.hash : '';
-    if (isRecovery || hash.includes('type=recovery')) {
+    if (isRecovery || type === 'recovery' || hash.includes('type=recovery') || search.includes('type=recovery')) {
       setMode('recovery');
       setForceResetMode(true);
+      setIsLinkExpired(false);
+      try {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (e) {}
     }
+  }, []);
+
+  React.useEffect(() => {
+    const unsub = db.subscribe(() => {
+      if (db.getIsPasswordRecovery()) {
+        setMode('recovery');
+        setForceResetMode(true);
+        setIsLinkExpired(false);
+      }
+    });
+    return () => unsub();
   }, []);
 
   // Support Mode form states
@@ -211,11 +257,19 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         return;
       }
 
-      toast.success('Senha redefinida com sucesso! Você já pode entrar com a nova senha.');
+      toast.success('Senha redefinida com sucesso! Você já pode entrar com sua nova senha.');
+      setSuccessMsg('Senha atualizada com sucesso. Faça login com suas novas credenciais.');
+      db.setIsPasswordRecovery(false);
       setMode('login');
       setForceResetMode(false);
-      setIdentifier(recoveryEmail);
+      setIsLinkExpired(false);
+      if (recoveryEmail) {
+        setIdentifier(recoveryEmail);
+      }
       setPassword(newPassword);
+      if (onRecoveryDone) {
+        onRecoveryDone();
+      }
     } catch (err: any) {
       setIsLoading(false);
       setErrorMsg(err.message || 'Erro ao processar nova senha.');
@@ -684,147 +738,217 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
           {/* MODE 3: PASSWORD RECOVERY */}
           {mode === 'recovery' && (
             <div className="space-y-6">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMode('login')}
-                  className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 cursor-pointer"
-                  title="Voltar ao login"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                </button>
-                <div>
-                  <h2 className="text-2xl font-black text-slate-900 tracking-tight">
-                    Recuperação de Senha
-                  </h2>
-                  <p className="text-xs text-slate-500">
-                    Redefina sua senha de acesso com segurança criptográfica
-                  </p>
+              {isLinkExpired ? (
+                /* CARD DEDICADO: LINK EXPIRADO OU JÁ UTILIZADO */
+                <div className="space-y-6">
+                  <div className="text-center space-y-3">
+                    <div className="w-14 h-14 bg-amber-50 border border-amber-200 text-amber-600 rounded-2xl flex items-center justify-center mx-auto shadow-xs">
+                      <AlertTriangle className="w-7 h-7" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                        Link de Redefinição Expirado
+                      </h2>
+                      <p className="text-sm text-slate-600 leading-relaxed max-w-sm mx-auto">
+                        Este link de redefinição expirou ou já foi utilizado. Por motivos de segurança, os links de recuperação de senha possuem tempo limite e são de uso único.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-2">
+                    <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      <span>Instruções de segurança:</span>
+                    </div>
+                    <p className="text-slate-500 leading-relaxed">
+                      Para definir uma nova senha, solicite um novo link abaixo e clique nele assim que recebê-lo em sua caixa de entrada.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsLinkExpired(false);
+                        setForceResetMode(false);
+                        setErrorMsg('');
+                        setSuccessMsg('');
+                      }}
+                      className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <KeyRound className="w-4 h-4" />
+                      <span>Enviar novo link</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsLinkExpired(false);
+                        setMode('login');
+                        setErrorMsg('');
+                        setSuccessMsg('');
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 font-semibold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      <span>Voltar ao login</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
-
-              {!forceResetMode ? (
-                <form onSubmit={handleRequestRecoveryToken} className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                      E-mail Cadastrado
-                    </label>
-                    <div className="relative">
-                      <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type="email"
-                        required
-                        value={recoveryEmail}
-                        onChange={(e) => setRecoveryEmail(e.target.value)}
-                        placeholder="seu.email@clinica.com.br"
-                        className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                  >
-                    <KeyRound className="w-4 h-4" />
-                    <span>{isLoading ? 'Enviando...' : 'Enviar Link de Recuperação'}</span>
-                  </button>
-
-                  <div className="text-center pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setForceResetMode(true)}
-                      className="text-[11px] text-slate-500 hover:text-emerald-700 underline cursor-pointer"
-                    >
-                      Já recebi o link por e-mail? Cadastrar nova senha
-                    </button>
-                  </div>
-                </form>
               ) : (
-                <form onSubmit={handleResetPassword} className="space-y-4">
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                        Nova Senha
-                      </label>
-                      <span className="text-[11px] text-slate-400 font-medium">Mínimo 6 caracteres</span>
-                    </div>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type={showNewPassword ? 'text' : 'password'}
-                        required
-                        value={newPassword}
-                        onChange={(e) => setNewPassword(e.target.value)}
-                        placeholder="••••••••"
-                        minLength={6}
-                        className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowNewPassword(!showNewPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-                      >
-                        {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                      Confirmar Nova Senha
-                    </label>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type={showConfirmNewPassword ? 'text' : 'password'}
-                        required
-                        value={confirmNewPassword}
-                        onChange={(e) => setConfirmNewPassword(e.target.value)}
-                        placeholder="••••••••"
-                        minLength={6}
-                        className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowConfirmNewPassword(!showConfirmNewPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-                      >
-                        {showConfirmNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                  >
-                    <span>{isLoading ? 'Salvando...' : 'Salvar Nova Senha & Entrar'}</span>
-                  </button>
-
-                  <div className="text-center pt-1">
+                <>
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setForceResetMode(false)}
-                      className="text-[11px] text-slate-500 hover:text-slate-700 underline cursor-pointer"
+                      onClick={() => {
+                        db.setIsPasswordRecovery(false);
+                        setMode('login');
+                      }}
+                      className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 cursor-pointer"
+                      title="Voltar ao login"
                     >
-                      Voltar para solicitação de link
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <div>
+                      <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                        {forceResetMode ? 'Definir Nova Senha' : 'Recuperação de Senha'}
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        {forceResetMode
+                          ? 'Crie uma nova senha de acesso segura para sua conta'
+                          : 'Redefina sua senha de acesso com segurança criptográfica'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {!forceResetMode ? (
+                    <form onSubmit={handleRequestRecoveryToken} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                          E-mail Cadastrado
+                        </label>
+                        <div className="relative">
+                          <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="email"
+                            required
+                            value={recoveryEmail}
+                            onChange={(e) => setRecoveryEmail(e.target.value)}
+                            placeholder="seu.email@clinica.com.br"
+                            className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isLoading}
+                        className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      >
+                        <KeyRound className="w-4 h-4" />
+                        <span>{isLoading ? 'Enviando...' : 'Enviar Link de Recuperação'}</span>
+                      </button>
+
+                      <div className="text-center pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setForceResetMode(true)}
+                          className="text-[11px] text-slate-500 hover:text-emerald-700 underline cursor-pointer"
+                        >
+                          Já recebi o link por e-mail? Cadastrar nova senha
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleResetPassword} className="space-y-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                            Nova Senha
+                          </label>
+                          <span className="text-[11px] text-slate-400 font-medium">Mínimo 6 caracteres</span>
+                        </div>
+                        <div className="relative">
+                          <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type={showNewPassword ? 'text' : 'password'}
+                            required
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                            placeholder="••••••••"
+                            minLength={6}
+                            className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewPassword(!showNewPassword)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                          >
+                            {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                          Confirmar Nova Senha
+                        </label>
+                        <div className="relative">
+                          <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type={showConfirmNewPassword ? 'text' : 'password'}
+                            required
+                            value={confirmNewPassword}
+                            onChange={(e) => setConfirmNewPassword(e.target.value)}
+                            placeholder="••••••••"
+                            minLength={6}
+                            className="w-full pl-10 pr-10 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowConfirmNewPassword(!showConfirmNewPassword)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                          >
+                            {showConfirmNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isLoading}
+                        className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>{isLoading ? 'Salvando...' : 'Salvar Nova Senha & Entrar'}</span>
+                      </button>
+
+                      <div className="text-center pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setForceResetMode(false)}
+                          className="text-[11px] text-slate-500 hover:text-slate-700 underline cursor-pointer"
+                        >
+                          Voltar para solicitação de link
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  <div className="text-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        db.setIsPasswordRecovery(false);
+                        setMode('login');
+                      }}
+                      className="text-xs text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
+                    >
+                      Voltar para o Login
                     </button>
                   </div>
-                </form>
+                </>
               )}
-
-              <div className="text-center pt-2">
-                <button
-                  type="button"
-                  onClick={() => setMode('login')}
-                  className="text-xs text-slate-500 hover:text-slate-800 font-semibold cursor-pointer"
-                >
-                  Voltar para o Login
-                </button>
-              </div>
             </div>
           )}
 
