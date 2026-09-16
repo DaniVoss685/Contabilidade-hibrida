@@ -577,16 +577,21 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                 {errors.startTime && <p className="mt-1 text-xs text-rose-500">{errors.startTime}</p>}
               </div>
 
-              <div>
-                <CustomSelect
-                  label="Duração Prevista"
-                  options={DURATION_OPTIONS}
-                  value={String(durationMinutes)}
-                  onChange={(v) => setDurationMinutes(Number(v))}
-                  className="w-full"
-                />
-                <p className="mt-1 text-xs text-slate-500 font-medium">
-                  Término previsto às <strong className="text-slate-800 font-semibold">{endTime}</strong>
+              <div className="flex flex-col justify-start">
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Previsão de Término</span>
+                </label>
+                <div className="h-[42px] px-3.5 bg-emerald-50/70 border border-emerald-200/80 rounded-xl flex items-center justify-between shadow-2xs">
+                  <span className="text-sm font-black font-mono text-emerald-950">
+                    {endTime || '--:--'}
+                  </span>
+                  <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md">
+                    {durationMinutes} min
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Calculado pela duração do procedimento
                 </p>
               </div>
             </div>

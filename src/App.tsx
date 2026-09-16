@@ -126,18 +126,10 @@ function AppContent() {
     return `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
   }, [selectedYear, selectedMonth]);
 
-  // Filtered sales based on global period
+  // Filtered sales based on global period (strictly by sale date / serviceDate)
   const filteredSales = useMemo(() => {
     return sales.filter((sale) => {
-      if (sale.serviceDate && sale.serviceDate.startsWith(periodPrefix)) {
-        return true;
-      }
-      const hasInstInPeriod = sale.installments?.some(
-        (i) =>
-          (i.paymentDate && i.paymentDate.startsWith(periodPrefix)) ||
-          (i.dueDate && i.dueDate.startsWith(periodPrefix))
-      );
-      return hasInstInPeriod;
+      return Boolean(sale.serviceDate && sale.serviceDate.startsWith(periodPrefix));
     });
   }, [sales, periodPrefix]);
 

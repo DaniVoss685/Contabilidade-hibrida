@@ -351,6 +351,14 @@ export function calculateMonthlyPfTax(
   const irpfProjected = Math.max(0, irpfBeforeReductionProjected - additionalReductionProjected);
   const effectiveRate = receivedGrossCpf > 0 ? (irpfRealized / receivedGrossCpf) : 0;
 
+  // Limite de Isenção Mensal de Faturamento (PF / Carnê-Leão)
+  const bracket0Max = rules.brackets?.[0]?.max || (year >= 2026 ? 2428.80 : 2259.20);
+  const baseExemptionLimit = bracket0Max + deductibleLivroCaixaPaid + effectiveSubtractions;
+  const exemptionLimitMonthly = year >= 2026 ? Math.max(5000, baseExemptionLimit) : baseExemptionLimit;
+  const remainingExemptionBalance = Math.max(0, exemptionLimitMonthly - receivedGrossCpf);
+  const isExemptionLimitReached = receivedGrossCpf >= exemptionLimitMonthly;
+  const exemptionUsagePercent = exemptionLimitMonthly > 0 ? Math.min(100, (receivedGrossCpf / exemptionLimitMonthly) * 100) : 100;
+
   return {
     month: yearMonth,
     year,
@@ -374,6 +382,10 @@ export function calculateMonthlyPfTax(
     irpfRealized,
     irpfProjected,
     effectiveRate,
+    exemptionLimitMonthly,
+    remainingExemptionBalance,
+    isExemptionLimitReached,
+    exemptionUsagePercent,
   };
 }
 
@@ -588,6 +600,14 @@ export function calculateCpfMonthlyTax(
   const carneLeaoEstimated = Math.max(0, taxBeforeReduction - additionalReduction);
   const effectiveTaxRate = grossRevenueReceived > 0 ? (carneLeaoEstimated / grossRevenueReceived) * 100 : 0;
 
+  // Limite de Isenção Mensal de Faturamento (PF / Carnê-Leão)
+  const bracket0Max = brackets[0]?.max || (year >= 2026 ? 2428.80 : 2259.20);
+  const baseExemptionLimit = bracket0Max + deductibleExpensesLivroCaixa + effectivePersonalDeduction;
+  const exemptionLimitMonthly = year >= 2026 ? Math.max(5000, baseExemptionLimit) : baseExemptionLimit;
+  const remainingExemptionBalance = Math.max(0, exemptionLimitMonthly - grossRevenueReceived);
+  const isExemptionLimitReached = grossRevenueReceived >= exemptionLimitMonthly;
+  const exemptionUsagePercent = exemptionLimitMonthly > 0 ? Math.min(100, (grossRevenueReceived / exemptionLimitMonthly) * 100) : 100;
+
   return {
     grossRevenueReceived,
     grossRevenueProjected,
@@ -607,6 +627,10 @@ export function calculateCpfMonthlyTax(
     additionalReduction,
     carneLeaoEstimated,
     effectiveTaxRate,
+    exemptionLimitMonthly,
+    remainingExemptionBalance,
+    isExemptionLimitReached,
+    exemptionUsagePercent,
   };
 }
 

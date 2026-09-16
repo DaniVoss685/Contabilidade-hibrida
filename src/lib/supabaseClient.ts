@@ -674,6 +674,7 @@ export function mapDbPreferencesToApp(db: any): SystemPreferences {
     lunchBreakEnabled: Boolean(db.lunch_break_enabled),
     lunchBreakStart: db.lunch_break_start || undefined,
     lunchBreakEnd: db.lunch_break_end || undefined,
+    cardFees: db.card_fees && typeof db.card_fees === 'object' ? db.card_fees : undefined,
   };
 }
 
@@ -687,6 +688,7 @@ export function mapAppPreferencesToDb(app: SystemPreferences, tenantId: string):
     lunch_break_enabled: Boolean(app.lunchBreakEnabled),
     lunch_break_start: app.lunchBreakStart || null,
     lunch_break_end: app.lunchBreakEnd || null,
+    card_fees: app.cardFees || {},
     updated_at: new Date().toISOString(),
   };
 }

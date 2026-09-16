@@ -518,6 +518,10 @@ export interface MonthlyPfTaxSummary {
   irpfRealized: number;
   irpfProjected: number;
   effectiveRate: number;
+  exemptionLimitMonthly: number;
+  remainingExemptionBalance: number;
+  isExemptionLimitReached: boolean;
+  exemptionUsagePercent: number;
 }
 
 export interface MonthlyPjTaxSummary {
@@ -675,13 +679,19 @@ export interface FiscalParameter {
   notes?: string;
 }
 
+export interface CardFeeSettings {
+  debit?: number;
+  credit?: Record<number, number>;
+}
+
 // 18. System Operational Preferences & Privacy
 export interface SystemPreferences {
   hideCpf?: boolean; // Legado; CPF agora é exibido integralmente por padrão
   alertFatorR: boolean; // default: true
   alertDueDates: boolean; // default: true
   operationalReminders: boolean; // default: true
-  lunchBreakEnabled?: boolean; // default: true
-  lunchBreakStart?: string; // default: '12:00' (ex: '11:00')
-  lunchBreakEnd?: string; // default: '13:00'
+  lunchBreakEnabled?: boolean; // default: false para novos tenants
+  lunchBreakStart?: string; // ex: '11:00'
+  lunchBreakEnd?: string; // ex: '13:00'
+  cardFees?: CardFeeSettings;
 }

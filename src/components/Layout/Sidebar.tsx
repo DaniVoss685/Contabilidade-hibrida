@@ -113,11 +113,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           badge: overdueExpensesCount > 0 ? overdueExpensesCount : undefined,
           badgeColor: 'bg-rose-100 text-rose-800 border border-rose-200',
         },
-        {
-          id: 'recurrent_expenses',
-          label: 'Despesas Recorrentes',
-          icon: Repeat,
-        },
       ],
     },
     {

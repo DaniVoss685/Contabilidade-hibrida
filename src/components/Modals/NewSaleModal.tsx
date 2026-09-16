@@ -217,6 +217,44 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   const cardFeeAmount = isCard && cardFeePercent > 0 ? Number(((totalValue * cardFeePercent) / 100).toFixed(2)) : 0;
   const netValue = isCard ? Math.max(0, Number((totalValue - cardFeeAmount).toFixed(2))) : totalValue;
 
+  const getAutoCardFee = (method: PaymentMethod, installments: number): number => {
+    const prefs = db.getPreferences();
+    if (method === 'CARTAO_DEBITO') {
+      return prefs.cardFees?.debit || 0;
+    }
+    if (method === 'CARTAO_CREDITO') {
+      return prefs.cardFees?.credit?.[installments] ?? (prefs.cardFees?.credit?.[1] || 0);
+    }
+    return 0;
+  };
+
+  const handlePaymentMethodChange = (newMethod: PaymentMethod) => {
+    setPaymentMethod(newMethod);
+    setIsDirty(true);
+    if (newMethod === 'CARTAO_DEBITO') {
+      const fee = getAutoCardFee('CARTAO_DEBITO', 1);
+      setCardFeePercent(fee);
+      setInstallmentsCount(1);
+    } else if (newMethod === 'CARTAO_CREDITO') {
+      const fee = getAutoCardFee('CARTAO_CREDITO', installmentsCount);
+      setCardFeePercent(fee);
+    } else {
+      setCardFeePercent(0);
+      setInstallmentsCount(1);
+    }
+  };
+
+  const handleInstallmentsChange = (count: number) => {
+    setInstallmentsCount(count);
+    setIsDirty(true);
+    if (paymentMethod === 'CARTAO_CREDITO') {
+      const autoFee = getAutoCardFee('CARTAO_CREDITO', count);
+      if (autoFee > 0 || cardFeePercent === 0) {
+        setCardFeePercent(autoFee);
+      }
+    }
+  };
+
   const bankAccountOptions = bankAccounts.map((b) => ({
     value: b.id,
     label: b.name,
@@ -520,7 +558,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
     { value: 'TRANSFERENCIA', label: 'Transferência / TED' },
   ];
 
-  const installmentOptions = [1, 2, 3, 4, 5, 6, 8, 10, 12].map((n) => ({
+  const installmentOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => ({
     value: String(n),
     label: n === 1 ? '1x À vista' : `${n}x de ${formatCurrency(totalValue / n)}`,
   }));
@@ -888,8 +926,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                 options={paymentOptions}
                 value={paymentMethod}
                 onChange={(val) => {
-                  setPaymentMethod(val as PaymentMethod);
-                  setIsDirty(true);
+                  handlePaymentMethodChange(val as PaymentMethod);
                 }}
               />
             </div>
@@ -968,20 +1005,21 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
               />
             </div>
 
-            {/* Parcelamento e Taxa de Maquininha - Exclusivo para Cartão de Crédito */}
-            {paymentMethod === 'CARTAO_CREDITO' && (
+            {/* Parcelamento e Taxa de Maquininha - Suporte a Cartão de Crédito e Débito */}
+            {isCard && (
               <div className="space-y-3 pt-1">
-                <div className="max-w-xs">
-                  <CustomSelect
-                    label="Quantidade de Parcelas"
-                    options={installmentOptions}
-                    value={String(installmentsCount)}
-                    onChange={(val) => {
-                      setInstallmentsCount(parseInt(val, 10));
-                      setIsDirty(true);
-                    }}
-                  />
-                </div>
+                {paymentMethod === 'CARTAO_CREDITO' && (
+                  <div className="max-w-xs">
+                    <CustomSelect
+                      label="Quantidade de Parcelas"
+                      options={installmentOptions}
+                      value={String(installmentsCount)}
+                      onChange={(val) => {
+                        handleInstallmentsChange(parseInt(val, 10));
+                      }}
+                    />
+                  </div>
+                )}
 
                 {/* Taxa de Maquininha */}
                 <div className="p-4 bg-slate-50 border border-slate-200/90 rounded-2xl space-y-3 animate-in fade-in">
@@ -989,10 +1027,12 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                     <div className="flex items-center gap-2">
                       <CreditCard className="w-4 h-4 text-indigo-600" />
                       <span className="font-bold text-xs text-slate-900">
-                        Taxa da Maquininha / Operadora de Cartão
+                        {paymentMethod === 'CARTAO_DEBITO'
+                          ? 'Taxa do Cartão de Débito'
+                          : `Taxa da Maquininha / Operadora de Cartão (${installmentsCount}x)`}
                       </span>
                     </div>
-                    {installmentsCount > 1 && (
+                    {paymentMethod === 'CARTAO_CREDITO' && installmentsCount > 1 && (
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
                         Taxa obrigatória para {installmentsCount}x
                       </span>
