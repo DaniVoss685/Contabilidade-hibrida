@@ -13,6 +13,7 @@ import {
   Appointment,
   SystemPreferences,
   AuditLog,
+  DentalTenantOption,
 } from '../types';
 
 export const SUPABASE_URL =
@@ -171,6 +172,7 @@ export function mapDbUserToApp(db: any): StoredUserAccount {
     passwordHash: db.password_hash || undefined,
     salt: db.salt || undefined,
     isActive: db.is_active !== false,
+    isPrimary: db.is_primary === true || db.role === 'SUPER_ADMIN',
     createdAt: db.created_at || new Date().toISOString(),
   };
 }
@@ -751,7 +753,7 @@ export const SupabaseService = {
       if (authUserId) {
         const { data, error } = await supabase
           .from('df_users')
-          .select('id, clinic_id, email, name, role, is_active, auth_user_id, created_at')
+          .select('id, clinic_id, email, name, role, is_active, auth_user_id, is_primary, created_at')
           .eq('auth_user_id', authUserId)
           .maybeSingle();
 
@@ -765,7 +767,7 @@ export const SupabaseService = {
         const cleanEmail = email.trim().toLowerCase();
         const { data, error } = await supabase
           .from('df_users')
-          .select('id, clinic_id, email, name, role, is_active, auth_user_id, created_at')
+          .select('id, clinic_id, email, name, role, is_active, auth_user_id, is_primary, created_at')
           .eq('email', cleanEmail)
           .maybeSingle();
 
@@ -785,6 +787,29 @@ export const SupabaseService = {
     } catch (err) {
       console.error('[SupabaseService] Erro ao buscar perfil do usuário:', err);
       return null;
+    }
+  },
+
+  /**
+   * Obtém a lista de todas as clínicas para acesso exclusivo da conta primária de consultoria.
+   */
+  async getAllTenantsForSupport(): Promise<DentalTenantOption[]> {
+    try {
+      const { data, error } = await supabase.rpc('get_all_dental_tenants');
+      if (error) {
+        console.warn('[SupabaseService] Erro ao carregar clientes para suporte:', error.message);
+        return [];
+      }
+      return (data || []).map((t: any) => ({
+        tenant_id: t.tenant_id,
+        clinic_name: t.clinic_name || t.trade_name || 'Clínica',
+        trade_name: t.trade_name,
+        total_users: Number(t.total_users || 0),
+        created_at: t.created_at,
+      }));
+    } catch (err) {
+      console.error('[SupabaseService] Falha ao invocar get_all_dental_tenants:', err);
+      return [];
     }
   },
 

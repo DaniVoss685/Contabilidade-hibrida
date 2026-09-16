@@ -1846,7 +1846,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           Receita Bruta Total dos 12 Meses — RBT12 (R$)
                         </label>
                         <CurrencyInput
-                          placeholder="Ex: 300.000,00"
+                          placeholder="0,00"
                           value={totalRbt12Input}
                           onChange={(val) => setTotalRbt12Input(val)}
                         />
@@ -1860,7 +1860,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           Base Total da Folha dos 12 Meses — FS12 (R$)
                         </label>
                         <CurrencyInput
-                          placeholder="Ex: 75.000,00"
+                          placeholder="0,00"
                           value={totalFs12Input}
                           onChange={(val) => setTotalFs12Input(val)}
                         />
@@ -1876,7 +1876,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                       </label>
                       <div className="max-w-xs">
                         <CurrencyInput
-                          placeholder="Ex: 5.000,00"
+                          placeholder="0,00"
                           value={proLaboreInputVal}
                           onChange={(val) => setProLaboreInputVal(val)}
                         />
@@ -2417,7 +2417,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
               <textarea
                 value={reviewNotes}
                 onChange={(e) => setReviewNotes(e.target.value)}
-                placeholder="Ex: Dados conferidos com o extrato bancário e guia paga."
+                placeholder=""
                 rows={2}
                 className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
               />

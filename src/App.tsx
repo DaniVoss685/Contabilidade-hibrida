@@ -24,10 +24,11 @@ import { AppLoadingSkeleton } from './components/UI/AppLoadingSkeleton';
 import { NewSaleModal } from './components/Modals/NewSaleModal';
 import { NewExpenseModal } from './components/Modals/NewExpenseModal';
 import { SettlePaymentModal } from './components/Modals/SettlePaymentModal';
-import { AccountReceivableItem } from './types';
+import { AccountReceivableItem, DentalTenantOption } from './types';
+import { SupabaseService } from './lib/supabaseClient';
 import { ToastProvider, useToast } from './components/UI/ToastContext';
 import { ToastContainer } from './components/UI/Toast';
-import { ShieldAlert } from 'lucide-react';
+import { ShieldAlert, ShieldCheck } from 'lucide-react';
 
 function AppContent() {
   const toast = useToast();
@@ -54,6 +55,59 @@ function AppContent() {
     db.logout();
     setIsAuthenticated(false);
     toast.info('Sessão encerrada com sucesso.');
+  };
+
+  const isPrimaryAccount = Boolean(
+    currentSession?.user?.isPrimary ||
+    currentSession?.user?.role === 'SUPER_ADMIN' ||
+    currentSession?.user?.role === 'PLATFORM_ADMIN'
+  );
+
+  const [availableClinics, setAvailableClinics] = useState<DentalTenantOption[]>([]);
+  const [isSwitchingClinic, setIsSwitchingClinic] = useState(false);
+
+  useEffect(() => {
+    if (isPrimaryAccount) {
+      SupabaseService.getAllTenantsForSupport()
+        .then((tenants) => {
+          if (tenants && tenants.length > 0) {
+            setAvailableClinics(tenants);
+          }
+        })
+        .catch((err) => {
+          console.warn('Erro ao listar clínicas para suporte:', err);
+        });
+    }
+  }, [isPrimaryAccount, tick]);
+
+  const handleSelectClinic = async (targetTenantId: string) => {
+    if (!targetTenantId) return;
+    if (currentSession?.tenantId === targetTenantId && !currentSession?.supportSession) return;
+    if (currentSession?.supportSession?.targetTenantId === targetTenantId) return;
+
+    setIsSwitchingClinic(true);
+    try {
+      const selected = availableClinics.find((c) => c.tenant_id === targetTenantId);
+      const res = await db.startSupportSessionAsync(
+        targetTenantId,
+        selected?.clinic_name,
+        'Acesso gerencial e suporte contábil/consultoria'
+      );
+      if (res.success) {
+        toast.success(`Acessando clínica: ${selected?.clinic_name || targetTenantId}`);
+      } else {
+        toast.error(res.error || 'Não foi possível alternar de clínica.');
+      }
+    } catch (err: any) {
+      toast.error('Erro ao alternar de clínica.');
+    } finally {
+      setIsSwitchingClinic(false);
+    }
+  };
+
+  const handleReturnToPrimary = () => {
+    db.endSupportSession();
+    toast.info('Retornado para sua conta primária.');
   };
 
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
@@ -228,8 +282,67 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased">
-      {/* Platform Admin Audited Support Session Banner */}
-      {currentSession?.supportSession && (
+      {/* Primary Account Consulting Switcher Bar */}
+      {isPrimaryAccount && (
+        <div className={`px-4 py-2 text-xs font-semibold flex flex-wrap items-center justify-between gap-3 shadow-xs sticky top-0 z-50 transition-colors ${
+          currentSession?.supportSession ? 'bg-amber-500 text-slate-950' : 'bg-slate-900 text-white'
+        }`}>
+          <div className="flex items-center gap-2">
+            {currentSession?.supportSession ? (
+              <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
+            ) : (
+              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+            )}
+            <span>
+              {currentSession?.supportSession ? (
+                <>
+                  <strong>MODO CONSULTORIA ATIVO:</strong> Gerenciando a clínica <u>{currentSession.supportSession.targetTenantName || organization.name}</u> (Todas as alterações refletem na conta do cliente).
+                </>
+              ) : (
+                <>
+                  <strong>ACESSO PRIMÁRIO CONSULTORIA:</strong> {currentSession?.user?.email} — Clínica Atual: {organization.name}
+                </>
+              )}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 ml-auto">
+            <label className="text-[11px] opacity-90 hidden sm:inline">
+              Alternar Clínica:
+            </label>
+            <select
+              value={currentSession?.supportSession?.targetTenantId || currentSession?.tenantId || ''}
+              onChange={(e) => handleSelectClinic(e.target.value)}
+              disabled={isSwitchingClinic}
+              className={`text-xs rounded-lg px-2.5 py-1 font-medium cursor-pointer border focus:outline-none ${
+                currentSession?.supportSession
+                  ? 'bg-amber-100 text-slate-900 border-amber-600 focus:ring-2 focus:ring-amber-700'
+                  : 'bg-slate-800 text-white border-slate-700 focus:ring-2 focus:ring-emerald-500'
+              }`}
+            >
+              <option value="" disabled>Selecione um cliente...</option>
+              {availableClinics.map((c) => (
+                <option key={c.tenant_id} value={c.tenant_id}>
+                  {c.clinic_name} {c.trade_name && c.trade_name !== c.clinic_name ? `(${c.trade_name})` : ''}
+                </option>
+              ))}
+            </select>
+
+            {currentSession?.supportSession && (
+              <button
+                onClick={handleReturnToPrimary}
+                disabled={isSwitchingClinic}
+                className="px-3 py-1 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0"
+              >
+                Voltar à Minha Conta
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Non-Primary Support Banner */}
+      {!isPrimaryAccount && currentSession?.supportSession && (
         <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-xs sticky top-0 z-50">
           <div className="flex items-center gap-2">
             <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />

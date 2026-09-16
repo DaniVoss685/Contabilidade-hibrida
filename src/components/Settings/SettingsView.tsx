@@ -253,7 +253,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="text"
                   value={nomeClinica}
                   onChange={(e) => setNomeClinica(e.target.value)}
-                  placeholder="ex: Clínica Odonto Prime"
+                  placeholder=""
                   className="w-full text-xs rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium shadow-2xs"
                   required
                 />
@@ -267,7 +267,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     type="text"
                     value={cro}
                     onChange={(e) => setCro(e.target.value)}
-                    placeholder="ex: 123456"
+                    placeholder=""
                     className="w-full text-xs rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium shadow-2xs"
                     required
                   />
@@ -295,7 +295,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     type="text"
                     value={especialidade}
                     onChange={(e) => setEspecialidade(e.target.value)}
-                    placeholder="ex: Ortodontia, Implantodontia, Clínica Geral"
+                    placeholder=""
                     className="w-full text-xs rounded-xl border border-slate-200 pl-10 pr-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium shadow-2xs"
                   />
                 </div>

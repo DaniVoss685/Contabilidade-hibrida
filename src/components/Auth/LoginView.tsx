@@ -419,7 +419,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
                     type="email"
                     value={identifier}
                     onChange={(e) => setIdentifier(e.target.value)}
-                    placeholder="ex: contato@suaclinica.com.br"
+                    placeholder=""
                     className="w-full pl-10 pr-4 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 focus:bg-white transition-all shadow-2xs"
                   />
                 </div>
@@ -938,7 +938,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
                       required
                       value={supportReason}
                       onChange={(e) => setSupportReason(e.target.value)}
-                      placeholder="ex: Chamado #9421 - Auditoria de parcelamento"
+                      placeholder=""
                       className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-white"
                     />
                   </div>

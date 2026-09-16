@@ -294,7 +294,7 @@ export const EditReceivableModal: React.FC<EditReceivableModalProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="Ex: RS-2025-0012"
+                  placeholder=""
                   value={receitaSaudeId}
                   onChange={(e) => setReceitaSaudeId(e.target.value)}
                   className="w-full text-xs font-mono rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-500"
@@ -307,7 +307,7 @@ export const EditReceivableModal: React.FC<EditReceivableModalProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="Ex: NFS-e 2025/089"
+                  placeholder=""
                   value={nfseNumber}
                   onChange={(e) => setNfseNumber(e.target.value)}
                   className="w-full text-xs font-mono rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-500"

@@ -761,7 +761,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                       </label>
                       <input
                         type="text"
-                        placeholder="Ex: Mãe, Pai ou Cônjuge"
+                        placeholder=""
                         value={payerName}
                         onChange={(e) => {
                           setPayerName(e.target.value);
@@ -857,7 +857,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
               <div>
                 <input
                   type="text"
-                  placeholder="Nome do procedimento avulso ou tratamento executado..."
+                  placeholder=""
                   value={procedureName}
                   onChange={(e) => setProcedureName(e.target.value)}
                   className="w-full text-xs rounded-xl border border-slate-200 p-2.5 bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none shadow-2xs"
@@ -995,7 +995,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="Ex: Restauração oclusal com resina nanoparticulada dente 46"
+                placeholder=""
                 value={description}
                 onChange={(e) => {
                   setDescription(e.target.value);
@@ -1050,7 +1050,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                           step="0.01"
                           min="0"
                           max="100"
-                          placeholder="Ex: 3.5"
+                          placeholder="0,00"
                           value={cardFeePercent || ''}
                           onChange={(e) => {
                             setCardFeePercent(parseFloat(e.target.value) || 0);
@@ -1114,7 +1114,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                     </label>
                     <input
                       type="text"
-                      placeholder="Ex: RS-2025-05-0099"
+                      placeholder=""
                       value={receiptIdentifier}
                       onChange={(e) => setReceiptIdentifier(e.target.value)}
                       className="w-full text-xs rounded-xl border border-emerald-200/90 p-2.5 bg-white text-slate-900 focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none shadow-2xs font-mono"
@@ -1142,7 +1142,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                     </label>
                     <input
                       type="text"
-                      placeholder="Ex: 2025/000418"
+                      placeholder=""
                       value={nfseNumber}
                       onChange={(e) => setNfseNumber(e.target.value)}
                       className="w-full text-xs rounded-xl border border-blue-200/90 p-2.5 bg-white text-slate-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:outline-none shadow-2xs font-mono"
@@ -1155,7 +1155,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
                     </label>
                     <input
                       type="text"
-                      placeholder="Ex: F8A1-49B2"
+                      placeholder=""
                       value={nfseVerificationCode}
                       onChange={(e) => setNfseVerificationCode(e.target.value)}
                       className="w-full text-xs rounded-xl border border-blue-200/90 p-2.5 bg-white text-slate-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:outline-none shadow-2xs font-mono"

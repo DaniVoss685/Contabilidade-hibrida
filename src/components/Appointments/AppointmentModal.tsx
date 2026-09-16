@@ -697,7 +697,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                 rows={2}
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="Ex: Canal de 6 dentes; paciente alérgico a dipirona; dente 16..."
+                placeholder=""
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
               />
             </div>

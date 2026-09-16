@@ -667,6 +667,7 @@ export class DentalFinanceDB {
           name: userProfile.name || session.user.email?.split('@')[0] || 'Dentista',
           email: userProfile.email || session.user.email || '',
           role: userProfile.role,
+          isPrimary: userProfile.isPrimary ?? false,
         },
         clinic: sessionClinic,
         tenantId,
@@ -1196,6 +1197,7 @@ export class DentalFinanceDB {
           name: userProfile.name || cleanId.split('@')[0],
           email: userProfile.email || cleanId,
           role: userProfile.role,
+          isPrimary: userProfile.isPrimary ?? false,
         },
         clinic: sessionClinic,
         tenantId,
@@ -1677,7 +1679,12 @@ export class DentalFinanceDB {
     if (!this.currentSession) {
       return { success: false, error: 'Sessão ativa não encontrada.' };
     }
-    if (this.currentSession.user.role !== 'PLATFORM_ADMIN') {
+    const isAllowed =
+      this.currentSession.user.role === 'PLATFORM_ADMIN' ||
+      this.currentSession.user.role === 'SUPER_ADMIN' ||
+      this.currentSession.user.isPrimary === true;
+
+    if (!isAllowed) {
       return {
         success: false,
         error: 'Acesso negado: apenas administradores da plataforma possuem permissão de suporte.',
@@ -1726,6 +1733,70 @@ export class DentalFinanceDB {
     return { success: true };
   }
 
+  public async startSupportSessionAsync(
+    targetTenantId: string,
+    targetClinicName?: string,
+    reason: string = 'Atendimento e suporte ao cliente da consultoria'
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!this.currentSession) {
+      return { success: false, error: 'Sessão ativa não encontrada.' };
+    }
+    const isAllowed =
+      this.currentSession.user.role === 'PLATFORM_ADMIN' ||
+      this.currentSession.user.role === 'SUPER_ADMIN' ||
+      this.currentSession.user.isPrimary === true;
+
+    if (!isAllowed) {
+      return {
+        success: false,
+        error: 'Acesso negado: apenas a conta primária ou administradores possuem permissão de suporte.',
+      };
+    }
+
+    let targetClinic =
+      this.registeredClinics.find((c) => c.id === targetTenantId) ||
+      (targetTenantId === 'tenant_demo' ? PRESEEDED_CLINICS[0] : null);
+
+    if (!targetClinic && targetTenantId !== 'tenant_demo') {
+      const fetched = await SupabaseService.getClinic(targetTenantId);
+      if (fetched) {
+        targetClinic = fetched;
+        this.registeredClinics.push(fetched);
+        saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
+      }
+    }
+
+    const clinicDisplayName = targetClinic?.name || targetClinicName || 'Clínica Selecionada';
+
+    const supportState: SupportSessionState = {
+      isSupportMode: true,
+      originalAdminUserId: this.currentSession.user.id,
+      originalAdminName: this.currentSession.user.name,
+      targetTenantId,
+      targetTenantName: clinicDisplayName,
+      startedAt: new Date().toISOString(),
+      reason: (reason || 'Suporte operacional ao cliente').trim(),
+    };
+
+    this.currentSession.supportSession = supportState;
+    saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
+
+    this.loadTenant(targetTenantId, targetTenantId === 'tenant_demo');
+    if (targetTenantId !== 'tenant_demo') {
+      await this.hydrateTenantAsync(targetTenantId);
+    }
+
+    this.log(
+      'SUPPORT_SESSION_START',
+      'SUPPORT',
+      targetTenantId,
+      `Sessão de suporte iniciada por ${supportState.originalAdminName}. Motivo auditado: "${supportState.reason}".`
+    );
+
+    this.notify();
+    return { success: true };
+  }
+
   public endSupportSession(): { success: boolean; error?: string } {
     if (!this.currentSession?.supportSession) {
       return { success: false, error: 'Nenhuma sessão de suporte está ativa no momento.' };
@@ -1749,6 +1820,9 @@ export class DentalFinanceDB {
     // Restore to admin's original tenant
     const origTenant = this.currentSession.tenantId || this.currentSession.clinic.id;
     this.loadTenant(origTenant, this.currentSession.isDemo);
+    if (!this.currentSession.isDemo) {
+      this.hydrateTenantAsync(origTenant).catch(console.warn);
+    }
 
     // Also log in platform admin's audit trail
     this.log(

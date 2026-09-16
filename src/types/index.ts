@@ -28,7 +28,8 @@ export type UserRole =
   | 'DENTIST'
   | 'RECEPTION'
   | 'ASSISTANT'
-  | 'PLATFORM_ADMIN';
+  | 'PLATFORM_ADMIN'
+  | 'SUPER_ADMIN';
 
 export interface ClinicTenant {
   id: string; // e.g. "tenant_demo" or "clinic_uuid"
@@ -47,6 +48,14 @@ export interface ClinicTenant {
   createdAt: string;
 }
 
+export interface DentalTenantOption {
+  tenant_id: string;
+  clinic_name: string;
+  trade_name?: string;
+  total_users: number;
+  created_at: string;
+}
+
 export interface StoredUserAccount {
   id: string;
   email: string;
@@ -60,6 +69,7 @@ export interface StoredUserAccount {
   authUserId?: string; // UUID in auth.users
   emailVerified?: boolean;
   isActive?: boolean;
+  isPrimary?: boolean;
   createdAt: string;
 }
 
@@ -109,6 +119,7 @@ export interface User {
   name: string;
   email: string;
   role: UserRole;
+  isPrimary?: boolean;
 }
 
 // 2. Professional (Dentist Profile & Tax Settings)

@@ -1320,7 +1320,7 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                       type="text"
                       value={scenarioNameInput}
                       onChange={(e) => setScenarioNameInput(e.target.value)}
-                      placeholder="Ex: Pró-labore R$ 4.554 — Anexo III"
+                      placeholder=""
                       className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium"
                       required
                     />
@@ -1334,7 +1334,7 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                       value={scenarioDescInput}
                       onChange={(e) => setScenarioDescInput(e.target.value)}
                       rows={3}
-                      placeholder="Descreva a finalidade desta simulação (ex: planejamento semestral, contratação de ASB)..."
+                      placeholder=""
                       className="w-full rounded-xl border border-slate-200 p-3 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 resize-none font-medium"
                     />
                   </div>

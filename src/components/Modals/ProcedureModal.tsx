@@ -304,7 +304,7 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Ex: Restauração Resina 2 Faces, Exodontia Simples..."
+                  placeholder=""
                   className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium"
                 />
               </div>
@@ -317,7 +317,7 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
                   type="text"
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
-                  placeholder="Ex: REST-01"
+                  placeholder=""
                   className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                 />
               </div>
@@ -342,7 +342,7 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
                   type="text"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Ex: Inclui anestesia e acabamento/polimento"
+                  placeholder=""
                   className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
                 />
               </div>

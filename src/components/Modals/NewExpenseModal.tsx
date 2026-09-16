@@ -103,12 +103,12 @@ function getCounterpartyMeta(
   ) {
     return {
       counterpartyLabel: 'Órgão / Entidade Arrecadadora',
-      counterpartyPlaceholder: 'Ex: Receita Federal, CRO-SP, Prefeitura Municipal...',
+      counterpartyPlaceholder: '',
       counterpartyRequired: false,
       docLabel: 'Código / Nº da Guia',
-      docPlaceholder: 'Ex: 0190, 8630, Nº da Guia...',
+      docPlaceholder: '',
       showDoc: false,
-      descriptionPlaceholder: 'Ex: Guia DAS Simples Nacional, Anuidade CRO-SP...',
+      descriptionPlaceholder: '',
     };
   }
 
@@ -131,12 +131,12 @@ function getCounterpartyMeta(
   ) {
     return {
       counterpartyLabel: 'Colaborador / Funcionário',
-      counterpartyPlaceholder: 'Ex: Dra. Juliana (ASB), Dra. Camila (Dentista), Recepcionista Beatriz...',
+      counterpartyPlaceholder: '',
       counterpartyRequired: false,
       docLabel: 'CPF do Colaborador',
-      docPlaceholder: '000.000.000-00',
+      docPlaceholder: '',
       showDoc: true,
-      descriptionPlaceholder: 'Ex: Folha de pagamento mensal, Adiantamento salarial...',
+      descriptionPlaceholder: '',
     };
   }
 
@@ -151,12 +151,12 @@ function getCounterpartyMeta(
   ) {
     return {
       counterpartyLabel: 'Locador / Imobiliária / Condomínio',
-      counterpartyPlaceholder: 'Ex: Imobiliária Central, Dr. Roberto (Proprietário), Condomínio Plaza...',
+      counterpartyPlaceholder: '',
       counterpartyRequired: false,
       docLabel: entity === 'CPF' ? 'CPF do Locador' : 'CNPJ / CPF do Locador',
-      docPlaceholder: entity === 'CPF' ? '000.000.000-00' : '00.000.000/0000-00',
+      docPlaceholder: '',
       showDoc: true,
-      descriptionPlaceholder: 'Ex: Aluguel da sala clínica referente ao mês...',
+      descriptionPlaceholder: '',
     };
   }
 
@@ -177,12 +177,12 @@ function getCounterpartyMeta(
   ) {
     return {
       counterpartyLabel: 'Prestador de Serviço',
-      counterpartyPlaceholder: 'Ex: Lab Odonto Express, Dr. Marcelo (Protético), Assessoria Contábil...',
+      counterpartyPlaceholder: '',
       counterpartyRequired: true,
       docLabel: entity === 'CPF' ? 'CPF do Prestador' : 'CNPJ do Prestador',
-      docPlaceholder: entity === 'CPF' ? '000.000.000-00' : '00.000.000/0000-00',
+      docPlaceholder: '',
       showDoc: true,
-      descriptionPlaceholder: 'Ex: Confecção de coroa cerâmica sobre implante, mensalidade do sistema...',
+      descriptionPlaceholder: '',
     };
   }
 
@@ -199,24 +199,24 @@ function getCounterpartyMeta(
   ) {
     return {
       counterpartyLabel: 'Empresa / Concessionária',
-      counterpartyPlaceholder: 'Ex: Enel Distribuição, Vivo Fibra, Sabesp...',
+      counterpartyPlaceholder: '',
       counterpartyRequired: false,
       docLabel: 'Código do Cliente / CNPJ',
-      docPlaceholder: 'Ex: 00.000.000/0000-00 ou Código do Cliente',
+      docPlaceholder: '',
       showDoc: true,
-      descriptionPlaceholder: 'Ex: Fatura mensal de energia elétrica do consultório...',
+      descriptionPlaceholder: '',
     };
   }
 
   // 6. Materiais Odontológicos / Insumos Clínicos (Padrão)
   return {
     counterpartyLabel: 'Fornecedor',
-    counterpartyPlaceholder: 'Ex: Dental Cremer, Dental Speed, Surya Dental...',
+    counterpartyPlaceholder: '',
     counterpartyRequired: true,
     docLabel: entity === 'CPF' ? 'CPF do Fornecedor' : 'CNPJ do Fornecedor',
-    docPlaceholder: entity === 'CPF' ? '000.000.000-00' : '00.000.000/0000-00',
+    docPlaceholder: '',
     showDoc: true,
-    descriptionPlaceholder: 'Ex: Aquisição de resinas compostas, luvas e anestésicos...',
+    descriptionPlaceholder: '',
   };
 }
 
@@ -434,8 +434,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
   const categoryOptions = activeCategories.map((c) => ({
     value: c.id,
-    label: `${c.code} - ${c.name}`,
-    description: c.groupName,
+    label: c.name,
   }));
 
   const paymentMethodOptions = [
@@ -850,7 +849,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="Ex: Energia Elétrica Enel, Aluguel do Consultório, Material Odontológico Cremer, Folha de Pagamento..."
+                placeholder=""
                 value={description}
                 onChange={(e) => {
                   setDescription(e.target.value);
@@ -984,7 +983,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
                   </label>
                   <input
                     type="text"
-                    placeholder="Ex: Parecer contábil para despesa extraordinária da clínica"
+                    placeholder=""
                     value={overrideJustification}
                     onChange={(e) => setOverrideJustification(e.target.value)}
                     className="w-full text-xs rounded-xl border border-rose-200 p-2.5 bg-white focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 focus:outline-none"
@@ -1419,7 +1418,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="Ex: NF-e 9845 ou Autenticação bancária"
+                  placeholder=""
                   value={documentNumber}
                   onChange={(e) => {
                     setDocumentNumber(e.target.value);

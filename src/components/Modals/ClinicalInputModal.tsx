@@ -193,7 +193,7 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="Ex: Anestésico Mepivacaína 2%, Resina Z350, Clorexidina..."
+                placeholder=""
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full text-xs font-medium rounded-lg border border-slate-300 p-2.5 bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
@@ -207,7 +207,7 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="Ex: 3M, DFL, Maquira"
+                placeholder=""
                 value={brand}
                 onChange={(e) => setBrand(e.target.value)}
                 className="w-full text-xs font-medium rounded-lg border border-slate-300 p-2.5 bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
@@ -363,7 +363,7 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
                   type="number"
                   step="any"
                   min="0.01"
-                  placeholder="Ex: 50, 1000, 4"
+                  placeholder="0"
                   value={packageQuantity || ''}
                   onChange={(e) => setPackageQuantity(parseFloat(e.target.value) || 0)}
                   className="w-full pr-14 pl-3 py-2 text-xs font-bold text-slate-900 rounded-lg border border-slate-300 bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
@@ -384,7 +384,7 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="Ex: Caixa c/ 50 tubetes, Frasco 1L..."
+                placeholder=""
                 value={purchasePackageName}
                 onChange={(e) => setPurchasePackageName(e.target.value)}
                 className="w-full text-xs font-medium rounded-lg border border-slate-300 p-2 bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
@@ -423,7 +423,7 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({
             </label>
             <input
               type="text"
-              placeholder="Ex: Proporção recomendada, tempo de polimerização, etc."
+              placeholder=""
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               className="w-full text-xs rounded-lg border border-slate-200 p-2 bg-white"

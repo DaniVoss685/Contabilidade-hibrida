@@ -182,7 +182,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
               </label>
               <input
                 type="text"
-                placeholder="Ex: Mariana Santos Lima"
+                placeholder=""
                 value={name}
                 onChange={(e) => {
                   setName(e.target.value);
@@ -257,7 +257,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                 </label>
                 <input
                   type="email"
-                  placeholder="paciente@exemplo.com"
+                  placeholder=""
                   value={email}
                   onChange={(e) => {
                     setEmail(e.target.value);

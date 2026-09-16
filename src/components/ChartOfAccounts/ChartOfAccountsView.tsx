@@ -510,7 +510,7 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
                   type="text"
                   value={formNoticeText}
                   onChange={(e) => setFormNoticeText(e.target.value)}
-                  placeholder="Ex: Artigo 6º da Lei tal / Orientação Receita"
+                  placeholder=""
                   className="w-full text-xs rounded border border-slate-300 p-2"
                 />
               </div>

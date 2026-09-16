@@ -38,19 +38,21 @@ describe('Suíte Funcional: 5 Melhorias de UX e Lógica de Negócio', () => {
   // REQUISITO 2: Filtro de Receitas/Vendas estritamente pela data da venda (serviceDate)
   // ========================================================
   it('2. Venda parcelada em 5x em setembro deve constar em Vendas apenas em setembro, enquanto as parcelas ficam no Contas a Receber', () => {
-    const sale: Sale = {
+    const sale = {
       id: 'sale-sept-5x',
-      clinicId: 'clinic-1',
+      orgId: 'org_clinic_1',
       patientId: 'pat-1',
       patientName: 'Maria Silva',
       procedureName: 'Prótese Fixa',
       serviceDate: '2026-09-16',
       totalValue: 5000,
-      paymentMethod: 'CARTAO_CREDITO',
-      taxOrigin: 'CPF',
+      paymentMethod: 'CARTAO_CREDITO' as const,
+      taxOrigin: 'CPF' as const,
       installmentsCount: 5,
       createdAt: '2026-09-16T10:00:00Z',
-      updatedAt: '2026-09-16T10:00:00Z',
+      patientCpf: '12345678901',
+      payerIsBeneficiary: true,
+      description: 'Venda Teste',
       installments: [
         {
           id: 'inst-1',
@@ -98,7 +100,7 @@ describe('Suíte Funcional: 5 Melhorias de UX e Lógica de Negócio', () => {
           status: 'A_RECEBER',
         },
       ],
-    };
+    } as unknown as Sale;
 
     const allSales = [sale];
 
@@ -152,16 +154,14 @@ describe('Suíte Funcional: 5 Melhorias de UX e Lógica de Negócio', () => {
       alertFatorR: true,
       alertDueDates: true,
       operationalReminders: false,
-      privacyMode: false,
-      maskSensitiveData: false,
-      auditStrictLevel: 'STANDARD',
+      hideCpf: false,
       lunchBreakEnabled: true,
       lunchBreakStart: '12:00',
       lunchBreakEnd: '13:30',
       cardFees: cardFeesConfig,
     };
 
-    const dbPayload = mapAppPreferencesToDb(appPrefs);
+    const dbPayload = mapAppPreferencesToDb(appPrefs, 'test-clinic');
     assert.deepStrictEqual(dbPayload.card_fees, cardFeesConfig);
 
     const restoredApp = mapDbPreferencesToApp({
@@ -191,8 +191,8 @@ describe('Suíte Funcional: 5 Melhorias de UX e Lógica de Negócio', () => {
         status: 'PAGO',
         entity: 'CPF',
         dedutivelLivroCaixaPf: 'SIM',
-        category: 'INSUMOS',
-      },
+        categoryId: 'cat_insumos',
+      } as unknown as Expense,
     ];
 
     const res1 = calculateCpfMonthlyTax(salesCen1, expensesCen1, '2026-09', 2026, DEFAULT_TAX_RULES_PF[2026], 1, 600);
@@ -222,7 +222,7 @@ describe('Suíte Funcional: 5 Melhorias de UX e Lógica de Negócio', () => {
             status: 'RECEBIDO',
           },
         ],
-      },
+      } as unknown as Sale,
     ];
 
     const res2 = calculateCpfMonthlyTax(salesCen2, [], '2026-09', 2026, DEFAULT_TAX_RULES_PF[2026], 0, 0);
@@ -252,7 +252,7 @@ describe('Suíte Funcional: 5 Melhorias de UX e Lógica de Negócio', () => {
             status: 'RECEBIDO',
           },
         ],
-      },
+      } as unknown as Sale,
     ];
 
     const res3 = calculateCpfMonthlyTax(salesCen3, [], '2026-09', 2026, DEFAULT_TAX_RULES_PF[2026], 0, 0);

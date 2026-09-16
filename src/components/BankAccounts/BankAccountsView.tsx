@@ -539,7 +539,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="Ex: Itaú Clínico PJ, Nubank Dr. Carlos PF"
+                  placeholder=""
                   value={nameInput}
                   onChange={(e) => setNameInput(e.target.value)}
                   className="w-full text-xs rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium"
@@ -553,7 +553,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                 </label>
                 <input
                   type="text"
-                  placeholder="Ex: Banco Itaú, Nubank, Banco do Brasil, Sicredi"
+                  placeholder=""
                   value={institutionInput}
                   onChange={(e) => setInstitutionInput(e.target.value)}
                   className="w-full text-xs rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium"
