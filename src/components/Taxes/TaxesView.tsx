@@ -245,6 +245,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [isConfirmCompetencyDialogOpen, setIsConfirmCompetencyDialogOpen] = useState(false);
   const [isIrpfMemoryModalOpen, setIsIrpfMemoryModalOpen] = useState(false);
+  const [isSyncingWithContaju, setIsSyncingWithContaju] = useState(false);
 
   const loadContabilexData = async (tenantId: string) => {
     if (!tenantId || tenantId === 'tenant_demo') return;
@@ -262,8 +263,15 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
         setIsLoadingSnapshots(false);
         if (snapRes.snapshots) {
           setContabilexSnapshots(snapRes.snapshots);
-          if (activeFiscalMode === 'CONTABILEX' && snapRes.snapshots.length > 0 && !professional.baselineConfigured) {
-            db.updateProfessional({ baselineConfigured: true });
+          // Regra Oficial: Ao concluir integração com sucesso e ter snapshots,
+          // o Contaju vira AUTOMATICAMENTE a fonte fiscal oficial sem qualquer ação manual.
+          if (snapRes.snapshots.length > 0) {
+            if (activeFiscalMode !== 'CONTABILEX') {
+              await db.switchFiscalModeAsync('CONTABILEX', true);
+            }
+            if (!professional.baselineConfigured) {
+              db.updateProfessional({ baselineConfigured: true });
+            }
           }
         }
         if (confRes.confirmations) {
@@ -277,6 +285,29 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       setContabilexLink(null);
       setContabilexSnapshots([]);
       setContabilexConfirmations({});
+    }
+  };
+
+  const handleSyncWithContaju = async () => {
+    if (!activeTenantId || activeTenantId === 'tenant_demo') {
+      toast.error('Clínica não autenticada para sincronização.');
+      return;
+    }
+    setIsSyncingWithContaju(true);
+    try {
+      const syncRes = await ContabilexIntegrationService.syncTenantSnapshots(activeTenantId);
+      if (!syncRes.success) {
+        toast.error('Não foi possível sincronizar agora. Tente novamente em instantes.');
+      } else if (syncRes.changed) {
+        toast.success('Dados atualizados com sucesso.');
+      } else {
+        toast.info('Dados já estão atualizados.');
+      }
+      await loadContabilexData(activeTenantId);
+    } catch {
+      toast.error('Não foi possível sincronizar agora. Tente novamente em instantes.');
+    } finally {
+      setIsSyncingWithContaju(false);
     }
   };
 
@@ -348,7 +379,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       'CONTABILEX_LINK_REQUESTED',
       'INTEGRATION',
       resolvedTenant,
-      `Solicitado vínculo com Contábilex para CNPJ ${formatCnpj(clean)}.`
+      `Solicitado vínculo com Escritório Contaju para CNPJ ${formatCnpj(clean)}.`
     );
     toast.success('Solicitação enviada ao Escritório Contaju! Aguardando aprovação contábil.');
     loadContabilexData(resolvedTenant);
@@ -360,22 +391,22 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     const res = await db.switchFiscalModeAsync('CONTABILEX', hasSnapshots);
     setIsSavingBases(false);
     if (!res.success) {
-      toast.error('Erro ao ativar Contábilex: ' + (res.error || 'Falha ao salvar.'));
+      toast.error('Erro ao ativar Contaju: ' + (res.error || 'Falha ao salvar.'));
       return;
     }
     db.log(
       'CONTABILEX_LINK_ACTIVE',
       'INTEGRATION',
       activeTenantId,
-      'Contábilex ativado como fonte oficial de dados fiscais.'
+      'Contaju ativado como fonte oficial de dados fiscais.'
     );
-    toast.success('Contábilex ativado como a Fonte Oficial de Dados Contábeis!');
+    toast.success('Contaju ativado como a Fonte Oficial de Dados Contábeis!');
     setIsBasesModalOpen(false);
     loadContabilexData(activeTenantId);
   };
 
   const handleDisconnectContabilex = async () => {
-    if (!confirm('Deseja realmente desconectar a integração com o Contábilex? As bases fiscais passarão para modo manual.')) {
+    if (!confirm('Deseja realmente desconectar a integração com o Escritório Contaju? As bases fiscais passarão para modo manual.')) {
       return;
     }
     const res = await ContabilexIntegrationService.disconnectLink(activeTenantId);
@@ -387,7 +418,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       'CONTABILEX_DISCONNECTED',
       'INTEGRATION',
       activeTenantId,
-      'Vínculo com Contábilex desconectado.'
+      'Vínculo com Escritório Contaju desconectado.'
     );
     await db.switchFiscalModeAsync('MANUAL_TOTAL');
     toast.info('Integração desconectada. A apuração fiscal retornou ao modo manual.');
@@ -744,12 +775,12 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
             </div>
             <button
               type="button"
-              onClick={() => loadContabilexData(activeTenantId)}
-              disabled={isLoadingSnapshots}
+              onClick={handleSyncWithContaju}
+              disabled={isSyncingWithContaju || isLoadingSnapshots}
               className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white text-xs font-bold shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer"
             >
-              <RefreshCw className={`w-4 h-4 ${isLoadingSnapshots ? 'animate-spin' : ''}`} />
-              <span>Verificar Publicações</span>
+              <RefreshCw className={`w-4 h-4 ${isSyncingWithContaju || isLoadingSnapshots ? 'animate-spin' : ''}`} />
+              <span>{isSyncingWithContaju ? 'Sincronizando...' : 'Verificar Publicações'}</span>
             </button>
           </div>
         ) : activeFiscalMode === 'CONTABILEX' && contabilexLink?.status === 'PENDING' ? (
@@ -768,7 +799,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                   </span>
                 </div>
                 <p className="text-xs text-amber-800 leading-relaxed max-w-2xl">
-                  Sua solicitação de conexão para o CNPJ <strong className="font-mono">{formatCnpj(contabilexLink.cnpj)}</strong> está aguardando homologação do operador contábil no Contábilex.
+                  Sua solicitação de conexão para o CNPJ <strong className="font-mono">{formatCnpj(contabilexLink.cnpj)}</strong> está aguardando homologação pelo Escritório Contaju.
                 </p>
               </div>
             </div>
@@ -827,12 +858,12 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                 activeFiscalMode === 'CONTABILEX' && contabilexLink?.status === 'ACTIVE' ? (
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200 flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-teal-500"></span>
-                    Contábilex — Conexão ativa (Aguardando publicações)
+                    Contaju — Conexão ativa (Aguardando publicações)
                   </span>
                 ) : activeFiscalMode === 'CONTABILEX' && contabilexLink?.status === 'PENDING' ? (
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping"></span>
-                    Contábilex — Solicitação pendente de aprovação
+                    Contaju — Solicitação pendente de aprovação
                   </span>
                 ) : (
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-200">
@@ -852,7 +883,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                 <>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200 flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-teal-500"></span>
-                    Contábilex conectado
+                    Contaju conectado
                   </span>
                   {contabilexSnapshots.length < 12 ? (
                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
@@ -976,7 +1007,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                 : '0,00%'}
             </div>
             <span className="text-[10px] text-slate-400 block">
-              {isContabilexActive ? 'Oficial Contábilex' : 'Simples Nacional'}
+              {isContabilexActive ? 'Oficial Contaju' : 'Simples Nacional'}
             </span>
           </div>
         </div>
@@ -1010,7 +1041,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                       <Layers className="w-4 h-4 text-teal-600 shrink-0" />
                       <div>
                         <span className="text-xs font-bold text-slate-900 block">
-                          Composição dos Meses Sincronizados (Contábilex — Escritório Contaju)
+                          Composição dos Meses Sincronizados (Escritório Contaju)
                         </span>
                         <span className="text-[11px] text-slate-500">
                           {contabilexSnapshots.length} competência{contabilexSnapshots.length !== 1 ? 's' : ''} disponível{contabilexSnapshots.length !== 1 ? 'is' : ''} na origem contábil oficial
@@ -1019,12 +1050,12 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                     </div>
                     <button
                       type="button"
-                      onClick={() => loadContabilexData(activeTenantId)}
-                      disabled={isLoadingSnapshots}
+                      onClick={handleSyncWithContaju}
+                      disabled={isSyncingWithContaju || isLoadingSnapshots}
                       className="px-3 py-1.5 rounded-xl bg-white hover:bg-teal-50 border border-teal-300 text-teal-900 text-xs font-bold shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5 self-start sm:self-auto"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSnapshots ? 'animate-spin' : ''}`} />
-                      <span>{isLoadingSnapshots ? 'Sincronizando...' : 'Sincronizar Agora'}</span>
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingWithContaju || isLoadingSnapshots ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingWithContaju ? 'Sincronizando...' : 'Sincronizar Agora'}</span>
                     </button>
                   </div>
 
@@ -1039,18 +1070,16 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-[10px] uppercase font-bold tracking-wider">
                             <th className="py-2.5 px-3">Competência</th>
                             <th className="py-2.5 px-3">Receita Bruta</th>
-                            <th className="py-2.5 px-3">Base Fator R</th>
+                            <th className="py-2.5 px-3">Valor da Folha</th>
                             <th className="py-2.5 px-3">Guia DAS</th>
-                            <th className="py-2.5 px-3">Alíquota Efetiva</th>
-                            <th className="py-2.5 px-2 text-center">Versão</th>
-                            <th className="py-2.5 px-3 text-center">Status de Revisão</th>
-                            <th className="py-2.5 px-3 text-right">Ação</th>
+                            <th className="py-2.5 px-3 text-right">Relação Folha/Receita</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 font-mono text-xs">
                           {contabilexSnapshots.map((s) => {
-                            const conf = contabilexConfirmations[s.competency];
-                            const revStatus = ContabilexIntegrationService.evaluateReviewStatus(s, conf);
+                            const revenue = Number(s.gross_revenue) || 0;
+                            const payroll = Number(s.factor_r_payroll_base) || 0;
+                            const ratio = revenue > 0 ? (payroll / revenue) * 100 : null;
 
                             return (
                               <tr key={s.id} className="hover:bg-slate-50/80 transition-colors">
@@ -1058,58 +1087,16 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                                   {competencyToDisplay(s.competency)}
                                 </td>
                                 <td className="py-2.5 px-3 text-slate-900">
-                                  {formatCurrency(s.gross_revenue)}
+                                  {formatCurrency(revenue)}
                                 </td>
                                 <td className="py-2.5 px-3 text-teal-800 font-bold">
-                                  {formatCurrency(s.factor_r_payroll_base)}
+                                  {formatCurrency(payroll)}
                                 </td>
                                 <td className="py-2.5 px-3 text-slate-800">
                                   {s.das_total !== null ? formatCurrency(s.das_total) : 'Em apuração'}
                                 </td>
-                                <td className="py-2.5 px-3 text-slate-700">
-                                  {s.effective_rate !== null ? `${s.effective_rate.toFixed(2)}%` : '-'}
-                                </td>
-                                <td className="py-2.5 px-2 text-center">
-                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                                    v{s.version}
-                                  </span>
-                                </td>
-                                <td className="py-2.5 px-3 text-center font-sans">
-                                  {revStatus === 'CONFIRMED' ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                                      Confirmada
-                                    </span>
-                                  ) : revStatus === 'REVISION_REQUIRED' ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 animate-pulse">
-                                      <AlertTriangle className="w-3 h-3 text-amber-600" />
-                                      Retificação Disponível
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                                      <Info className="w-3 h-3 text-blue-500" />
-                                      Pendente de Revisão
-                                    </span>
-                                  )}
-                                </td>
-                                <td className="py-2.5 px-3 text-right font-sans">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenReviewModal(s)}
-                                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                      revStatus === 'REVISION_REQUIRED'
-                                        ? 'bg-amber-600 hover:bg-amber-700 text-white shadow-xs'
-                                        : revStatus === 'PENDING_REVIEW'
-                                        ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs'
-                                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                                    }`}
-                                  >
-                                    {revStatus === 'REVISION_REQUIRED'
-                                      ? 'Revisar Retificação'
-                                      : revStatus === 'PENDING_REVIEW'
-                                      ? 'Revisar e Confirmar'
-                                      : 'Ver Detalhes'}
-                                  </button>
+                                <td className="py-2.5 px-3 text-right text-slate-900 font-bold">
+                                  {ratio !== null ? `${ratio.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%` : '—'}
                                 </td>
                               </tr>
                             );
@@ -1122,7 +1109,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                   <div className="p-3 bg-teal-50/60 rounded-xl border border-teal-200/60 flex items-center gap-2 text-xs text-teal-900">
                     <Info className="w-4 h-4 text-teal-600 shrink-0" />
                     <span>
-                      <strong>Base Oficial Contábilex:</strong> A apuração do Fator R utiliza a base da folha consolidada e homologada oficialmente pela contabilidade.
+                      <strong>Base Oficial Contaju:</strong> A apuração do Fator R utiliza a base da folha consolidada e homologada oficialmente pelo Escritório Contaju.
                     </span>
                   </div>
                 </div>
@@ -1810,7 +1797,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                     <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-slate-700 group-hover:translate-x-0.5 transition-all shrink-0 mt-2" />
                   </button>
 
-                  {/* Opção 3: Sincronizar com Contábilex */}
+                  {/* Opção 3: Sincronizar com Escritório Contaju */}
                   <button
                     type="button"
                     onClick={() => {
@@ -1830,14 +1817,14 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-bold text-slate-900">
-                            Sincronizar com Contábilex
+                            Sincronizar com Escritório Contaju
                           </span>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
-                            Em preparação
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 border border-teal-200">
+                            Oficial Contaju
                           </span>
                         </div>
                         <p className="text-xs text-slate-600 leading-relaxed">
-                          Importação automática das apurações do Escritório Contaju LTDA (app-contaju.vercel.app) diretamente via CNPJ da clínica.
+                          Importação automática das apurações do Escritório Contaju LTDA diretamente via CNPJ da clínica.
                         </p>
                       </div>
                     </div>
@@ -1864,7 +1851,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                       ? 'Total Consolidado'
                       : modalMode === 'MANUAL_MONTHLY'
                       ? 'Detalhamento Mês a Mês'
-                      : 'Contábilex'}
+                      : 'Escritório Contaju'}
                   </span>
                 </div>
 
@@ -2124,11 +2111,11 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           Fonte Contábil Oficial
                         </span>
                         <h4 className="text-xs font-bold text-teal-950">
-                          Conectar ao Escritório Contaju (Contábilex)
+                          Conectar ao Escritório Contaju
                         </h4>
                       </div>
                       <p className="text-xs text-teal-900 leading-relaxed">
-                        A integração oficial com a plataforma Contábilex sincroniza automaticamente as apurações de faturamento, folha de pagamento, base do Fator R e guias DAS emitidas pela contabilidade.
+                        A integração oficial com o Escritório Contaju sincroniza automaticamente as apurações de faturamento, folha de pagamento, base do Fator R e guias DAS emitidas pela contabilidade.
                       </p>
                     </div>
 
@@ -2142,7 +2129,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           </span>
                         </div>
                         <p className="text-xs text-amber-800 leading-relaxed">
-                          Sua solicitação de conexão para o CNPJ <strong className="font-mono">{formatCnpj(contabilexLink.cnpj)}</strong> foi registrada com sucesso e está aguardando homologação pelo operador contábil no Contábilex.
+                          Sua solicitação de conexão para o CNPJ <strong className="font-mono">{formatCnpj(contabilexLink.cnpj)}</strong> foi registrada com sucesso e está aguardando homologação pelo Escritório Contaju.
                         </p>
                         <div className="pt-2 flex items-center justify-between border-t border-amber-200/70">
                           <span className="text-[11px] text-amber-700">
@@ -2165,7 +2152,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           <div className="flex items-center gap-2">
                             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                             <span className="font-bold text-emerald-950 text-xs">
-                              Conectado ao Contábilex
+                              Conectado ao Escritório Contaju
                             </span>
                           </div>
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
@@ -2188,7 +2175,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                                 className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
                               >
                                 <Check className="w-3.5 h-3.5" />
-                                <span>{isSavingBases ? 'Ativando...' : 'Ativar Contábilex como Fonte Oficial'}</span>
+                                <span>{isSavingBases ? 'Ativando...' : 'Ativar Contaju como Fonte Oficial'}</span>
                               </button>
                             ) : (
                               <button
@@ -2210,7 +2197,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           <span>Conexão com o Escritório Contaju inativa</span>
                         </div>
                         <p className="text-xs text-slate-600 leading-relaxed">
-                          O vínculo com o Contábilex foi desativado. Todo o histórico de competências e confirmações anteriores permanece preservado com segurança. Para restabelecer o vínculo, envie uma nova solicitação abaixo.
+                          O vínculo com o Escritório Contaju foi desativado. Todo o histórico de competências e confirmações anteriores permanece preservado com segurança. Para restabelecer o vínculo, envie uma nova solicitação abaixo.
                         </p>
                       </div>
                     ) : contabilexLink?.status === 'REJECTED' ? (
@@ -2284,7 +2271,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                             className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono text-sm font-bold text-slate-800 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:opacity-60 disabled:bg-slate-100"
                           />
                           <span className="text-[10px] text-slate-400 block mt-1">
-                            A correspondência é realizada estritamente pelo CNPJ cadastrado no Contábilex.
+                            A correspondência é realizada estritamente pelo CNPJ cadastrado no Escritório Contaju.
                           </span>
                         </div>
 

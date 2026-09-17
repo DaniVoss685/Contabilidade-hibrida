@@ -350,24 +350,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold mb-1">
-            <span>A Vencer</span>
-            <Clock className="w-4 h-4 text-blue-500" />
-          </div>
-          <div className="text-xl font-bold text-slate-900">{formatCurrency(totalToReceive)}</div>
-          <div className="text-[11px] text-slate-500 mt-1">Fluxo previsto de caixa</div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl border border-rose-100 bg-rose-50/20 shadow-xs">
-          <div className="flex items-center justify-between text-rose-600 text-xs font-semibold mb-1">
-            <span>Vencidas / Em Atraso</span>
-            <AlertTriangle className="w-4 h-4 text-rose-500" />
-          </div>
-          <div className="text-xl font-bold text-rose-700">{formatCurrency(totalOverdue)}</div>
-          <div className="text-[11px] text-rose-600/80 mt-1">Inadimplência pendente de cobrança</div>
-        </div>
-
+        {/* 1. Total Recebido */}
         <div className="bg-white p-4 rounded-xl border border-emerald-100 bg-emerald-50/20 shadow-xs">
           <div className="flex items-center justify-between text-emerald-600 text-xs font-semibold mb-1">
             <span>Total Recebido</span>
@@ -377,6 +360,27 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
           <div className="text-[11px] text-emerald-600/80 mt-1">Baixado e conciliado no período</div>
         </div>
 
+        {/* 2. A Vencer */}
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+          <div className="flex items-center justify-between text-slate-500 text-xs font-semibold mb-1">
+            <span>A Vencer</span>
+            <Clock className="w-4 h-4 text-blue-500" />
+          </div>
+          <div className="text-xl font-bold text-slate-900">{formatCurrency(totalToReceive)}</div>
+          <div className="text-[11px] text-slate-500 mt-1">Fluxo previsto de caixa</div>
+        </div>
+
+        {/* 3. Vencidas em Atraso */}
+        <div className="bg-white p-4 rounded-xl border border-rose-100 bg-rose-50/20 shadow-xs">
+          <div className="flex items-center justify-between text-rose-600 text-xs font-semibold mb-1">
+            <span>Vencidas em Atraso</span>
+            <AlertTriangle className="w-4 h-4 text-rose-500" />
+          </div>
+          <div className="text-xl font-bold text-rose-700">{formatCurrency(totalOverdue)}</div>
+          <div className="text-[11px] text-rose-600/80 mt-1">Inadimplência pendente de cobrança</div>
+        </div>
+
+        {/* 4. Taxas de Maquininha */}
         <div className="bg-white p-4 rounded-xl border border-indigo-100 bg-indigo-50/20 shadow-xs">
           <div className="flex items-center justify-between text-indigo-600 text-xs font-semibold mb-1">
             <span>Taxas de Maquininha</span>

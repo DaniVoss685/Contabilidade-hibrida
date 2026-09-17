@@ -200,6 +200,59 @@ export const ContabilexIntegrationService = {
   },
 
   /**
+   * Dispara a sincronização real server-side das competências contábeis fechadas no Contaju.
+   * Executa a RPC SECURITY DEFINER sync_dental_tenant_accounting_snapshots.
+   */
+  async syncTenantSnapshots(
+    dentalTenantId: string
+  ): Promise<{
+    success: boolean;
+    changed?: boolean;
+    newCount?: number;
+    updatedCount?: number;
+    unchangedCount?: number;
+    totalCompetencies?: number;
+    error?: string;
+  }> {
+    if (!dentalTenantId) {
+      return { success: false, error: 'Tenant ID não informado' };
+    }
+
+    const res = await apiFetch<{
+      success: boolean;
+      changed?: boolean;
+      new_count?: number;
+      updated_count?: number;
+      unchanged_count?: number;
+      total_competencies?: number;
+      error?: string;
+    }>('rpc/sync_dental_tenant_accounting_snapshots', {
+      method: 'POST',
+      body: {
+        p_dental_tenant_id: dentalTenantId,
+      },
+    });
+
+    if (res.error) {
+      return { success: false, error: res.error };
+    }
+
+    const data = res.data;
+    if (!data || data.success === false) {
+      return { success: false, error: data?.error || 'Erro ao sincronizar dados com o Contaju' };
+    }
+
+    return {
+      success: true,
+      changed: Boolean(data.changed),
+      newCount: Number(data.new_count || 0),
+      updatedCount: Number(data.updated_count || 0),
+      unchangedCount: Number(data.unchanged_count || 0),
+      totalCompetencies: Number(data.total_competencies || 0),
+    };
+  },
+
+  /**
    * Obtém as revisões/confirmações efetuadas pelo usuário na clínica.
    */
   async getConfirmations(

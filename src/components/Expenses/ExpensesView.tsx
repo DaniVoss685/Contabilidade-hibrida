@@ -17,6 +17,9 @@ import {
   Repeat,
   Layers,
   X,
+  CheckCircle,
+  Clock,
+  AlertTriangle,
 } from 'lucide-react';
 import { Expense, ExpenseCategory, ExpenseEntity } from '../../types';
 import { formatCurrency, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
@@ -132,6 +135,41 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
       pendingRecurrentValue,
       totalCount: recurrentList.length,
       uniqueSeries,
+    };
+  }, [expenses]);
+
+  // KPIs de Despesas e Contas a Pagar (Total Pago, A Pagar, Em Atraso)
+  const payableKpis = useMemo(() => {
+    let totalPaid = 0;
+    let countPaid = 0;
+    let totalToPay = 0;
+    let countToPay = 0;
+    let totalOverdue = 0;
+    let countOverdue = 0;
+
+    for (const exp of expenses) {
+      const effStatus = getEffectivePayableStatus(exp);
+      const val = exp.value || 0;
+
+      if (effStatus === 'PAGO') {
+        totalPaid += val;
+        countPaid++;
+      } else if (effStatus === 'EM_ATRASO') {
+        totalOverdue += val;
+        countOverdue++;
+      } else if (effStatus === 'A_PAGAR') {
+        totalToPay += val;
+        countToPay++;
+      }
+    }
+
+    return {
+      totalPaid,
+      countPaid,
+      totalToPay,
+      countToPay,
+      totalOverdue,
+      countOverdue,
     };
   }, [expenses]);
 
@@ -441,6 +479,59 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
               <PlusCircle className="w-4 h-4" />
               <span>+ NOVA DESPESA</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Payable Mode KPI Cards Strip (Despesas Já Pagas, Despesas a Pagar, Despesas em Atraso) */}
+      {viewMode !== 'recurrent' && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {/* 1. Despesas Já Pagas */}
+          <div className="bg-white p-4 rounded-xl border border-emerald-100 bg-emerald-50/20 shadow-xs">
+            <div className="flex items-center justify-between text-emerald-600 text-xs font-semibold mb-1">
+              <span>Despesas Já Pagas</span>
+              <CheckCircle className="w-4 h-4 text-emerald-500" />
+            </div>
+            <div className="text-xl font-bold text-emerald-700">
+              {formatCurrency(payableKpis.totalPaid)}
+            </div>
+            <div className="text-[11px] text-emerald-600/80 mt-1">
+              {payableKpis.countPaid > 0
+                ? `${payableKpis.countPaid} ${payableKpis.countPaid === 1 ? 'despesa liquidada' : 'despesas liquidadas'}`
+                : 'Nenhum pagamento liquidado no período'}
+            </div>
+          </div>
+
+          {/* 2. Despesas a Pagar */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+            <div className="flex items-center justify-between text-slate-500 text-xs font-semibold mb-1">
+              <span>Despesas a Pagar</span>
+              <Clock className="w-4 h-4 text-blue-500" />
+            </div>
+            <div className="text-xl font-bold text-slate-900">
+              {formatCurrency(payableKpis.totalToPay)}
+            </div>
+            <div className="text-[11px] text-slate-500 mt-1">
+              {payableKpis.countToPay > 0
+                ? `${payableKpis.countToPay} ${payableKpis.countToPay === 1 ? 'despesa a vencer' : 'despesas a vencer'}`
+                : 'Nenhuma despesa pendente no período'}
+            </div>
+          </div>
+
+          {/* 3. Despesas em Atraso */}
+          <div className="bg-white p-4 rounded-xl border border-rose-100 bg-rose-50/20 shadow-xs">
+            <div className="flex items-center justify-between text-rose-600 text-xs font-semibold mb-1">
+              <span>Despesas em Atraso</span>
+              <AlertTriangle className="w-4 h-4 text-rose-500" />
+            </div>
+            <div className="text-xl font-bold text-rose-700">
+              {formatCurrency(payableKpis.totalOverdue)}
+            </div>
+            <div className="text-[11px] text-rose-600/80 mt-1">
+              {payableKpis.countOverdue > 0
+                ? `${payableKpis.countOverdue} ${payableKpis.countOverdue === 1 ? 'pendência vencida' : 'pendências vencidas'}`
+                : 'Nenhuma despesa em atraso'}
+            </div>
           </div>
         </div>
       )}
