@@ -790,10 +790,12 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
                               : isOverdue
                               ? 'bg-rose-50 text-rose-700 border border-rose-200/80'
+                              : isPartial
+                              ? 'bg-indigo-50 text-indigo-700 border border-indigo-200/80'
                               : 'bg-blue-50 text-blue-700 border border-blue-200/80'
                           }`}
                         >
-                          {isReceived ? 'Recebida' : isOverdue ? 'Vencida' : 'A Vencer'}
+                          {isReceived ? 'Recebida' : isOverdue ? 'Em Atraso' : isPartial ? 'Parcial' : 'A Vencer'}
                         </span>
                       </td>
 
@@ -1225,8 +1227,10 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                       <tbody className="divide-y divide-slate-100 text-slate-700">
                         {viewingSale.installments.map((inst) => {
                           const isPaid = inst.status === 'RECEBIDO';
+                          const effectiveInstStatus = getEffectiveReceivableStatus(inst);
+                          const isInstOverdue = !isPaid && (effectiveInstStatus === 'EM_ATRASO' || inst.status === 'VENCIDO');
                           return (
-                            <tr key={inst.id} className={isPaid ? 'bg-emerald-50/20' : 'hover:bg-slate-50'}>
+                            <tr key={inst.id} className={isPaid ? 'bg-emerald-50/20' : isInstOverdue ? 'bg-rose-50/30' : 'hover:bg-slate-50'}>
                               <td className="py-2 px-3 text-center font-bold text-slate-600">
                                 {inst.installmentNumber}/{viewingSale.installmentsCount}
                               </td>
@@ -1246,10 +1250,12 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                                   className={`inline-flex items-center px-2 py-0.5 rounded-full font-bold text-[9.5px] ${
                                     isPaid
                                       ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
+                                      : isInstOverdue
+                                      ? 'bg-rose-50 text-rose-700 border border-rose-200/80'
                                       : 'bg-blue-50 text-blue-700 border border-blue-200/80'
                                   }`}
                                 >
-                                  {isPaid ? 'Recebida' : 'A Receber'}
+                                  {isPaid ? 'Recebida' : isInstOverdue ? 'Em Atraso' : 'A Receber'}
                                 </span>
                               </td>
                               <td className="py-2 px-3 text-center text-[10px]">

@@ -22,6 +22,7 @@ import { Expense, ExpenseCategory, ExpenseEntity } from '../../types';
 import { formatCurrency, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
+import { getEffectivePayableStatus } from '../../lib/statusHelper';
 import { BatchEditExpensesModal } from '../Modals/BatchEditExpensesModal';
 import { NewExpenseModal } from '../Modals/NewExpenseModal';
 import { CustomSelect, ConfirmDialog, useToast } from '../UI';
@@ -151,8 +152,17 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
       const matchesEntity =
         entityFilter === 'ALL' || exp.entity === entityFilter;
 
-      const matchesStatus =
-        statusFilter === 'ALL' || exp.status === statusFilter;
+      const effectiveStatus = getEffectivePayableStatus(exp);
+      let matchesStatus = true;
+      if (statusFilter === 'ALL') {
+        matchesStatus = true;
+      } else if (statusFilter === 'EM_ATRASO' || statusFilter === 'VENCIDO') {
+        matchesStatus = effectiveStatus === 'EM_ATRASO';
+      } else if (statusFilter === 'A_PAGAR') {
+        matchesStatus = effectiveStatus === 'A_PAGAR';
+      } else if (statusFilter === 'PAGO') {
+        matchesStatus = effectiveStatus === 'PAGO';
+      }
 
       const matchesCat =
         categoryFilter === 'ALL' || exp.categoryId === categoryFilter;
@@ -645,6 +655,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             options={[
               { value: 'ALL', label: 'Status: Todos' },
               { value: 'A_PAGAR', label: 'A Pagar' },
+              { value: 'EM_ATRASO', label: 'Em Atraso' },
               { value: 'PAGO', label: 'Pagas' },
             ]}
           />
@@ -813,15 +824,28 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
                       {/* 6. Status */}
                       <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center justify-center min-w-[85px] whitespace-nowrap px-2.5 py-1 rounded-full font-bold text-[10px] ${
-                            isPaid
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {isPaid ? 'PAGO' : 'A PAGAR'}
-                        </span>
+                        {(() => {
+                          const effectiveStatus = getEffectivePayableStatus(exp);
+                          if (effectiveStatus === 'PAGO') {
+                            return (
+                              <span className="inline-flex items-center justify-center min-w-[85px] whitespace-nowrap px-2.5 py-1 rounded-full font-bold text-[10px] bg-emerald-100 text-emerald-800">
+                                PAGO
+                              </span>
+                            );
+                          }
+                          if (effectiveStatus === 'EM_ATRASO') {
+                            return (
+                              <span className="inline-flex items-center justify-center min-w-[85px] whitespace-nowrap px-2.5 py-1 rounded-full font-bold text-[10px] bg-rose-100 text-rose-800 border border-rose-200/80">
+                                EM ATRASO
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="inline-flex items-center justify-center min-w-[85px] whitespace-nowrap px-2.5 py-1 rounded-full font-bold text-[10px] bg-amber-100 text-amber-800">
+                              A PAGAR
+                            </span>
+                          );
+                        })()}
                       </td>
 
                       {/* 7. Atributos Fiscais */}

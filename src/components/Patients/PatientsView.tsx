@@ -27,6 +27,7 @@ interface PatientsViewProps {
   onOpenNewSaleForPatient?: (patientId: string) => void;
   initialOpenNewModal?: boolean;
   onClearAction?: () => void;
+  initialSelectedPatientId?: string;
 }
 
 export const PatientsView: React.FC<PatientsViewProps> = ({
@@ -36,10 +37,20 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
   onOpenNewSaleForPatient,
   initialOpenNewModal = false,
   onClearAction,
+  initialSelectedPatientId,
 }) => {
   const toast = useToast();
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedPatientId, setSelectedPatientId] = useState<string>(patients[0]?.id || '');
+  const [selectedPatientId, setSelectedPatientId] = useState<string>(
+    initialSelectedPatientId || patients[0]?.id || ''
+  );
+
+  // Sync with external selection (e.g. from Ctrl+K global search)
+  React.useEffect(() => {
+    if (initialSelectedPatientId) {
+      setSelectedPatientId(initialSelectedPatientId);
+    }
+  }, [initialSelectedPatientId]);
 
   // New patient modal state
   const [showAddModal, setShowAddModal] = useState<boolean>(initialOpenNewModal);

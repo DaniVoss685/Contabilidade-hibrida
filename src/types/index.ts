@@ -46,6 +46,7 @@ export interface ClinicTenant {
   uf?: string;
   isDemo?: boolean;
   isActive?: boolean;
+  isTest?: boolean;
   createdAt: string;
 }
 

@@ -53,7 +53,7 @@ export const PeriodFilterBar: React.FC<PeriodFilterBarProps> = ({
   const netBalance = periodSalesValue - periodExpensesValue;
 
   return (
-    <div className="sticky top-[49px] z-20 bg-white/95 backdrop-blur-md border-b border-slate-200/80">
+    <div className="relative z-20 bg-white/95 backdrop-blur-md border-b border-slate-200/80">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-col md:flex-row items-start md:items-center justify-between gap-2.5">
         {/* Left Side: Unified Period Picker */}
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">

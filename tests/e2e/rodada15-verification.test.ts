@@ -24,113 +24,131 @@ describe('Rodada 15: Persistência Real Global no PostgreSQL e Login Premium com
     const email = `dr_persist_${Date.now()}@clinicaodonto.com.br`;
     const password = 'SenhaFortePersist@2026';
 
-    // 1. Criar nova conta
-    const createRes = await db.createAccount({
-      email,
-      password,
-      termsAccepted: true,
-    });
-    expect(createRes.success).toBe(true);
-    expect(createRes.session).toBeDefined();
-    const tenantId = createRes.session!.tenantId;
+    let tenantId: string | undefined;
+    try {
+      // 1. Criar nova conta
+      const createRes = await db.createAccount({
+        email,
+        password,
+        termsAccepted: true,
+      });
+      expect(createRes.success).toBe(true);
+      expect(createRes.session).toBeDefined();
+      tenantId = createRes.session!.tenantId;
 
-    // 2. Salvar bases fiscais consolidadas via método assíncrono
-    const saveTotalRes = await db.saveInitialFiscalTotalAsync(480000, 134400, 11200, '2026-06');
-    expect(saveTotalRes.success).toBe(true);
+      // 2. Salvar bases fiscais consolidadas via método assíncrono
+      const saveTotalRes = await db.saveInitialFiscalTotalAsync(480000, 134400, 11200, '2026-06');
+      expect(saveTotalRes.success).toBe(true);
 
-    // 3. Salvar competência mensal de folha
-    const savePayrollRes = await db.upsertMonthlyPayrollAsync({
-      month: '2026-06',
-      proLabore: 11200,
-      salaries: 5000,
-      charges: 4000,
-      totalPayroll: 20200,
-    });
-    expect(savePayrollRes.success).toBe(true);
+      // 3. Salvar competência mensal de folha
+      const savePayrollRes = await db.upsertMonthlyPayrollAsync({
+        month: '2026-06',
+        proLabore: 11200,
+        salaries: 5000,
+        charges: 4000,
+        totalPayroll: 20200,
+      });
+      expect(savePayrollRes.success).toBe(true);
 
-    // 4. Salvar dados profissionais e deduções do Carnê-Leão (PF)
-    const saveProfileRes = await db.updateProfessionalAsync({
-      name: 'Dr. Roberto Persistência',
-      cro: '123456',
-      croUf: 'SP',
-      especialidade: 'Ortodontia Avançada',
-      nomeFantasia: 'Clínica Sorriso Seguro',
-      razaoSocial: 'Clínica Sorriso Seguro LTDA',
-      numDependentes: 3,
-      inssProprioMensal: 1412.00,
-    });
-    expect(saveProfileRes.success).toBe(true);
+      // 4. Salvar dados profissionais e deduções do Carnê-Leão (PF)
+      const saveProfileRes = await db.updateProfessionalAsync({
+        name: 'Dr. Roberto Persistência',
+        cro: '123456',
+        croUf: 'SP',
+        especialidade: 'Ortodontia Avançada',
+        nomeFantasia: 'Clínica Sorriso Seguro',
+        razaoSocial: 'Clínica Sorriso Seguro LTDA',
+        numDependentes: 3,
+        inssProprioMensal: 1412.00,
+      });
+      expect(saveProfileRes.success).toBe(true);
 
-    // 5. Simular LOGOUT
-    db.logout();
-    expect(db.getCurrentSession()).toBeNull();
+      // 5. Simular LOGOUT
+      db.logout();
+      expect(db.getCurrentSession()).toBeNull();
 
-    // 6. Simular LOGIN em nova sessão (como se fosse outro dispositivo)
-    const loginRes = await db.authenticate(email, password);
-    expect(loginRes.success).toBe(true);
-    expect(loginRes.session).toBeDefined();
+      // 6. Simular LOGIN em nova sessão (como se fosse outro dispositivo)
+      const loginRes = await db.authenticate(email, password);
+      expect(loginRes.success).toBe(true);
+      expect(loginRes.session).toBeDefined();
 
-    // 7. Simular Hidratação Assíncrona pós-login
-    await db.hydrateTenantAsync(tenantId);
+      // 7. Simular Hidratação Assíncrona pós-login
+      await db.hydrateTenantAsync(tenantId);
 
-    // 8. Verificar que os dados foram 100% recuperados da fonte da verdade
-    const loadedProf = db.getProfessional();
-    expect(loadedProf.name).toBe('Dr. Roberto Persistência');
-    expect(loadedProf.cro).toBe('123456');
-    expect(loadedProf.croUf).toBe('SP');
-    expect(loadedProf.especialidade).toBe('Ortodontia Avançada');
-    expect(loadedProf.nomeFantasia).toBe('Clínica Sorriso Seguro');
-    expect(loadedProf.numDependentes).toBe(3);
-    expect(loadedProf.inssProprioMensal).toBe(1412.00);
+      // 8. Verificar que os dados foram 100% recuperados da fonte da verdade
+      const loadedProf = db.getProfessional();
+      expect(loadedProf.name).toBe('Dr. Roberto Persistência');
+      expect(loadedProf.cro).toBe('123456');
+      expect(loadedProf.croUf).toBe('SP');
+      expect(loadedProf.especialidade).toBe('Ortodontia Avançada');
+      expect(loadedProf.nomeFantasia).toBe('Clínica Sorriso Seguro');
+      expect(loadedProf.numDependentes).toBe(3);
+      expect(loadedProf.inssProprioMensal).toBe(1412.00);
 
-    expect(loadedProf.baselineConfigured).toBe(true);
-    expect(loadedProf.fiscalSourceType).toBe('MANUAL_TOTAL');
-    expect(loadedProf.rbt12Inicial).toBe(480000);
-    expect(loadedProf.folha12MesesInicial).toBe(134400);
-    expect(loadedProf.proLaboreMensal).toBe(11200);
+      expect(loadedProf.baselineConfigured).toBe(true);
+      expect(loadedProf.fiscalSourceType).toBe('MANUAL_TOTAL');
+      expect(loadedProf.rbt12Inicial).toBe(480000);
+      expect(loadedProf.folha12MesesInicial).toBe(134400);
+      expect(loadedProf.proLaboreMensal).toBe(11200);
 
-    const monthlyPayroll = db.getMonthlyPayroll('2026-06');
-    expect(monthlyPayroll).toBeDefined();
-    expect(monthlyPayroll?.proLabore).toBe(11200);
-    expect(monthlyPayroll?.salaries).toBe(5000);
+      const monthlyPayroll = db.getMonthlyPayroll('2026-06');
+      expect(monthlyPayroll).toBeDefined();
+      expect(monthlyPayroll?.proLabore).toBe(11200);
+      expect(monthlyPayroll?.salaries).toBe(5000);
+    } finally {
+      if (tenantId) {
+        await supabaseClient.deleteTenantCascading(tenantId).catch(() => {});
+      }
+    }
   }, { requirement: 'R15' });
 
   // Test 3: Isolamento Estrito Multi-Tenant entre Clínicas
   test('R15-TENANT-ISOLATION: Clínica A não acessa nem altera dados da Clínica B', async () => {
     const emailA = `clinica_a_${Date.now()}@teste.com`;
     const emailB = `clinica_b_${Date.now()}@teste.com`;
+    let tenantA: string | undefined;
+    let tenantB: string | undefined;
 
-    // Clínica A
-    const resA = await db.createAccount({ email: emailA, password: 'Password@A1', termsAccepted: true });
-    expect(resA.success).toBe(true);
-    const tenantA = resA.session!.tenantId;
+    try {
+      // Clínica A
+      const resA = await db.createAccount({ email: emailA, password: 'Password@A1', termsAccepted: true });
+      expect(resA.success).toBe(true);
+      tenantA = resA.session!.tenantId;
 
-    await db.saveInitialFiscalTotalAsync(250000, 70000, 5000, '2026-05');
-    await db.updateProfessionalAsync({ name: 'Dr. Dentista Alpha', cro: '111111' });
+      await db.saveInitialFiscalTotalAsync(250000, 70000, 5000, '2026-05');
+      await db.updateProfessionalAsync({ name: 'Dr. Dentista Alpha', cro: '111111' });
 
-    // Clínica B
-    const resB = await db.createAccount({ email: emailB, password: 'Password@B2', termsAccepted: true });
-    expect(resB.success).toBe(true);
-    const tenantB = resB.session!.tenantId;
+      // Clínica B
+      const resB = await db.createAccount({ email: emailB, password: 'Password@B2', termsAccepted: true });
+      expect(resB.success).toBe(true);
+      tenantB = resB.session!.tenantId;
 
-    // Verificar que tenant B começa limpo sem dados de A
-    expect(tenantA).not.toBe(tenantB);
-    const profB = db.getProfessional();
-    expect(profB.name).not.toBe('Dr. Dentista Alpha');
-    expect(profB.baselineConfigured).toBe(false);
-    expect(profB.rbt12Inicial).not.toBe(250000);
+      // Verificar que tenant B começa limpo sem dados de A
+      expect(tenantA).not.toBe(tenantB);
+      const profB = db.getProfessional();
+      expect(profB.name).not.toBe('Dr. Dentista Alpha');
+      expect(profB.baselineConfigured).toBe(false);
+      expect(profB.rbt12Inicial).not.toBe(250000);
 
-    // Gravar dados em B
-    await db.saveInitialFiscalTotalAsync(600000, 180000, 15000, '2026-05');
-    await db.updateProfessionalAsync({ name: 'Dra. Dentista Beta', cro: '222222' });
+      // Gravar dados em B
+      await db.saveInitialFiscalTotalAsync(600000, 180000, 15000, '2026-05');
+      await db.updateProfessionalAsync({ name: 'Dra. Dentista Beta', cro: '222222' });
 
-    // Re-hidratar A e verificar que seus dados permanecem intactos
-    await db.hydrateTenantAsync(tenantA);
-    const profA = db.getProfessional();
-    expect(profA.name).toBe('Dr. Dentista Alpha');
-    expect(profA.cro).toBe('111111');
-    expect(profA.rbt12Inicial).toBe(250000);
-    expect(profA.folha12MesesInicial).toBe(70000);
+      // Re-hidratar A e verificar que seus dados permanecem intactos
+      await db.hydrateTenantAsync(tenantA);
+      const profA = db.getProfessional();
+      expect(profA.name).toBe('Dr. Dentista Alpha');
+      expect(profA.cro).toBe('111111');
+      expect(profA.rbt12Inicial).toBe(250000);
+      expect(profA.folha12MesesInicial).toBe(70000);
+    } finally {
+      if (tenantA) {
+        await supabaseClient.deleteTenantCascading(tenantA).catch(() => {});
+      }
+      if (tenantB) {
+        await supabaseClient.deleteTenantCascading(tenantB).catch(() => {});
+      }
+    }
   }, { requirement: 'R15' });
 
   // Test 4: Estado de Hidratação Assíncrona e Prevenção de Flash de "R$ 0,00"

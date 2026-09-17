@@ -139,6 +139,7 @@ export function mapDbTenantToApp(db: any): ClinicTenant {
     uf: db.uf || 'SP',
     isDemo: Boolean(db.is_demo),
     isActive: Boolean(db.is_active ?? true),
+    isTest: Boolean(db.is_test),
     createdAt: db.created_at || new Date().toISOString(),
   };
 }
@@ -158,6 +159,7 @@ export function mapAppTenantToDb(app: ClinicTenant): any {
     uf: app.uf || 'SP',
     is_demo: Boolean(app.isDemo),
     is_active: app.isActive !== false,
+    is_test: Boolean(app.isTest),
     created_at: app.createdAt || new Date().toISOString(),
   };
 }
@@ -903,6 +905,37 @@ export const SupabaseService = {
       body: payload,
     });
     return { success: !error, error: error || undefined };
+  },
+
+  async deleteTenantCascading(tenantId: string): Promise<boolean> {
+    if (
+      !tenantId ||
+      tenantId === 'clinic_1789405023533_phq5' ||
+      tenantId === 'clinic_1789153962617_gpw1' ||
+      tenantId === 'tenant_demo'
+    ) {
+      return false; // Proteção estrita contra exclusão acidental de contas reais de produção
+    }
+    try {
+      await Promise.allSettled([
+        supabaseFetch(`df_payroll_history?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_expenses?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_sales?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_patients?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_procedures?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_clinical_inputs?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_bank_accounts?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_appointments?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_system_preferences?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_audit_logs?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_professionals?tenant_id=eq.${tenantId}`, { method: 'DELETE' }),
+        supabaseFetch(`df_users?clinic_id=eq.${tenantId}`, { method: 'DELETE' }),
+      ]);
+      await supabaseFetch(`df_tenants?id=eq.${tenantId}`, { method: 'DELETE' });
+      return true;
+    } catch {
+      return false;
+    }
   },
 
   async saveUser(user: StoredUserAccount): Promise<{ success: boolean; error?: string }> {

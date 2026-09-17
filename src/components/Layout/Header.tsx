@@ -15,6 +15,7 @@ import { formatCpf, formatCnpj } from '../../lib/masks';
 interface HeaderProps {
   organization: Organization;
   professional: Professional;
+  clinicDisplayName?: string;
   onOpenMobileMenu: () => void;
   onOpenNewSale: () => void;
   onOpenNewExpense: () => void;
@@ -25,11 +26,13 @@ interface HeaderProps {
   onQuickToggleFatorR?: () => void;
   isDemo?: boolean;
   onLogout?: () => void;
+  onOpenGlobalSearch?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   organization,
   professional,
+  clinicDisplayName,
   onOpenMobileMenu,
   onOpenNewSale,
   onOpenNewExpense,
@@ -40,9 +43,18 @@ export const Header: React.FC<HeaderProps> = ({
   onQuickToggleFatorR,
   isDemo,
   onLogout,
+  onOpenGlobalSearch,
 }) => {
+  const clinicTitle =
+    (clinicDisplayName && clinicDisplayName !== 'Clínica sem nome' ? clinicDisplayName : '') ||
+    (organization?.name && organization.name !== 'Clínica sem nome' && organization.name !== 'Clínica Odontológica' ? organization.name : '') ||
+    (professional?.nomeFantasia && professional.nomeFantasia !== 'Clínica sem nome' ? professional.nomeFantasia : '') ||
+    (professional?.razaoSocial && professional.razaoSocial !== 'Clínica sem nome' ? professional.razaoSocial : '') ||
+    organization?.tradeName ||
+    'Clínica sem nome';
+
   return (
-    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80">
+    <header className="bg-white/95 backdrop-blur-md border-b border-slate-200/80 relative z-30">
       <div className="px-4 sm:px-6 py-2.5 flex items-center justify-between gap-4">
         {/* Left Side: Clinic Identity */}
         <div className="flex items-center space-x-3 min-w-0">
@@ -57,7 +69,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-sm font-bold text-slate-900 tracking-tight leading-snug truncate">
-                {organization.name || professional.nomeFantasia || professional.razaoSocial || 'Clínica sem nome'}
+                {clinicTitle}
               </h1>
               {isDemo && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs" title="Ambiente com dados fictícios para demonstração">
@@ -79,13 +91,18 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Center: Search Bar Shortcut (Prodex / TradoX style) */}
-        <div className="hidden md:flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-slate-100/70 border border-slate-200/70 text-slate-400 text-xs w-64 lg:w-80 select-none">
-          <Search className="w-3.5 h-3.5 text-slate-400" />
-          <span className="text-slate-400 text-xs truncate">Buscar paciente, procedimento...</span>
-          <kbd className="ml-auto text-[10px] font-mono font-semibold bg-white border border-slate-200/80 px-1.5 py-0.5 rounded text-slate-500 shadow-2xs">
+        <button
+          type="button"
+          onClick={onOpenGlobalSearch}
+          className="hidden md:flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-slate-100/80 hover:bg-slate-200/70 border border-slate-200/80 hover:border-slate-300 text-slate-400 hover:text-slate-600 text-xs w-64 lg:w-80 select-none transition-all cursor-pointer shadow-2xs group"
+          title="Buscar paciente por nome, CPF ou telefone (Ctrl+K ou ⌘K)"
+        >
+          <Search className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-600 transition-colors" />
+          <span className="text-slate-500 text-xs truncate">Buscar paciente...</span>
+          <kbd className="ml-auto text-[10px] font-mono font-semibold bg-white border border-slate-200/90 px-1.5 py-0.5 rounded text-slate-500 shadow-2xs group-hover:border-emerald-300 group-hover:text-emerald-700 transition-colors">
             ⌘K
           </kbd>
-        </div>
+        </button>
 
         {/* Right Side: Primary and Secondary Action Hierarchy */}
         <div className="flex items-center space-x-1.5 sm:space-x-2 shrink-0">

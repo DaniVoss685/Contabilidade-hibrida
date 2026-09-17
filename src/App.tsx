@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { db } from './lib/db';
 import { Sidebar, NavTab } from './components/Layout/Sidebar';
 import { Header } from './components/Layout/Header';
+import { ConsultingBar } from './components/Layout/ConsultingBar';
 import { PeriodFilterBar } from './components/Layout/PeriodFilterBar';
 import { DashboardView } from './components/Dashboard/DashboardView';
 import { SalesView } from './components/Sales/SalesView';
@@ -28,6 +29,9 @@ import { AccountReceivableItem, DentalTenantOption } from './types';
 import { SupabaseService } from './lib/supabaseClient';
 import { ToastProvider, useToast } from './components/UI/ToastContext';
 import { ToastContainer } from './components/UI/Toast';
+import { GlobalPatientSearchModal } from './components/Navigation/GlobalPatientSearchModal';
+import { getEffectivePayableStatus, getEffectiveReceivableStatus } from './lib/statusHelper';
+import { Patient } from './types';
 import { ShieldAlert, ShieldCheck } from 'lucide-react';
 
 function AppContent() {
@@ -127,9 +131,14 @@ function AppContent() {
     }
   };
 
-  const handleReturnToPrimary = () => {
-    db.endSupportSession();
-    toast.info('Retornado para sua conta primária.');
+  const handleReturnToPrimary = async () => {
+    setIsSwitchingClinic(true);
+    try {
+      db.endSupportSession();
+      toast.info('Retornado para sua conta primária.');
+    } finally {
+      setTimeout(() => setIsSwitchingClinic(false), 200);
+    }
   };
 
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
@@ -179,6 +188,27 @@ function AppContent() {
   const [newSalePatientId, setNewSalePatientId] = useState<string | undefined>(undefined);
   const [isNewExpenseOpen, setIsNewExpenseOpen] = useState(false);
   const [settleItem, setSettleItem] = useState<AccountReceivableItem | null>(null);
+  const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false);
+  const [selectedPatientForViewId, setSelectedPatientForViewId] = useState<string | undefined>(undefined);
+
+  // Global Ctrl+K / Cmd+K shortcut listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsGlobalSearchOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleSelectPatientFromSearch = (patient: Patient) => {
+    setSelectedPatientForViewId(patient.id);
+    setCurrentTab('patients');
+    setIsGlobalSearchOpen(false);
+    setMobileMenuOpen(false);
+  };
 
   // Loaded database data
   const organization = db.getOrg();
@@ -259,9 +289,11 @@ function AppContent() {
       );
     }, 0);
 
-  const overdueReceivablesCount = receivablesList.filter((r) => r.status === 'VENCIDO').length;
+  const overdueReceivablesCount = receivablesList.filter(
+    (r) => getEffectiveReceivableStatus(r) === 'EM_ATRASO' || r.status === 'EM_ATRASO' || r.status === 'VENCIDO'
+  ).length;
   const overdueExpensesCount = expenses.filter(
-    (e) => e.status === 'A_PAGAR' && e.dueDate < new Date().toISOString().split('T')[0]
+    (e) => getEffectivePayableStatus(e) === 'EM_ATRASO'
   ).length;
 
   const handleQuickToggleFatorR = () => {
@@ -323,6 +355,14 @@ function AppContent() {
     );
   }
 
+  const activeClinicDisplayName =
+    db.getActiveClinicDisplayName?.() ||
+    currentSession?.supportSession?.targetTenantName ||
+    organization?.name ||
+    professional?.nomeFantasia ||
+    professional?.razaoSocial ||
+    'Clínica sem nome';
+
   return (
     <div className="min-h-screen bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased">
       <div className="flex-1 flex min-w-0">
@@ -343,140 +383,87 @@ function AppContent() {
         {/* Main Content Area */}
         <div
           className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${
-            isSidebarCollapsed ? 'lg:pl-20' : 'lg:pl-68'
+            isSidebarCollapsed ? 'lg:pl-[112px]' : 'lg:pl-[280px]'
           }`}
         >
-          {/* Primary Account Consulting Switcher Bar (sem corte de layout e sem exibição de email) */}
-          {isPrimaryAccount && (
-            <div
-              className={`px-4 py-2.5 text-xs font-semibold flex flex-wrap items-center justify-between gap-3 shadow-xs sticky top-0 z-40 transition-colors ${
-                currentSession?.supportSession
-                  ? 'bg-amber-500 text-slate-950'
-                  : 'bg-slate-900 text-white'
-              }`}
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                {currentSession?.supportSession ? (
+          {/* Top Bar Container (Modo Consultoria / Suporte + Header) */}
+          <div className="sticky top-0 z-30 flex flex-col">
+            {isPrimaryAccount && (
+              <ConsultingBar
+                activeClinicName={activeClinicDisplayName}
+                activeProfessionalName={professional.name}
+                availableClinics={availableClinics}
+                currentTenantId={
+                  currentSession?.supportSession?.targetTenantId ||
+                  currentSession?.tenantId ||
+                  ''
+                }
+                isSupportActive={Boolean(currentSession?.supportSession)}
+                isSwitching={isSwitchingClinic}
+                onSelectClinic={handleSelectClinic}
+                onReturnToPrimary={handleReturnToPrimary}
+              />
+            )}
+
+            {/* Non-Primary Support Banner */}
+            {!isPrimaryAccount && currentSession?.supportSession && (
+              <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-xs relative z-40">
+                <div className="flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
-                ) : (
-                  <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-                )}
-                <div className="flex items-center gap-2 truncate">
-                  {currentSession?.supportSession ? (
-                    <span>
-                      <strong className="uppercase font-bold tracking-wide">Modo Consultoria Ativo:</strong>{' '}
-                      Gerenciando <u>{currentSession.supportSession.targetTenantName || organization.name}</u>
-                    </span>
-                  ) : (
-                    <span>
-                      <strong className="uppercase font-bold tracking-wide text-emerald-400">
-                        Consultoria & Acesso Contábil
-                      </strong>
-                      <span className="mx-2 opacity-50">•</span>
-                      <span className="opacity-90">Clínica Ativa:</span>{' '}
-                      <strong className="text-white font-bold">{organization.name}</strong>
-                    </span>
-                  )}
+                  <span>
+                    <strong>MODO SUPORTE ATIVO:</strong> Visualizando{' '}
+                    <u>{currentSession.supportSession.targetTenantName || organization.name}</u>
+                  </span>
                 </div>
-              </div>
-
-              <div className="flex items-center gap-2 ml-auto shrink-0">
-                <label className="text-[11px] opacity-90 hidden sm:inline">
-                  Alternar Clínica:
-                </label>
-                <select
-                  value={
-                    currentSession?.supportSession?.targetTenantId ||
-                    currentSession?.tenantId ||
-                    ''
-                  }
-                  onChange={(e) => handleSelectClinic(e.target.value)}
-                  disabled={isSwitchingClinic}
-                  className={`text-xs rounded-lg px-3 py-1.5 font-semibold cursor-pointer border shadow-xs focus:outline-none transition-all ${
-                    currentSession?.supportSession
-                      ? 'bg-white text-slate-900 border-amber-600 focus:ring-2 focus:ring-amber-800'
-                      : 'bg-slate-800 text-white border-slate-700 hover:bg-slate-750 focus:ring-2 focus:ring-emerald-500'
-                  }`}
+                <button
+                  onClick={() => {
+                    db.endSupportSession();
+                    toast.info('Sessão de suporte encerrada com sucesso.');
+                  }}
+                  className="px-3 py-1 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0 ml-4 shadow-xs"
                 >
-                  <option value="" disabled>
-                    Selecione uma clínica...
-                  </option>
-                  {availableClinics.map((c) => {
-                    const subtitle =
-                      c.owner_name || c.owner_email
-                        ? ` — ${c.owner_name || c.owner_email}`
-                        : '';
-                    return (
-                      <option key={c.tenant_id} value={c.tenant_id}>
-                        {c.clinic_name}
-                        {subtitle}
-                      </option>
-                    );
-                  })}
-                </select>
-
-                {currentSession?.supportSession && (
-                  <button
-                    onClick={handleReturnToPrimary}
-                    disabled={isSwitchingClinic}
-                    className="px-3 py-1.5 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0 shadow-xs"
-                  >
-                    Voltar à Minha Conta
-                  </button>
-                )}
+                  Sair do modo suporte
+                </button>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Non-Primary Support Banner */}
-          {!isPrimaryAccount && currentSession?.supportSession && (
-            <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-xs sticky top-0 z-40">
-              <div className="flex items-center gap-2">
-                <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
-                <span>
-                  <strong>MODO SUPORTE ATIVO:</strong> Visualizando{' '}
-                  <u>{currentSession.supportSession.targetTenantName || organization.name}</u>
-                </span>
-              </div>
-              <button
-                onClick={() => {
-                  db.endSupportSession();
-                  toast.info('Sessão de suporte encerrada com sucesso.');
-                }}
-                className="px-3 py-1 bg-slate-950 text-white rounded-lg hover:bg-slate-900 transition-colors cursor-pointer text-xs font-bold shrink-0 ml-4 shadow-xs"
-              >
-                Sair do modo suporte
-              </button>
-            </div>
-          )}
-          {/* Top Header */}
-          <Header
-            organization={organization}
-            professional={professional}
-            onOpenMobileMenu={() => setMobileMenuOpen(true)}
-            onOpenNewSale={() => setIsNewSaleOpen(true)}
-            onOpenNewExpense={() => setIsNewExpenseOpen(true)}
-            pendingReceitaSaudeCount={pendingReceitaSaudeCount}
-            onNavigateToTab={handleNavigateTab}
-            onQuickToggleFatorR={handleQuickToggleFatorR}
-            isDemo={isDemoMode}
-            onLogout={handleLogout}
-          />
+            {/* Top Header */}
+            <Header
+              organization={organization}
+              professional={professional}
+              clinicDisplayName={activeClinicDisplayName}
+              onOpenMobileMenu={() => setMobileMenuOpen(true)}
+              onOpenNewSale={() => setIsNewSaleOpen(true)}
+              onOpenNewExpense={() => setIsNewExpenseOpen(true)}
+              pendingReceitaSaudeCount={pendingReceitaSaudeCount}
+              onNavigateToTab={handleNavigateTab}
+              onQuickToggleFatorR={handleQuickToggleFatorR}
+              isDemo={isDemoMode}
+              onLogout={handleLogout}
+              onOpenGlobalSearch={() => setIsGlobalSearchOpen(true)}
+            />
+          </div>
 
-        {/* Global Period Filter Bar - Always active across all tabs */}
-        <PeriodFilterBar
-          selectedYear={selectedYear}
-          selectedMonth={selectedMonth}
-          onChangePeriod={handleChangePeriod}
-          periodSalesValue={periodSalesValue}
-          periodSalesCount={filteredSales.length}
-          periodExpensesValue={periodExpensesValue}
-          periodExpensesCount={filteredExpenses.length}
-          periodReceivablesValue={periodReceivablesValue}
-        />
+        {isSwitchingClinic ? (
+          <div className="flex-1 p-6 sm:p-10 max-w-7xl w-full mx-auto flex flex-col items-center justify-center min-h-[450px]">
+            <AppLoadingSkeleton />
+          </div>
+        ) : (
+          <>
+            {/* Global Period Filter Bar - Always active across all tabs */}
+            <PeriodFilterBar
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              onChangePeriod={handleChangePeriod}
+              periodSalesValue={periodSalesValue}
+              periodSalesCount={filteredSales.length}
+              periodExpensesValue={periodExpensesValue}
+              periodExpensesCount={filteredExpenses.length}
+              periodReceivablesValue={periodReceivablesValue}
+            />
 
-        {/* View Switcher */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+            {/* View Switcher */}
+            <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
           {currentTab === 'dashboard' && (
             <DashboardView
               sales={sales}
@@ -584,6 +571,7 @@ function AppContent() {
               onOpenNewSaleForPatient={handleOpenNewSaleForPatient}
               initialOpenNewModal={pendingAction === 'new_patient'}
               onClearAction={() => setPendingAction(null)}
+              initialSelectedPatientId={selectedPatientForViewId}
             />
           )}
 
@@ -657,6 +645,8 @@ function AppContent() {
             />
           )}
         </main>
+          </>
+        )}
       </div>
       </div>
 
@@ -693,6 +683,16 @@ function AppContent() {
         onClose={() => setSettleItem(null)}
         item={settleItem}
         bankAccounts={bankAccounts}
+      />
+
+      {/* Global Patient Search Modal (Ctrl+K / Cmd+K) */}
+      <GlobalPatientSearchModal
+        isOpen={isGlobalSearchOpen}
+        onClose={() => setIsGlobalSearchOpen(false)}
+        patients={patients}
+        sales={sales}
+        onSelectPatient={handleSelectPatientFromSearch}
+        clinicDisplayName={activeClinicDisplayName}
       />
 
       {/* Global Toaster Mount */}

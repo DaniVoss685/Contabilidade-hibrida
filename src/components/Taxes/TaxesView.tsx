@@ -57,6 +57,7 @@ import {
 } from '../../lib/taxEngine';
 import { formatCurrency, formatPercent, formatMonthYear, formatMonthYearShort } from '../../lib/masks';
 import { db } from '../../lib/db';
+import { getLastClosedCompetence, getTodayCivilDate } from '../../lib/statusHelper';
 import { PeriodPicker, CurrencyInput, useToast, ConfirmDialog } from '../UI';
 import { ContabilexIntegrationService } from '../../services/contabilexIntegrationService';
 import {
@@ -98,10 +99,54 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   onClearAction,
 }) => {
   const toast = useToast();
-  const [internalYear, setInternalYear] = useState<number>(propYear || new Date().getFullYear());
-  const [internalMonth, setInternalMonth] = useState<number | 'ALL'>(
-    propMonth !== undefined ? propMonth : new Date().getMonth() + 1
-  );
+
+  // Regra Contábil Oficial: O fechamento fiscal e a apuração do Fator R/Simples ocorrem SEMPRE
+  // sobre a competência encerrada (mês anterior ao mês civil atual).
+  // Exemplo: Em 16/09/2026, apura-se Agosto/2026. Em Outubro/2026, apura-se Setembro/2026.
+  const lastClosed = getLastClosedCompetence();
+
+  const isCurrentOrFutureMonth = (y: number, m: number | 'ALL'): boolean => {
+    if (m === 'ALL') return false;
+    const todayStr = getTodayCivilDate();
+    const [curY, curM] = todayStr.split('-').map(Number);
+    return y > curY || (y === curY && m >= curM);
+  };
+
+  const [internalYear, setInternalYear] = useState<number>(() => {
+    if (propYear !== undefined && propMonth !== undefined && propMonth !== 'ALL') {
+      if (isCurrentOrFutureMonth(propYear, propMonth)) {
+        return lastClosed.year;
+      }
+      return propYear;
+    }
+    return lastClosed.year;
+  });
+
+  const [internalMonth, setInternalMonth] = useState<number | 'ALL'>(() => {
+    if (propYear !== undefined && propMonth !== undefined && propMonth !== 'ALL') {
+      if (isCurrentOrFutureMonth(propYear, propMonth)) {
+        return lastClosed.month;
+      }
+      return propMonth;
+    }
+    return lastClosed.month;
+  });
+
+  // Sincroniza se a seleção externa mudar
+  useEffect(() => {
+    if (propYear !== undefined && propMonth !== undefined) {
+      if (propMonth === 'ALL') {
+        setInternalYear(propYear);
+        setInternalMonth('ALL');
+      } else if (isCurrentOrFutureMonth(propYear, propMonth)) {
+        setInternalYear(lastClosed.year);
+        setInternalMonth(lastClosed.month);
+      } else {
+        setInternalYear(propYear);
+        setInternalMonth(propMonth);
+      }
+    }
+  }, [propYear, propMonth]);
 
   const activeFiscalMode: FiscalSourceType =
     professional.fiscalSourceType ||
@@ -131,10 +176,19 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   // Gaveta retrátil: Ver composição da base
   const [showComposition, setShowComposition] = useState(false);
 
-  const effectiveYear = propYear !== undefined ? propYear : internalYear;
-  const effectiveMonth = propMonth !== undefined ? propMonth : internalMonth;
+  const effectiveYear = internalYear;
+  const effectiveMonth = internalMonth;
 
   const handlePeriodChange = (year: number, month: number | 'ALL') => {
+    if (month !== 'ALL' && isCurrentOrFutureMonth(year, month)) {
+      const todayStr = getTodayCivilDate();
+      toast.info(
+        `A competência atual (${formatMonthYear(todayStr.substring(0, 7))}) ainda está em andamento. O fechamento contábil e Fator R são apurados sobre a competência encerrada (${formatMonthYear(lastClosed.competenceStr)}).`
+      );
+      setInternalYear(lastClosed.year);
+      setInternalMonth(lastClosed.month);
+      return;
+    }
     setInternalYear(year);
     setInternalMonth(month);
     if (onChangePeriod) onChangePeriod(year, month);
@@ -377,10 +431,9 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     }
   };
 
-  // Seção Folha & Pró-labore da Competência Atual
-  const [salariesInput, setSalariesInput] = useState<number>(0);
+  // Seção Folha da Competência Atual (Unificada em "Valor da Folha")
+  const [payrollValueInput, setPayrollValueInput] = useState<number>(0);
   const [chargesInput, setChargesInput] = useState<number>(0);
-  const [proLaboreInput, setProLaboreInput] = useState<number>(0);
   const [isSavingBases, setIsSavingBases] = useState<boolean>(false);
   const [isSavingPayroll, setIsSavingPayroll] = useState<boolean>(false);
 
@@ -389,18 +442,18 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     if (effectiveMonth !== 'ALL') {
       const existing = db.getMonthlyPayroll(competenceStr);
       if (existing) {
-        setSalariesInput(existing.salaries || 0);
+        // Se houver registro anterior salvo com separação, soma pró-labore e salários no Valor da Folha
+        const combined = (existing.salaries || 0) + (existing.proLabore || 0);
+        setPayrollValueInput(combined);
         setChargesInput(existing.charges || 0);
-        setProLaboreInput(existing.proLabore || 0);
       } else {
-        setSalariesInput(0);
+        setPayrollValueInput(professional.proLaboreMensal || 0);
         setChargesInput(0);
-        setProLaboreInput(professional.proLaboreMensal || 0);
       }
     }
   }, [competenceStr, effectiveMonth, professional.proLaboreMensal]);
 
-  const totalMonthlyPayroll = salariesInput + chargesInput + proLaboreInput;
+  const totalMonthlyPayroll = payrollValueInput + chargesInput;
 
   const handleSaveMonthlyPayroll = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -412,9 +465,9 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     setIsSavingPayroll(true);
     const res = await db.upsertMonthlyPayrollAsync({
       month: competenceStr,
-      salaries: salariesInput,
+      salaries: 0,
       charges: chargesInput,
-      proLabore: proLaboreInput,
+      proLabore: payrollValueInput,
       totalPayroll: totalMonthlyPayroll,
     });
     setIsSavingPayroll(false);
@@ -424,7 +477,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       return;
     }
 
-    toast.success(`Folha e pró-labore de ${formatMonthYear(competenceStr)} registrados com sucesso!`);
+    toast.success(`Folha da competência ${formatMonthYear(competenceStr)} registrada com sucesso!`);
   };
 
   // CPF Calculation (Carnê-Leão) — 100% segregado de PJ/RBT12/FS12
@@ -1189,18 +1242,18 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
         </div>
       </div>
 
-      {/* 8. ÁREA "FOLHA & PRÓ-LABORE DA COMPETÊNCIA" */}
+      {/* 8. ÁREA "VALOR DA FOLHA DA COMPETÊNCIA" */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
           <div>
             <div className="flex items-center gap-2">
               <Briefcase className="w-4 h-4 text-emerald-600" />
               <h3 className="text-sm font-bold text-slate-900">
-                Folha & Pró-labore da Competência ({formatMonthYear(competenceStr)})
+                Valor da Folha da Competência ({formatMonthYear(competenceStr)})
               </h3>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Componentes de remuneração deste mês que alimentam dinamicamente a janela móvel do Fator R
+              Remuneração total deste mês (pró-labore e salários) que alimenta dinamicamente a janela móvel do Fator R
             </p>
           </div>
 
@@ -1213,28 +1266,16 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
         </div>
 
         <form onSubmit={handleSaveMonthlyPayroll} className="space-y-4 text-xs">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <CurrencyInput
-                label="Pró-labore dos Sócios (R$)"
-                value={proLaboreInput}
-                onChange={setProLaboreInput}
+                label="Valor da Folha (R$)"
+                value={payrollValueInput}
+                onChange={setPayrollValueInput}
                 placeholder="R$ 0,00"
               />
               <span className="text-[10px] text-slate-400 mt-1 block">
-                Remuneração oficial dos cirurgiões-dentistas sócios
-              </span>
-            </div>
-
-            <div>
-              <CurrencyInput
-                label="Salários da Equipe CLT (R$)"
-                value={salariesInput}
-                onChange={setSalariesInput}
-                placeholder="R$ 0,00"
-              />
-              <span className="text-[10px] text-slate-400 mt-1 block">
-                Auxiliares, secretárias e equipe contratada
+                Total de remuneração oficial: pró-labore dos sócios e/ou salários da equipe CLT
               </span>
             </div>
 
@@ -1246,7 +1287,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                 placeholder="R$ 0,00"
               />
               <span className="text-[10px] text-slate-400 mt-1 block">
-                INSS patronal, FGTS e provisões legais
+                INSS patronal, FGTS e provisões legais (se houver)
               </span>
             </div>
           </div>
