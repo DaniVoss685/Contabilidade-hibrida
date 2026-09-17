@@ -676,6 +676,35 @@ export class DentalFinanceDB {
         createdAt: new Date().toISOString(),
       };
 
+      // Preserva o modo consultoria/suporte se estiver ativo para evitar reversão por token refresh automático em background
+      const activeSupport = this.currentSession?.supportSession;
+      const isSupportActive = Boolean(activeSupport && activeSupport.targetTenantId);
+
+      let effectiveTenantId = tenantId;
+      let effectiveClinic: ClinicTenant = sessionClinic;
+
+      if (isSupportActive && activeSupport?.targetTenantId) {
+        effectiveTenantId = activeSupport.targetTenantId;
+        const targetClinic =
+          this.registeredClinics.find((c) => c.id === effectiveTenantId) ||
+          (effectiveTenantId !== 'tenant_demo' ? await SupabaseService.getClinic(effectiveTenantId) : null);
+        if (targetClinic) {
+          effectiveClinic = targetClinic;
+        } else if (this.currentSession?.clinic && this.currentSession.clinic.id === effectiveTenantId) {
+          effectiveClinic = this.currentSession.clinic;
+        } else {
+          effectiveClinic = {
+            id: effectiveTenantId,
+            name: activeSupport.targetTenantName || 'Clínica Selecionada',
+            cro: '00000',
+            croUf: 'SP',
+            cpfCnpj: '00.000.000/0001-00',
+            isDemo: effectiveTenantId === 'tenant_demo',
+            createdAt: new Date().toISOString(),
+          };
+        }
+      }
+
       const authSession: AuthSession = {
         token: session.access_token,
         authUserId: session.user.id,
@@ -687,23 +716,24 @@ export class DentalFinanceDB {
           role: userProfile.role,
           isPrimary: userProfile.isPrimary ?? false,
         },
-        clinic: sessionClinic,
-        tenantId,
-        isDemo: false,
-        createdAt: new Date().toISOString(),
+        clinic: effectiveClinic,
+        tenantId: effectiveTenantId,
+        isDemo: effectiveTenantId === 'tenant_demo',
+        createdAt: this.currentSession?.createdAt || new Date().toISOString(),
         expiresAt: new Date(session.expires_at ? session.expires_at * 1000 : Date.now() + 3600 * 1000).toISOString(),
+        supportSession: isSupportActive ? activeSupport : null,
       };
 
       this.currentSession = authSession;
       saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, authSession);
 
-      if (this.activeTenantId !== tenantId) {
-        this.loadTenant(tenantId, false);
+      if (this.activeTenantId !== effectiveTenantId) {
+        this.loadTenant(effectiveTenantId, effectiveTenantId === 'tenant_demo');
       }
 
-      if (forceHydrate || !this.hasHydratedWithAuth || this.activeTenantId !== tenantId) {
+      if (forceHydrate || !this.hasHydratedWithAuth || this.activeTenantId !== effectiveTenantId) {
         this.hasHydratedWithAuth = true;
-        await this.hydrateTenantAsync(tenantId);
+        await this.hydrateTenantAsync(effectiveTenantId);
       }
       this.notify();
     } catch (e) {
@@ -1871,10 +1901,17 @@ export class DentalFinanceDB {
       return { success: false, error: 'Clínica de destino não encontrada no sistema.' };
     }
 
+    const origTenantId =
+      this.currentSession.supportSession?.originalTenantId ||
+      this.currentSession.tenantId ||
+      this.currentSession.clinic?.id ||
+      'tenant_demo';
+
     const supportState: SupportSessionState = {
       isSupportMode: true,
       originalAdminUserId: this.currentSession.user.id,
       originalAdminName: this.currentSession.user.name,
+      originalTenantId: origTenantId,
       targetTenantId,
       targetTenantName: targetClinic.name,
       startedAt: new Date().toISOString(),
@@ -1882,6 +1919,8 @@ export class DentalFinanceDB {
     };
 
     this.currentSession.supportSession = supportState;
+    this.currentSession.tenantId = targetTenantId;
+    this.currentSession.clinic = targetClinic;
     saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
 
     // Switch tenant
@@ -1934,10 +1973,17 @@ export class DentalFinanceDB {
 
     const clinicDisplayName = targetClinic?.name || targetClinicName || 'Clínica Selecionada';
 
+    const origTenantId =
+      this.currentSession.supportSession?.originalTenantId ||
+      this.currentSession.tenantId ||
+      this.currentSession.clinic?.id ||
+      'tenant_demo';
+
     const supportState: SupportSessionState = {
       isSupportMode: true,
       originalAdminUserId: this.currentSession.user.id,
       originalAdminName: this.currentSession.user.name,
+      originalTenantId: origTenantId,
       targetTenantId,
       targetTenantName: clinicDisplayName,
       startedAt: new Date().toISOString(),
@@ -1945,6 +1991,10 @@ export class DentalFinanceDB {
     };
 
     this.currentSession.supportSession = supportState;
+    this.currentSession.tenantId = targetTenantId;
+    if (targetClinic) {
+      this.currentSession.clinic = targetClinic;
+    }
     saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
 
     this.loadTenant(targetTenantId, targetTenantId === 'tenant_demo');
@@ -1971,6 +2021,10 @@ export class DentalFinanceDB {
     const support = this.currentSession.supportSession;
     const targetTenantId = support.targetTenantId || (support as any).targetClinicId || '';
     const adminName = support.originalAdminName || (support as any).platformAdminName || 'Administrador';
+    const origTenant =
+      support.originalTenantId ||
+      this.currentSession.user?.orgId?.replace(/^org_/, '') ||
+      'tenant_demo';
 
     // Log exit in target clinic audit trail
     this.log(
@@ -1981,12 +2035,19 @@ export class DentalFinanceDB {
     );
 
     delete this.currentSession.supportSession;
+    this.currentSession.tenantId = origTenant;
+
+    // Restaurar a clínica original do admin
+    const origClinic = this.registeredClinics.find((c) => c.id === origTenant);
+    if (origClinic) {
+      this.currentSession.clinic = origClinic;
+    }
     saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
 
     // Restore to admin's original tenant
-    const origTenant = this.currentSession.tenantId || this.currentSession.clinic.id;
-    this.loadTenant(origTenant, this.currentSession.isDemo);
-    if (!this.currentSession.isDemo) {
+    const isDemoTarget = origTenant === 'tenant_demo' || Boolean(this.currentSession.isDemo);
+    this.loadTenant(origTenant, isDemoTarget);
+    if (!isDemoTarget) {
       this.hydrateTenantAsync(origTenant).catch(console.warn);
     }
 
@@ -1994,7 +2055,7 @@ export class DentalFinanceDB {
     this.log(
       'SUPPORT_SESSION_END',
       'SUPPORT',
-      targetTenantId,
+      origTenant,
       `Sessão de suporte na clínica (${support.targetTenantName || targetTenantId}) finalizada com sucesso por ${adminName}.`
     );
 

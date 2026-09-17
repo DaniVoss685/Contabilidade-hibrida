@@ -83,6 +83,7 @@ export interface SupportSessionState {
   platformAdminName?: string;
   originalAdminUserId?: string;
   originalAdminName?: string;
+  originalTenantId?: string;
   targetClinicId?: string;
   targetTenantId?: string;
   targetClinicName?: string;
