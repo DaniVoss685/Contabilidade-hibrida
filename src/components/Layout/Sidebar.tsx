@@ -20,6 +20,7 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  Repeat,
 } from 'lucide-react';
 
 export type NavTab =
@@ -70,27 +71,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
     items: {
       id: NavTab;
       label: string;
-      shortLabel: string;
       icon: React.ComponentType<{ className?: string }>;
       badge?: number;
       badgeColor?: string;
     }[];
   }
 
-  // 5-second auto-collapse timer logic
+  // Controle inteligente de auto-collapse:
+  // Recolhe automaticamente após 5s somente no primeiro carregamento.
+  // Se o usuário clicar manualmente para expandir ou recolher, respeita a decisão do usuário durante a sessão.
+  const hasUserInteractedRef = useRef(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const startAutoCollapseTimer = () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      onToggleCollapse?.(true);
-    }, 5000);
+  const handleManualToggle = (collapsed: boolean) => {
+    hasUserInteractedRef.current = true;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    onToggleCollapse?.(collapsed);
   };
 
   useEffect(() => {
-    // If sidebar is expanded, start the 5-second timer to auto-collapse
-    if (!isCollapsed && onToggleCollapse) {
-      startAutoCollapseTimer();
+    if (!isCollapsed && onToggleCollapse && !hasUserInteractedRef.current) {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        if (!hasUserInteractedRef.current) {
+          onToggleCollapse?.(true);
+        }
+      }, 5000);
     }
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
@@ -98,16 +107,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [isCollapsed, onToggleCollapse]);
 
   const handleMouseEnter = () => {
-    // Pause auto-collapse timer while user is hovering the sidebar
-    if (timerRef.current) {
+    if (timerRef.current && !hasUserInteractedRef.current) {
       clearTimeout(timerRef.current);
     }
   };
 
   const handleMouseLeave = () => {
-    // Restart 5-second auto-collapse timer when cursor leaves
-    if (!isCollapsed && onToggleCollapse) {
-      startAutoCollapseTimer();
+    if (!isCollapsed && onToggleCollapse && !hasUserInteractedRef.current) {
+      timerRef.current = setTimeout(() => {
+        if (!hasUserInteractedRef.current) {
+          onToggleCollapse?.(true);
+        }
+      }, 5000);
     }
   };
 
@@ -115,18 +126,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     {
       title: 'VISÃO GERAL',
       items: [
-        { id: 'dashboard', label: 'Dashboard', shortLabel: 'Dashboard', icon: LayoutDashboard },
-        { id: 'financial', label: 'Gestão Financeira', shortLabel: 'Financeiro', icon: Landmark },
-        { id: 'bank_accounts', label: 'Contas Bancárias', shortLabel: 'Contas', icon: Wallet },
-      ],
-    },
-    {
-      title: 'OPERAÇÃO CLÍNICA',
-      items: [
-        { id: 'patients', label: 'Pacientes', shortLabel: 'Pacientes', icon: Users },
-        { id: 'agenda', label: 'Agenda', shortLabel: 'Agenda', icon: Calendar },
-        { id: 'procedures', label: 'Procedimentos & Custos', shortLabel: 'Procedimentos', icon: Activity },
-        { id: 'supplies', label: 'Insumos & Estoque', shortLabel: 'Estoque', icon: FlaskConical },
+        { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
       ],
     },
     {
@@ -135,7 +135,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {
           id: 'sales',
           label: 'Receitas / Vendas',
-          shortLabel: 'Receitas',
           icon: TrendingUp,
           badge: pendingReceitaSaudeCount > 0 ? pendingReceitaSaudeCount : undefined,
           badgeColor: 'bg-amber-100 text-amber-800 border border-amber-200',
@@ -143,7 +142,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {
           id: 'receivables',
           label: 'Contas a Receber',
-          shortLabel: 'A Receber',
           icon: ReceiptText,
           badge: overdueReceivablesCount > 0 ? overdueReceivablesCount : undefined,
           badgeColor: 'bg-rose-100 text-rose-800 border border-rose-200',
@@ -151,7 +149,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {
           id: 'expenses',
           label: 'Despesas / A Pagar',
-          shortLabel: 'A Pagar',
           icon: TrendingDown,
           badge: overdueExpensesCount > 0 ? overdueExpensesCount : undefined,
           badgeColor: 'bg-rose-100 text-rose-800 border border-rose-200',
@@ -159,13 +156,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
       ],
     },
     {
+      title: 'PACIENTES & AGENDA',
+      items: [
+        { id: 'patients', label: 'Pacientes', icon: Users },
+        { id: 'agenda', label: 'Agenda', icon: Calendar },
+      ],
+    },
+    {
       title: 'FISCAL & ESTRATÉGICO',
       items: [
-        { id: 'taxes', label: 'Impostos & Fator R', shortLabel: 'Impostos', icon: Calculator },
-        { id: 'fiscal_simulator', label: 'Simulador Fiscal', shortLabel: 'Simulador', icon: SlidersHorizontal },
-        { id: 'chart_of_accounts', label: 'Plano de Contas', shortLabel: 'Plano C.', icon: FolderTree },
-        { id: 'reports', label: 'Relatórios & DRE', shortLabel: 'Relatórios', icon: FileSpreadsheet },
-        { id: 'settings', label: 'Configurações', shortLabel: 'Ajustes', icon: Settings },
+        { id: 'taxes', label: 'Impostos & Fator R', icon: Calculator },
+        { id: 'fiscal_simulator', label: 'Simulador Fiscal', icon: SlidersHorizontal },
+        { id: 'reports', label: 'Relatórios & DRE', icon: FileSpreadsheet },
+      ],
+    },
+    {
+      title: 'CADASTROS & GESTÃO',
+      items: [
+        { id: 'procedures', label: 'Procedimentos & Custos', icon: Activity },
+        { id: 'supplies', label: 'Insumos & Estoque', icon: FlaskConical },
+        { id: 'financial', label: 'Gestão Financeira', icon: Landmark },
+        { id: 'bank_accounts', label: 'Contas Bancárias', icon: Wallet },
+        { id: 'chart_of_accounts', label: 'Plano de Contas', icon: FolderTree },
+        { id: 'settings', label: 'Configurações', icon: Settings },
       ],
     },
   ];
@@ -180,32 +193,52 @@ export const Sidebar: React.FC<SidebarProps> = ({
         />
       )}
 
-      {/* Sidebar Container */}
+      {/* Sidebar Container:
+          - Modo Compacto Vertical: w-[112px] com ícone em cima e nome completo embaixo
+          - Modo Expandido: w-[280px]
+      */}
       <aside
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
         className={`fixed top-0 bottom-0 left-0 z-50 bg-white text-slate-800 border-r border-slate-200/80 flex flex-col transition-all duration-300 ${
-          isCollapsed ? 'w-20' : 'w-68'
+          isCollapsed ? 'w-[112px]' : 'w-[280px]'
         } ${
           isOpenMobile ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         }`}
       >
+        {/* Botão de Toggle SEMPRE visível na borda direita externa */}
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={() => handleManualToggle(!isCollapsed)}
+            title={isCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+            aria-label={isCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+            className="hidden lg:flex items-center justify-center absolute -right-3.5 top-5 w-7 h-7 rounded-full bg-white border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 shadow-md transition-all hover:scale-110 cursor-pointer z-50 focus:outline-none"
+          >
+            {isCollapsed ? (
+              <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
+            ) : (
+              <ChevronLeft className="w-3.5 h-3.5 stroke-[2.5]" />
+            )}
+          </button>
+        )}
+
         {/* Brand Header */}
         {isCollapsed ? (
-          <div className="p-3 border-b border-slate-100 flex flex-col items-center justify-center gap-1.5">
+          <div className="p-2.5 border-b border-slate-100 flex flex-col items-center justify-center gap-1 min-h-[65px]">
             <button
-              onClick={() => onToggleCollapse?.(false)}
+              onClick={() => handleManualToggle(false)}
               title="Clique para expandir o menu lateral"
-              className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-xs hover:scale-105 transition-transform cursor-pointer"
+              className="w-9 h-9 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-xs hover:scale-105 transition-transform cursor-pointer"
             >
-              <Stethoscope className="w-5 h-5" />
+              <Stethoscope className="w-4.5 h-4.5" />
             </button>
-            <span className="text-[9px] uppercase font-extrabold tracking-wider px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200/60">
+            <span className="text-[8.5px] uppercase font-black tracking-wider px-1.5 py-0.2 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200/60">
               PRO
             </span>
           </div>
         ) : (
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="p-4 border-b border-slate-100 flex items-center justify-between min-h-[65px]">
             <div className="flex items-center space-x-3 min-w-0">
               <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-xs shrink-0">
                 <Stethoscope className="w-5 h-5" />
@@ -222,15 +255,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <p className="text-[11px] text-slate-400 font-medium truncate">Contabilidade Híbrida</p>
               </div>
             </div>
-            {onToggleCollapse && (
-              <button
-                onClick={() => onToggleCollapse(true)}
-                title="Recolher menu lateral"
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors hidden lg:block cursor-pointer"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-            )}
           </div>
         )}
 
@@ -245,7 +269,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {isCollapsed ? (
                 idx > 0 && <div className="h-px bg-slate-200/60 my-2 mx-1" />
               ) : (
-                <div className="px-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest pt-2 pb-1.5">
+                <div className="px-3 text-[10px] font-bold text-slate-400 uppercase tracking-widest pt-2 pb-1.5 whitespace-nowrap">
                   {section.title}
                 </div>
               )}
@@ -253,7 +277,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 const Icon = item.icon;
                 const isActive = currentTab === item.id;
 
-                // Collapsed Compact Mode: Icon on top and label underneath
+                // 1. MODO COMPACTO VERTICAL: Ícone em cima + Nome integral embaixo centralizado
                 if (isCollapsed) {
                   return (
                     <button
@@ -264,13 +288,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         onCloseMobile();
                       }}
                       title={item.label}
-                      className={`w-full flex flex-col items-center justify-center py-2 px-1 text-center transition-all cursor-pointer rounded-xl group relative ${
+                      className={`w-full flex flex-col items-center justify-center py-2 px-1 rounded-xl transition-all cursor-pointer group relative text-center ${
                         isActive
-                          ? 'bg-emerald-50 text-emerald-900 font-bold border border-emerald-300/80 shadow-2xs'
+                          ? 'bg-emerald-50 text-emerald-950 font-bold border border-emerald-300 shadow-2xs'
                           : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80 font-medium'
                       }`}
                     >
-                      <div className="relative flex items-center justify-center">
+                      <div className="relative flex items-center justify-center mb-1">
                         <Icon
                           className={`w-5 h-5 shrink-0 transition-colors ${
                             isActive ? 'text-emerald-700' : 'text-slate-400 group-hover:text-slate-700'
@@ -283,14 +307,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           </span>
                         )}
                       </div>
-                      <span className="text-[10px] leading-tight font-medium text-center truncate max-w-full px-0.5 mt-1">
-                        {item.shortLabel || item.label}
+
+                      {/* Nome completo legível, centralizado, sem nenhuma abreviação */}
+                      <span className={`text-[10px] leading-tight text-center break-words max-w-full px-0.5 ${
+                        isActive ? 'text-emerald-950 font-bold' : 'text-slate-700 group-hover:text-slate-900 font-medium'
+                      }`}>
+                        {item.label}
                       </span>
                     </button>
                   );
                 }
 
-                // Expanded Mode: Row with icon on left and label on right
+                // 2. MODO EXPANDIDO: Ícone à esquerda + Nome integral à direita
                 return (
                   <button
                     key={item.id}
@@ -311,11 +339,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           isActive ? 'text-emerald-700' : 'text-slate-400 group-hover:text-slate-600'
                         }`}
                       />
-                      <span className="truncate">{item.label}</span>
+                      <span className="whitespace-nowrap font-medium">{item.label}</span>
                     </div>
                     {item.badge !== undefined && (
                       <span
-                        className={`text-[10px] px-2 py-0.5 rounded-full font-bold shadow-2xs ${
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-bold shadow-2xs shrink-0 ml-2 ${
                           item.badgeColor || 'bg-slate-100 text-slate-700'
                         }`}
                       >
@@ -331,9 +359,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Footer */}
         {isCollapsed ? (
-          <div className="p-2 border-t border-slate-100 bg-slate-50/50 flex flex-col items-center gap-2">
+          <div className="p-2 border-t border-slate-100 bg-slate-50/50 flex flex-col items-center gap-1.5">
             <div
-              className="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center cursor-default"
+              className="w-7 h-7 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center cursor-default"
               title="Motor Fiscal Ativo (2026)"
             >
               <span className="relative flex h-2 w-2">
@@ -345,10 +373,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={onLogout}
                 title="Sair do Sistema"
-                className="w-full py-2 px-1 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors flex flex-col items-center cursor-pointer"
+                className="w-full py-2 px-1 rounded-xl text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors flex flex-col items-center justify-center cursor-pointer"
               >
                 <LogOut className="w-4 h-4" />
-                <span className="text-[9px] font-medium text-slate-500 mt-0.5">Sair</span>
+                <span className="text-[10px] font-semibold text-slate-700 hover:text-rose-600 mt-0.5">
+                  Sair
+                </span>
               </button>
             )}
           </div>
