@@ -535,10 +535,21 @@ export interface MonthlyPfTaxSummary {
   irpfRealized: number;
   irpfProjected: number;
   effectiveRate: number;
-  exemptionLimitMonthly: number;
+  exemptionLimitMonthly: number; // Limite Atual (para compatibilidade)
   remainingExemptionBalance: number;
   isExemptionLimitReached: boolean;
   exemptionUsagePercent: number;
+
+  // Limite Atual vs. Previsto (Projetado) & Despesas Dedutíveis a Pagar
+  baseExemptionFloor?: number;
+  exemptionLimitCurrent?: number;
+  deductibleExpensesToPay?: number;
+  deductibleExpensesProjected?: number;
+  grossRevenueToReceive?: number;
+  exemptionLimitProjected?: number;
+  remainingExemptionProjected?: number;
+  isExemptionLimitReachedProjected?: boolean;
+  exemptionUsagePercentProjected?: number;
 }
 
 export interface MonthlyPjTaxSummary {

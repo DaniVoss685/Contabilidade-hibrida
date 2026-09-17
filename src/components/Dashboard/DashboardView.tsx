@@ -70,6 +70,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     propMonth !== undefined ? propMonth : (new Date().getMonth() + 1)
   );
   const [viewMode, setViewMode] = useState<'REALIZADO' | 'PROJETADO'>('REALIZADO');
+  const [cpfExemptionTab, setCpfExemptionTab] = useState<'ATUAL' | 'PREVISTO'>('ATUAL');
 
   const effectiveYear = propYear !== undefined ? propYear : internalYear;
   const effectiveMonth = propMonth !== undefined ? propMonth : internalMonth;
@@ -86,6 +87,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (onChangePeriod) {
       onChangePeriod(val, effectiveMonth);
     }
+  };
+
+  const handleViewModeSelect = (mode: 'REALIZADO' | 'PROJETADO') => {
+    setViewMode(mode);
+    setCpfExemptionTab(mode === 'REALIZADO' ? 'ATUAL' : 'PREVISTO');
   };
 
   // Month competence string
@@ -192,7 +198,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {/* Segmented Control: Realizado vs Projetado */}
           <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 text-xs font-semibold self-stretch sm:self-auto shadow-2xs">
             <button
-              onClick={() => setViewMode('REALIZADO')}
+              onClick={() => handleViewModeSelect('REALIZADO')}
               className={`flex-1 sm:flex-initial px-3.5 py-1.5 rounded-lg transition-all cursor-pointer ${
                 viewMode === 'REALIZADO'
                   ? 'bg-white text-slate-900 shadow-xs font-bold'
@@ -202,7 +208,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               Realizado (Caixa)
             </button>
             <button
-              onClick={() => setViewMode('PROJETADO')}
+              onClick={() => handleViewModeSelect('PROJETADO')}
               className={`flex-1 sm:flex-initial px-3.5 py-1.5 rounded-lg transition-all cursor-pointer ${
                 viewMode === 'PROJETADO'
                   ? 'bg-white text-slate-900 shadow-xs font-bold'
@@ -376,76 +382,217 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* Indicador de Limite Mensal de Isenção de IRPF (PF) */}
-            <div className="mb-4 p-3.5 rounded-2xl bg-teal-50/70 border border-teal-200/80 space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-teal-950 flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-teal-700" />
-                  Limite Mensal de Isenção (0% IRPF)
-                </span>
-                <span className="font-mono font-black text-teal-900 text-xs">
-                  {formatCurrency(cpfTax.exemptionLimitMonthly)}
-                </span>
+            {/* Indicador de Limite Mensal de Isenção de IRPF (PF) - Atual vs. Previsto */}
+            <div className="mb-4 p-3.5 rounded-2xl bg-teal-50/70 border border-teal-200/80 space-y-2.5">
+              {/* Header com Segmented Tabs: Atual vs. Previsto */}
+              <div className="flex items-center justify-between gap-2 border-b border-teal-200/60 pb-2">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-teal-700 shrink-0" />
+                  <span className="font-bold text-teal-950 text-xs">
+                    Limite de Isenção (0% IRPF)
+                  </span>
+                </div>
+
+                <div className="inline-flex items-center bg-teal-100/80 p-0.5 rounded-lg border border-teal-200 text-[10.5px] font-bold shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => setCpfExemptionTab('ATUAL')}
+                    className={`px-2.5 py-0.5 rounded-md transition-all cursor-pointer ${
+                      cpfExemptionTab === 'ATUAL'
+                        ? 'bg-white text-teal-950 shadow-2xs font-extrabold'
+                        : 'text-teal-700 hover:text-teal-950'
+                    }`}
+                    title="Baseado estritamente no caixa: receitas recebidas e despesas dedutíveis pagas"
+                  >
+                    Limite Atual
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCpfExemptionTab('PREVISTO')}
+                    className={`px-2.5 py-0.5 rounded-md transition-all cursor-pointer ${
+                      cpfExemptionTab === 'PREVISTO'
+                        ? 'bg-white text-teal-950 shadow-2xs font-extrabold'
+                        : 'text-teal-700 hover:text-teal-950'
+                    }`}
+                    title="Projetado para o mês: inclui despesas dedutíveis a pagar (ex: água, energia, insumos)"
+                  >
+                    Limite Previsto
+                  </button>
+                </div>
+              </div>
+
+              {/* Valor do Limite e Discriminação dos Componentes */}
+              <div className="flex items-baseline justify-between text-xs pt-0.5">
+                <div>
+                  <span className="text-[11px] font-semibold text-teal-900 block">
+                    {cpfExemptionTab === 'ATUAL' ? 'Limite Atual (Caixa)' : 'Limite Previsto (Projetado)'}:
+                  </span>
+                  <span className="text-[10px] text-teal-700 font-mono">
+                    {cpfExemptionTab === 'ATUAL' ? (
+                      <>
+                        R$ 5.000 (base) + {formatCurrency(cpfTax.deductibleExpensesLivroCaixa)} (despesas pagas)
+                      </>
+                    ) : (
+                      <>
+                        R$ 5.000 + {formatCurrency(cpfTax.deductibleExpensesLivroCaixa)} (pagas) + {formatCurrency(cpfTax.deductibleExpensesToPay || 0)} (a pagar)
+                      </>
+                    )}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="font-mono font-black text-teal-950 text-sm">
+                    {formatCurrency(
+                      cpfExemptionTab === 'ATUAL'
+                        ? (cpfTax.exemptionLimitCurrent || cpfTax.exemptionLimitMonthly)
+                        : (cpfTax.exemptionLimitProjected || cpfTax.exemptionLimitMonthly)
+                    )}
+                  </span>
+                </div>
               </div>
 
               {/* Barra visual de consumo da isenção */}
-              <div className="w-full bg-teal-200/50 rounded-full h-2 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all duration-300 ${
-                    cpfTax.isExemptionLimitReached
-                      ? 'bg-amber-500'
-                      : 'bg-teal-600'
-                  }`}
-                  style={{ width: `${Math.min(100, cpfTax.exemptionUsagePercent)}%` }}
-                />
-              </div>
+              {(() => {
+                const isReached =
+                  cpfExemptionTab === 'ATUAL'
+                    ? cpfTax.isExemptionLimitReached
+                    : (cpfTax.isExemptionLimitReachedProjected ?? cpfTax.isExemptionLimitReached);
+                const percent =
+                  cpfExemptionTab === 'ATUAL'
+                    ? cpfTax.exemptionUsagePercent
+                    : (cpfTax.exemptionUsagePercentProjected ?? cpfTax.exemptionUsagePercent);
+                const remaining =
+                  cpfExemptionTab === 'ATUAL'
+                    ? cpfTax.remainingExemptionBalance
+                    : (cpfTax.remainingExemptionProjected ?? cpfTax.remainingExemptionBalance);
+                const revenueInScope =
+                  cpfExemptionTab === 'ATUAL'
+                    ? cpfTax.grossRevenueReceived
+                    : cpfTax.grossRevenueProjected;
 
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px]">
-                {cpfTax.isExemptionLimitReached ? (
-                  <span className="text-amber-900 font-bold flex items-center gap-1">
-                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                    Limite mensal de isenção atingido ({formatPercent(cpfTax.exemptionUsagePercent)})
-                  </span>
-                ) : (
-                  <span className="text-teal-800 font-medium">
-                    Falta faturar <strong className="font-bold text-teal-950 font-mono">{formatCurrency(cpfTax.remainingExemptionBalance)}</strong> para começar a pagar imposto
-                  </span>
-                )}
-                <span className="text-teal-700/80 font-mono text-[10.5px]">
-                  {formatCurrency(cpfTax.grossRevenueReceived)} faturados
-                </span>
-              </div>
+                return (
+                  <>
+                    <div className="w-full bg-teal-200/50 rounded-full h-2 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          isReached ? 'bg-amber-500' : 'bg-teal-600'
+                        }`}
+                        style={{ width: `${Math.min(100, percent)}%` }}
+                      />
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px]">
+                      {isReached ? (
+                        <span className="text-amber-900 font-bold flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          {cpfExemptionTab === 'ATUAL'
+                            ? `Limite atual atingido (${formatPercent(percent)})`
+                            : `Limite previsto atingido (${formatPercent(percent)})`}
+                        </span>
+                      ) : (
+                        <span className="text-teal-800 font-medium">
+                          {cpfExemptionTab === 'ATUAL' ? 'Falta faturar ' : 'Margem prevista restante: '}
+                          <strong className="font-bold text-teal-950 font-mono">
+                            {formatCurrency(remaining)}
+                          </strong>{' '}
+                          para começar a pagar imposto
+                        </span>
+                      )}
+                      <span className="text-teal-700/80 font-mono text-[10.5px]">
+                        {formatCurrency(revenueInScope)}{' '}
+                        {cpfExemptionTab === 'ATUAL' ? 'recebidos no caixa' : 'faturamento previsto'}
+                      </span>
+                    </div>
+
+                    {cpfExemptionTab === 'PREVISTO' && (cpfTax.deductibleExpensesToPay || 0) > 0 && (
+                      <div className="pt-1 text-[10.5px] text-teal-900 bg-teal-100/60 p-2 rounded-xl flex items-center gap-1.5 border border-teal-200">
+                        <span className="font-bold text-teal-950 shrink-0">💡 Planejamento:</span>
+                        <span>
+                          Há <strong>{formatCurrency(cpfTax.deductibleExpensesToPay || 0)}</strong> em despesas dedutíveis a pagar (ex: água/insumos) ampliando seu limite de isenção no CPF.
+                        </span>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             {/* Progressive Calculation Metrics Strip */}
-            <div className="space-y-2.5 text-xs">
-              <div className="flex justify-between items-center py-1 text-slate-600">
-                <span>Receitas Recebidas no Caixa:</span>
-                <span className="font-bold text-slate-900 font-mono tabular-nums">
-                  {formatCurrency(cpfTax.grossRevenueReceived)}
-                </span>
-              </div>
+            <div className="space-y-2 text-xs">
+              {cpfExemptionTab === 'ATUAL' ? (
+                <>
+                  <div className="flex justify-between items-center py-1 text-slate-600">
+                    <span>Receitas Recebidas no Caixa:</span>
+                    <span className="font-bold text-slate-900 font-mono tabular-nums">
+                      {formatCurrency(cpfTax.grossRevenueReceived)}
+                    </span>
+                  </div>
 
-              <div className="flex justify-between items-center py-1 text-slate-600">
-                <span>(-) Despesas Dedutíveis Homologadas:</span>
-                <span className="font-bold text-rose-700 font-mono tabular-nums">
-                  - {formatCurrency(cpfTax.deductibleExpensesLivroCaixa)}
-                </span>
-              </div>
+                  <div className="flex justify-between items-center py-1 text-slate-600">
+                    <span>(-) Despesas Dedutíveis Homologadas (Pagas):</span>
+                    <span className="font-bold text-rose-700 font-mono tabular-nums">
+                      - {formatCurrency(cpfTax.deductibleExpensesLivroCaixa)}
+                    </span>
+                  </div>
 
-              <div className="flex justify-between items-center py-1 text-slate-600">
-                <span>(-) Dedução Legal (Dependentes / INSS):</span>
-                <span className="font-bold text-slate-700 font-mono tabular-nums">
-                  - {formatCurrency(cpfTax.legalDeductionsTotal - cpfTax.deductibleExpensesLivroCaixa)}
-                </span>
-              </div>
+                  <div className="flex justify-between items-center py-1 text-slate-600">
+                    <span>(-) Dedução Legal (Dependentes / INSS):</span>
+                    <span className="font-bold text-slate-700 font-mono tabular-nums">
+                      - {formatCurrency(cpfTax.legalDeductionsTotal - cpfTax.deductibleExpensesLivroCaixa)}
+                    </span>
+                  </div>
 
-              <div className="flex justify-between items-center py-1.5 border-t border-slate-100 font-bold text-slate-900">
-                <span>(=) Base de Cálculo do IRPF:</span>
-                <span className="font-mono tabular-nums text-slate-900">
-                  {formatCurrency(cpfTax.taxBase)}
-                </span>
-              </div>
+                  <div className="flex justify-between items-center py-1.5 border-t border-slate-100 font-bold text-slate-900">
+                    <span>(=) Base de Cálculo do IRPF:</span>
+                    <span className="font-mono tabular-nums text-slate-900">
+                      {formatCurrency(cpfTax.taxBase)}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex justify-between items-center py-1 text-slate-600">
+                    <span>Faturamento Previsto no CPF (Recebido + A Receber):</span>
+                    <span className="font-bold text-slate-900 font-mono tabular-nums">
+                      {formatCurrency(cpfTax.grossRevenueProjected)}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center py-1 text-slate-600">
+                    <span>(-) Despesas Dedutíveis Pagas:</span>
+                    <span className="font-bold text-rose-700 font-mono tabular-nums">
+                      - {formatCurrency(cpfTax.deductibleExpensesLivroCaixa)}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center py-1 text-slate-600">
+                    <span>(-) Despesas Dedutíveis Previstas a Pagar:</span>
+                    <span className="font-bold text-amber-700 font-mono tabular-nums">
+                      - {formatCurrency(cpfTax.deductibleExpensesToPay || 0)}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center py-1 text-slate-600">
+                    <span>(-) Dedução Legal (Dependentes / INSS):</span>
+                    <span className="font-bold text-slate-700 font-mono tabular-nums">
+                      - {formatCurrency(cpfTax.legalDeductionsTotal - cpfTax.deductibleExpensesLivroCaixa)}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center py-1.5 border-t border-slate-100 font-bold text-slate-900">
+                    <span>(=) Base Projetada com Despesas a Pagar:</span>
+                    <span className="font-mono tabular-nums text-slate-900">
+                      {formatCurrency(
+                        Math.max(
+                          0,
+                          cpfTax.grossRevenueProjected -
+                            (cpfTax.deductibleExpensesProjected || cpfTax.deductibleExpensesLivroCaixa) -
+                            (cpfTax.legalDeductionsTotal - cpfTax.deductibleExpensesLivroCaixa)
+                        )
+                      )}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Receita Saúde Compliance Indicator */}

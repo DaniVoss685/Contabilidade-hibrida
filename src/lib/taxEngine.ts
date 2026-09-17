@@ -242,16 +242,14 @@ export function calculateMonthlyPfTax(
   }
 
   // 2. Despesas Livro Caixa:
-  // Efetivamente pagas no mês (paymentDate inicia com YYYY-MM) e vinculadas ao CPF (ou rateadas)
+  // - Realizado (Pagas): paymentDate inicia com YYYY-MM
+  // - Previsto (A Pagar): dueDate inicia com YYYY-MM e status não cancelado e não pago
   let deductibleLivroCaixaPaid = 0;
   let nonDeductiblePaid = 0;
   let conditionalPaid = 0;
+  let deductibleLivroCaixaToPay = 0;
 
   for (const exp of expenses) {
-    if (exp.status !== 'PAGO' || !exp.paymentDate || !exp.paymentDate.startsWith(yearMonth)) {
-      continue;
-    }
-
     // Determine value allocated to CPF
     let cpfPortion = 0;
     if (exp.entity === 'CPF') {
@@ -260,17 +258,23 @@ export function calculateMonthlyPfTax(
 
     if (cpfPortion <= 0) continue;
 
-    // Check classification
-    if (exp.dedutivelLivroCaixaPf === 'SIM') {
-      deductibleLivroCaixaPaid += cpfPortion;
-    } else if (exp.dedutivelLivroCaixaPf === 'CONDICIONAL') {
-      // Conditional: counted in conditional, and counted if explicitly accepted
-      conditionalPaid += cpfPortion;
-      // In conservative tax modeling, conditional expenses require accountant sign-off;
-      // here we treat confirmed expenses as deductible with clear audit indication.
-      deductibleLivroCaixaPaid += cpfPortion;
-    } else {
-      nonDeductiblePaid += cpfPortion;
+    const isDeductible = exp.dedutivelLivroCaixaPf === 'SIM' || exp.dedutivelLivroCaixaPf === 'CONDICIONAL';
+
+    // Despesas pagas no mês
+    if (exp.status === 'PAGO' && exp.paymentDate && exp.paymentDate.startsWith(yearMonth)) {
+      if (exp.dedutivelLivroCaixaPf === 'SIM') {
+        deductibleLivroCaixaPaid += cpfPortion;
+      } else if (exp.dedutivelLivroCaixaPf === 'CONDICIONAL') {
+        conditionalPaid += cpfPortion;
+        deductibleLivroCaixaPaid += cpfPortion;
+      } else {
+        nonDeductiblePaid += cpfPortion;
+      }
+    } else if (exp.status !== 'PAGO' && exp.status !== 'CANCELADO' && exp.dueDate && exp.dueDate.startsWith(yearMonth)) {
+      // Despesas a pagar no mês (com vencimento no mês)
+      if (isDeductible) {
+        deductibleLivroCaixaToPay += cpfPortion;
+      }
     }
   }
 
@@ -352,12 +356,24 @@ export function calculateMonthlyPfTax(
   const effectiveRate = receivedGrossCpf > 0 ? (irpfRealized / receivedGrossCpf) : 0;
 
   // Limite de Isenção Mensal de Faturamento (PF / Carnê-Leão)
+  // A partir de 2026 (Lei nº 15.191/2025), a base isenta integral no CPF é de R$ 5.000,00.
+  // Despesas dedutíveis no Livro-Caixa somam-se a esse piso, elevando a capacidade de faturar sem IRPF.
   const bracket0Max = rules.brackets?.[0]?.max || (year >= 2026 ? 2428.80 : 2259.20);
-  const baseExemptionLimit = bracket0Max + deductibleLivroCaixaPaid + effectiveSubtractions;
-  const exemptionLimitMonthly = year >= 2026 ? Math.max(5000, baseExemptionLimit) : baseExemptionLimit;
-  const remainingExemptionBalance = Math.max(0, exemptionLimitMonthly - receivedGrossCpf);
-  const isExemptionLimitReached = receivedGrossCpf >= exemptionLimitMonthly;
-  const exemptionUsagePercent = exemptionLimitMonthly > 0 ? Math.min(100, (receivedGrossCpf / exemptionLimitMonthly) * 100) : 100;
+  const baseExemptionFloor = year >= 2026 ? 5000 : (bracket0Max + effectiveSubtractions);
+
+  // 1. Limite Atual (Regime de Caixa / Realizado)
+  const exemptionLimitCurrent = baseExemptionFloor + deductibleLivroCaixaPaid;
+  const remainingExemptionBalance = Math.max(0, exemptionLimitCurrent - receivedGrossCpf);
+  const isExemptionLimitReached = receivedGrossCpf >= exemptionLimitCurrent;
+  const exemptionUsagePercent = exemptionLimitCurrent > 0 ? Math.min(100, (receivedGrossCpf / exemptionLimitCurrent) * 100) : 100;
+
+  // 2. Limite Previsto (Projetado / Competência do Mês)
+  const deductibleExpensesProjected = deductibleLivroCaixaPaid + deductibleLivroCaixaToPay;
+  const exemptionLimitProjected = baseExemptionFloor + deductibleExpensesProjected;
+  const remainingExemptionProjected = Math.max(0, exemptionLimitProjected - projectedGrossCpf);
+  const isExemptionLimitReachedProjected = projectedGrossCpf >= exemptionLimitProjected;
+  const exemptionUsagePercentProjected = exemptionLimitProjected > 0 ? Math.min(100, (projectedGrossCpf / exemptionLimitProjected) * 100) : 100;
+  const grossRevenueToReceive = Math.max(0, projectedGrossCpf - receivedGrossCpf);
 
   return {
     month: yearMonth,
@@ -382,10 +398,21 @@ export function calculateMonthlyPfTax(
     irpfRealized,
     irpfProjected,
     effectiveRate,
-    exemptionLimitMonthly,
+    exemptionLimitMonthly: exemptionLimitCurrent,
     remainingExemptionBalance,
     isExemptionLimitReached,
     exemptionUsagePercent,
+
+    // Limite Atual vs. Previsto e Despesas a Pagar
+    baseExemptionFloor,
+    exemptionLimitCurrent,
+    deductibleExpensesToPay: deductibleLivroCaixaToPay,
+    deductibleExpensesProjected,
+    grossRevenueToReceive,
+    exemptionLimitProjected,
+    remainingExemptionProjected,
+    isExemptionLimitReachedProjected,
+    exemptionUsagePercentProjected,
   };
 }
 
@@ -530,12 +557,9 @@ export function calculateCpfMonthlyTax(
   let deductibleExpensesLivroCaixa = 0;
   let nonDeductibleExpenses = 0;
   let conditionalExpenses = 0;
+  let deductibleExpensesToPay = 0;
 
   for (const exp of expenses) {
-    if (exp.status !== 'PAGO' || !exp.paymentDate || !exp.paymentDate.startsWith(yearMonth)) {
-      continue;
-    }
-
     let cpfPortion = 0;
     if (exp.entity === 'CPF') {
       cpfPortion = exp.value;
@@ -543,13 +567,21 @@ export function calculateCpfMonthlyTax(
 
     if (cpfPortion <= 0) continue;
 
-    if (exp.dedutivelLivroCaixaPf === 'SIM') {
-      deductibleExpensesLivroCaixa += cpfPortion;
-    } else if (exp.dedutivelLivroCaixaPf === 'CONDICIONAL') {
-      conditionalExpenses += cpfPortion;
-      deductibleExpensesLivroCaixa += cpfPortion; // Allowed with audit trail
-    } else {
-      nonDeductibleExpenses += cpfPortion;
+    const isDeductible = exp.dedutivelLivroCaixaPf === 'SIM' || exp.dedutivelLivroCaixaPf === 'CONDICIONAL';
+
+    if (exp.status === 'PAGO' && exp.paymentDate && exp.paymentDate.startsWith(yearMonth)) {
+      if (exp.dedutivelLivroCaixaPf === 'SIM') {
+        deductibleExpensesLivroCaixa += cpfPortion;
+      } else if (exp.dedutivelLivroCaixaPf === 'CONDICIONAL') {
+        conditionalExpenses += cpfPortion;
+        deductibleExpensesLivroCaixa += cpfPortion; // Allowed with audit trail
+      } else {
+        nonDeductibleExpenses += cpfPortion;
+      }
+    } else if (exp.status !== 'PAGO' && exp.status !== 'CANCELADO' && exp.dueDate && exp.dueDate.startsWith(yearMonth)) {
+      if (isDeductible) {
+        deductibleExpensesToPay += cpfPortion;
+      }
     }
   }
 
@@ -601,16 +633,29 @@ export function calculateCpfMonthlyTax(
   const effectiveTaxRate = grossRevenueReceived > 0 ? (carneLeaoEstimated / grossRevenueReceived) * 100 : 0;
 
   // Limite de Isenção Mensal de Faturamento (PF / Carnê-Leão)
+  // A partir de 2026 (Lei nº 15.191/2025), o faturamento bruto/líquido de até R$ 5.000,00 possui isenção de 100%.
+  // Despesas dedutíveis homologadas no Livro-Caixa abatem a base de cálculo, elevando a capacidade de faturar sem IRPF.
   const bracket0Max = brackets[0]?.max || (year >= 2026 ? 2428.80 : 2259.20);
-  const baseExemptionLimit = bracket0Max + deductibleExpensesLivroCaixa + effectivePersonalDeduction;
-  const exemptionLimitMonthly = year >= 2026 ? Math.max(5000, baseExemptionLimit) : baseExemptionLimit;
-  const remainingExemptionBalance = Math.max(0, exemptionLimitMonthly - grossRevenueReceived);
-  const isExemptionLimitReached = grossRevenueReceived >= exemptionLimitMonthly;
-  const exemptionUsagePercent = exemptionLimitMonthly > 0 ? Math.min(100, (grossRevenueReceived / exemptionLimitMonthly) * 100) : 100;
+  const baseExemptionFloor = year >= 2026 ? 5000 : (bracket0Max + effectivePersonalDeduction);
+
+  // 1. Limite Atual (Regime de Caixa / Realizado)
+  const exemptionLimitCurrent = baseExemptionFloor + deductibleExpensesLivroCaixa;
+  const remainingExemptionBalance = Math.max(0, exemptionLimitCurrent - grossRevenueReceived);
+  const isExemptionLimitReached = grossRevenueReceived >= exemptionLimitCurrent;
+  const exemptionUsagePercent = exemptionLimitCurrent > 0 ? Math.min(100, (grossRevenueReceived / exemptionLimitCurrent) * 100) : 100;
+
+  // 2. Limite Previsto (Projetado / Competência do Mês)
+  const deductibleExpensesProjected = deductibleExpensesLivroCaixa + deductibleExpensesToPay;
+  const exemptionLimitProjected = baseExemptionFloor + deductibleExpensesProjected;
+  const remainingExemptionProjected = Math.max(0, exemptionLimitProjected - grossRevenueProjected);
+  const isExemptionLimitReachedProjected = grossRevenueProjected >= exemptionLimitProjected;
+  const exemptionUsagePercentProjected = exemptionLimitProjected > 0 ? Math.min(100, (grossRevenueProjected / exemptionLimitProjected) * 100) : 100;
+  const grossRevenueToReceive = Math.max(0, grossRevenueProjected - grossRevenueReceived);
 
   return {
     grossRevenueReceived,
     grossRevenueProjected,
+    grossRevenueToReceive,
     deductibleExpensesLivroCaixa,
     nonDeductibleExpenses,
     conditionalExpenses,
@@ -619,6 +664,8 @@ export function calculateCpfMonthlyTax(
     inssDeductionTotal,
     deductionOptionUsed,
     simplifiedDiscountAmount: simplifiedDiscount,
+    legalDeductionsTotal: effectivePersonalDeduction + deductibleExpensesLivroCaixa,
+    effectivePersonalDeduction,
     taxBase,
     bracketNumber,
     nominalRate,
@@ -627,10 +674,20 @@ export function calculateCpfMonthlyTax(
     additionalReduction,
     carneLeaoEstimated,
     effectiveTaxRate,
-    exemptionLimitMonthly,
+    exemptionLimitMonthly: exemptionLimitCurrent,
     remainingExemptionBalance,
     isExemptionLimitReached,
     exemptionUsagePercent,
+
+    // Limite Atual vs. Previsto e Despesas a Pagar
+    baseExemptionFloor,
+    exemptionLimitCurrent,
+    deductibleExpensesToPay,
+    deductibleExpensesProjected,
+    exemptionLimitProjected,
+    remainingExemptionProjected,
+    isExemptionLimitReachedProjected,
+    exemptionUsagePercentProjected,
   };
 }
 
@@ -972,6 +1029,7 @@ export function getMonthlyReceivablesSummary(sales: Sale[], yearMonth: string) {
 export function getMonthlyExpensesSummary(expenses: Expense[], yearMonth: string) {
   let totalPaid = 0;
   let cpfDeductiblePaid = 0;
+  let cpfDeductiblePending = 0;
   let cnpjOperationalPaid = 0;
   let totalPending = 0;
   let totalOverdue = 0;
@@ -982,7 +1040,7 @@ export function getMonthlyExpensesSummary(expenses: Expense[], yearMonth: string
     if (exp.status === 'PAGO') {
       if (exp.paymentDate && exp.paymentDate.startsWith(yearMonth)) {
         totalPaid += exp.value;
-        if (exp.entity === 'CPF' && exp.dedutivelLivroCaixaPf === 'SIM') {
+        if (exp.entity === 'CPF' && (exp.dedutivelLivroCaixaPf === 'SIM' || exp.dedutivelLivroCaixaPf === 'CONDICIONAL')) {
           cpfDeductiblePaid += exp.value;
         }
 
@@ -991,8 +1049,11 @@ export function getMonthlyExpensesSummary(expenses: Expense[], yearMonth: string
         }
       }
     } else if (exp.status !== 'CANCELADO') {
-      if (exp.dueDate.startsWith(yearMonth)) {
+      if (exp.dueDate && exp.dueDate.startsWith(yearMonth)) {
         totalPending += exp.value;
+        if (exp.entity === 'CPF' && (exp.dedutivelLivroCaixaPf === 'SIM' || exp.dedutivelLivroCaixaPf === 'CONDICIONAL')) {
+          cpfDeductiblePending += exp.value;
+        }
         if (exp.dueDate < todayStr) {
           totalOverdue += exp.value;
         }
@@ -1002,7 +1063,9 @@ export function getMonthlyExpensesSummary(expenses: Expense[], yearMonth: string
 
   return {
     totalPaid,
+    totalToPay: totalPending,
     cpfDeductiblePaid,
+    cpfDeductiblePending,
     cnpjOperationalPaid,
     totalPending,
     totalOverdue,
