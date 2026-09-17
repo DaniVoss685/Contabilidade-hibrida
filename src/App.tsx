@@ -159,8 +159,7 @@ function AppContent() {
   // Estados exclusivos da Central de Supervisão de Consultoria (Escritório Contaju)
   const [consultingCompetency, setConsultingCompetency] = useState<string>(() => {
     const now = new Date();
-    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
   const [consultingData, setConsultingData] = useState<ConsultingPortfolioData | null>(null);
   const [isConsultingLoading, setIsConsultingLoading] = useState(false);
@@ -220,16 +219,12 @@ function AppContent() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [maskCpf, setMaskCpf] = useState(false); // CPF always displayed completely as required
 
-  // Global Period Filter State - Sincronizado com a última competência fechada por padrão
+  // Global Period Filter State - Mês civil atual dinâmico por padrão
   const [selectedYear, setSelectedYear] = useState<number>(() => {
-    const now = new Date();
-    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    return prev.getFullYear();
+    return new Date().getFullYear();
   });
   const [selectedMonth, setSelectedMonth] = useState<number | 'ALL'>(() => {
-    const now = new Date();
-    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    return prev.getMonth() + 1;
+    return new Date().getMonth() + 1;
   });
 
   const handleChangePeriod = (year: number, month: number | 'ALL') => {
@@ -241,10 +236,9 @@ function AppContent() {
 
   const handleResetPeriod = () => {
     const now = new Date();
-    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    setSelectedYear(prev.getFullYear());
-    setSelectedMonth(prev.getMonth() + 1);
-    setConsultingCompetency(`${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`);
+    setSelectedYear(now.getFullYear());
+    setSelectedMonth(now.getMonth() + 1);
+    setConsultingCompetency(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
   };
 
   // Modals state
