@@ -90,7 +90,7 @@ BEGIN
 
     v_has_employees := COALESCE(v_client.employees, 0) > 0;
 
-    -- 5. Itera sobre os últimos 12 meses fechados candidatos (retroativos a partir do mês anterior ao corrente)
+    -- 5. Itera estritamente sobre os últimos 12 meses retroativos da janela móvel dinâmica (do mês anterior ao corrente até 12 meses atrás)
     FOR v_month IN
         SELECT 
             TO_CHAR(d, 'MM/YYYY') AS comp_display,
@@ -116,20 +116,8 @@ BEGIN
           AND month = v_month.comp_display
         LIMIT 1;
 
-        -- Avalia critério de fechamento fiscal
-        v_is_fiscal_done := (v_fiscal.id IS NOT NULL AND v_fiscal.tax_status IN ('Feito', 'Passa zerado', 'Não tem'));
-
-        -- Avalia critério de fechamento de folha
-        v_is_payroll_done := CASE
-            WHEN v_payroll.id IS NOT NULL THEN
-                (v_payroll.status = 'Entregue' OR 
-                 (COALESCE(v_payroll.status_fgts, 'Não tem') IN ('Feito', 'Passa zerado', 'Não tem') AND
-                  COALESCE(v_payroll.status_inss, 'Feito') IN ('Feito', 'Passa zerado', 'Não tem')))
-            ELSE (NOT v_has_employees)
-        END;
-
-        -- Se a competência estiver fechada em ambos os quesitos contábeis:
-        IF v_is_fiscal_done AND v_is_payroll_done THEN
+        -- Avalia presença de dados fiscais ou de folha para a competência
+        IF (v_fiscal.id IS NOT NULL OR v_payroll.id IS NOT NULL) THEN
             v_gross_revenue := COALESCE(v_fiscal.revenue, 0);
             v_payroll_total := COALESCE(v_payroll.gross_salary, 0);
             v_fgts := v_payroll.fgts;
@@ -271,6 +259,14 @@ BEGIN
             END IF;
         END IF;
     END LOOP;
+
+    -- Garante que apenas os últimos 12 meses da janela móvel dinâmica fiquem vigentes (is_current = true) para o tenant
+    UPDATE public.accounting_monthly_snapshots
+    SET is_current = false,
+        updated_at = v_now
+    WHERE dental_tenant_id = p_dental_tenant_id
+      AND competency < TO_CHAR(date_trunc('month', v_now) - INTERVAL '12 months', 'YYYY-MM')
+      AND is_current = true;
 
     -- Atualiza last_sync_at no vínculo
     UPDATE public.integration_client_links

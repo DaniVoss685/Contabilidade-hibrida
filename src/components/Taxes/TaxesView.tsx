@@ -257,7 +257,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       if (linkRes.link.status === 'ACTIVE') {
         setIsLoadingSnapshots(true);
         const [snapRes, confRes] = await Promise.all([
-          ContabilexIntegrationService.getPublishedSnapshots(tenantId),
+          ContabilexIntegrationService.getPublishedSnapshots(tenantId, 12),
           ContabilexIntegrationService.getConfirmations(tenantId),
         ]);
         setIsLoadingSnapshots(false);
@@ -310,6 +310,11 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       setIsSyncingWithContaju(false);
     }
   };
+
+  // Garante estritamente que apenas os últimos 12 meses dinâmicos sejam exibidos na interface
+  const displayedSnapshots = useMemo(() => {
+    return (contabilexSnapshots || []).slice(0, 12);
+  }, [contabilexSnapshots]);
 
   useEffect(() => {
     loadContabilexData(activeTenantId);
@@ -885,9 +890,9 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                     <span className="w-1.5 h-1.5 rounded-full bg-teal-500"></span>
                     Contaju conectado
                   </span>
-                  {contabilexSnapshots.length < 12 ? (
+                  {displayedSnapshots.length < 12 ? (
                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
-                      Histórico contábil parcial ({contabilexSnapshots.length}/12)
+                      Histórico contábil parcial ({displayedSnapshots.length}/12)
                     </span>
                   ) : (
                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
@@ -904,7 +909,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
               {activeFiscalMode === 'CONTABILEX' && isContabilexActive ? (
-                contabilexSnapshots.length === 0 ? (
+                displayedSnapshots.length === 0 ? (
                   'Conexão ativa. Aguardando primeira competência publicada pelo escritório.'
                 ) : (
                   <>
@@ -912,7 +917,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                     {latestSnapshotPublishedAt
                       ? `${new Date(latestSnapshotPublishedAt).toLocaleDateString('pt-BR')} às ${new Date(latestSnapshotPublishedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
                       : 'Recente'}{' '}
-                    • Histórico: {contabilexSnapshots.length} de 12 competências disponíveis
+                    • Histórico: {displayedSnapshots.length} de 12 competências disponíveis
                   </>
                 )
               ) : (
@@ -1044,7 +1049,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           Composição dos Meses Sincronizados (Escritório Contaju)
                         </span>
                         <span className="text-[11px] text-slate-500">
-                          {contabilexSnapshots.length} competência{contabilexSnapshots.length !== 1 ? 's' : ''} disponível{contabilexSnapshots.length !== 1 ? 'is' : ''} na origem contábil oficial
+                          {displayedSnapshots.length} competência{displayedSnapshots.length !== 1 ? 's' : ''} disponível{displayedSnapshots.length !== 1 ? 'is' : ''} na origem contábil oficial (últimos 12 meses)
                         </span>
                       </div>
                     </div>
@@ -1059,7 +1064,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                     </button>
                   </div>
 
-                  {contabilexSnapshots.length === 0 ? (
+                  {displayedSnapshots.length === 0 ? (
                     <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
                       Nenhuma competência contábil foi publicada ainda pelo Escritório Contaju para esta clínica.
                     </div>
@@ -1072,11 +1077,12 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                             <th className="py-2.5 px-3">Receita Bruta</th>
                             <th className="py-2.5 px-3">Valor da Folha</th>
                             <th className="py-2.5 px-3">Guia DAS</th>
+                            <th className="py-2.5 px-3">Alíquota do Mês</th>
                             <th className="py-2.5 px-3 text-right">Relação Folha/Receita</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 font-mono text-xs">
-                          {contabilexSnapshots.map((s) => {
+                          {displayedSnapshots.map((s) => {
                             const revenue = Number(s.gross_revenue) || 0;
                             const payroll = Number(s.factor_r_payroll_base) || 0;
                             const ratio = revenue > 0 ? (payroll / revenue) * 100 : null;
@@ -1094,6 +1100,9 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                                 </td>
                                 <td className="py-2.5 px-3 text-slate-800">
                                   {s.das_total !== null ? formatCurrency(s.das_total) : 'Em apuração'}
+                                </td>
+                                <td className="py-2.5 px-3 text-blue-950 font-medium">
+                                  {s.effective_rate !== null && s.effective_rate !== undefined ? formatPercent(s.effective_rate, 2) : '—'}
                                 </td>
                                 <td className="py-2.5 px-3 text-right text-slate-900 font-bold">
                                   {ratio !== null ? `${ratio.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%` : '—'}
@@ -2164,7 +2173,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                         </p>
                         <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 border-t border-emerald-200/70">
                           <span className="text-[11px] text-emerald-700">
-                            {contabilexSnapshots.length} competência{contabilexSnapshots.length !== 1 ? 's' : ''} disponível{contabilexSnapshots.length !== 1 ? 'is' : ''}
+                            {displayedSnapshots.length} competência{displayedSnapshots.length !== 1 ? 's' : ''} disponível{displayedSnapshots.length !== 1 ? 'is' : ''} (últimos 12 meses)
                           </span>
                           <div className="flex items-center gap-2">
                             {activeFiscalMode !== 'CONTABILEX' ? (

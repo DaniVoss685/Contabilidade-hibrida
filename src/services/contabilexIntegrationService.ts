@@ -153,7 +153,7 @@ export const ContabilexIntegrationService = {
    */
   async getPublishedSnapshots(
     dentalTenantId: string,
-    limit: number = 24
+    limit: number = 12
   ): Promise<{ snapshots: ContabilexSnapshotPayload[]; error?: string }> {
     if (!dentalTenantId) {
       return { snapshots: [], error: 'Tenant ID não informado' };

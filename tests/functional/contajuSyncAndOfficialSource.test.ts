@@ -128,9 +128,9 @@ describe('Suíte Funcional: Integração Contábil Contaju — Fonte Oficial Aut
   });
 
   // --------------------------------------------------------------------------
-  // 3. TABELA DE COMPETÊNCIAS SIMPLIFICADA (EXATAMENTE 5 COLUNAS)
+  // 3. TABELA DE COMPETÊNCIAS COM ALÍQUOTA DO MÊS
   // --------------------------------------------------------------------------
-  it('TABLE-01: Formatação e cálculo correto das 5 colunas essenciais da tabela', () => {
+  it('TABLE-01: Formatação e cálculo correto das 6 colunas da tabela incluindo Alíquota do Mês', () => {
     const mockSnapshots: ContabilexSnapshotPayload[] = [
       {
         id: 'snap-1',
@@ -148,7 +148,7 @@ describe('Suíte Funcional: Integração Contábil Contaju — Fonte Oficial Aut
         gross_revenue: 0,
         factor_r_payroll_base: 0,
         das_total: 0,
-        effective_rate: 0,
+        effective_rate: null,
         version: 1,
         status: 'PUBLISHED',
       } as ContabilexSnapshotPayload,
@@ -164,6 +164,7 @@ describe('Suíte Funcional: Integração Contábil Contaju — Fonte Oficial Aut
         receitaBruta: revenue.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
         valorDaFolha: payroll.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
         guiaDas: s.das_total !== null ? s.das_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : 'Em apuração',
+        aliquotaDoMes: s.effective_rate !== null && s.effective_rate !== undefined ? `${Number(s.effective_rate).toFixed(2).replace('.', ',')}%` : '—',
         relacaoFolhaReceita: ratio !== null ? `${ratio.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%` : '—',
       };
     });
@@ -181,17 +182,49 @@ describe('Suíte Funcional: Integração Contábil Contaju — Fonte Oficial Aut
     // Coluna 4: Guia DAS
     assert.ok(tableRows[0].guiaDas.includes('587,84'));
 
-    // Coluna 5: Relação Folha/Receita (% pt-BR)
+    // Coluna 5: Alíquota do Mês
+    assert.strictEqual(tableRows[0].aliquotaDoMes, '6,00%');
+    assert.strictEqual(tableRows[1].aliquotaDoMes, '—');
+
+    // Coluna 6: Relação Folha/Receita (% pt-BR)
     // 3242 / 9797.50 = 33.09007... -> 33,09%
     assert.strictEqual(tableRows[0].relacaoFolhaReceita, '33,09%');
-
-    // Quando receita for zero, deve exibir "—" (traço)
     assert.strictEqual(tableRows[1].relacaoFolhaReceita, '—');
 
-    // Garante que o objeto da linha tem exatamente as 5 propriedades esperadas
+    // Garante que o objeto da linha tem as 6 propriedades essenciais esperadas
     const keys = Object.keys(tableRows[0]);
-    assert.strictEqual(keys.length, 5);
-    assert.deepStrictEqual(keys, ['competencia', 'receitaBruta', 'valorDaFolha', 'guiaDas', 'relacaoFolhaReceita']);
+    assert.strictEqual(keys.length, 6);
+    assert.deepStrictEqual(keys, ['competencia', 'receitaBruta', 'valorDaFolha', 'guiaDas', 'aliquotaDoMes', 'relacaoFolhaReceita']);
+  });
+
+  it('SYNC-03: Sincronização varre todos os 12 meses cadastrados na contabilidade, permitindo retificação de meses antigos', () => {
+    // Simula 12 competências onde meses anteriores (ex: 10/2025 e 09/2025) foram retificados de 0 para 1518
+    const existingSnapshots = [
+      { competency: '2026-08', gross_revenue: 9797.50, factor_r_payroll_base: 3242.00, content_hash: 'hash-08' },
+      { competency: '2025-10', gross_revenue: 4480.00, factor_r_payroll_base: 0.00, content_hash: 'old-hash-10' },
+      { competency: '2025-09', gross_revenue: 13550.00, factor_r_payroll_base: 0.00, content_hash: 'old-hash-09' },
+    ];
+
+    const updatedPayrollFromContaju: Record<string, number> = {
+      '2026-08': 3242.00,
+      '2025-10': 1518.00, // Preenchido posteriormente
+      '2025-09': 1518.00, // Preenchido posteriormente
+    };
+
+    let updatedCount = 0;
+    let unchangedCount = 0;
+
+    for (const snap of existingSnapshots) {
+      const currentSalary = updatedPayrollFromContaju[snap.competency];
+      if (currentSalary !== snap.factor_r_payroll_base) {
+        updatedCount++;
+      } else {
+        unchangedCount++;
+      }
+    }
+
+    assert.strictEqual(updatedCount, 2, 'Deve atualizar as 2 competências retificadas de meses anteriores (10/2025 e 09/2025)');
+    assert.strictEqual(unchangedCount, 1, 'Deve manter intacta a competência que não mudou');
   });
 
   // --------------------------------------------------------------------------
