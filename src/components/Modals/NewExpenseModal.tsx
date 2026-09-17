@@ -437,10 +437,55 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     return getCounterpartyMeta(selectedCategory?.name, selectedCategory?.groupName, entity);
   }, [selectedCategory, entity]);
 
-  const categoryOptions = activeCategories.map((c) => ({
-    value: c.id,
-    label: c.name,
-  }));
+  // Frequência real de uso das categorias no histórico do tenant atual
+  const categoryUsageCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    const allExpenses = db.getExpenses();
+    for (const exp of allExpenses) {
+      if (exp.categoryId) {
+        counts.set(exp.categoryId, (counts.get(exp.categoryId) || 0) + 1);
+      }
+    }
+    return counts;
+  }, []);
+
+  // Ordenação inteligente: 1º "Mais usados" (máx 5), 2º "Todas as categorias" alfabética (pt-BR) sem duplicação
+  const categoryOptions = useMemo(() => {
+    const active = [...activeCategories];
+
+    // Categorias com histórico real de uso (ao menos 1 lançamento)
+    const usedCategories = active
+      .filter((c) => (categoryUsageCounts.get(c.id) || 0) > 0)
+      .sort((a, b) => {
+        const countDiff = (categoryUsageCounts.get(b.id) || 0) - (categoryUsageCounts.get(a.id) || 0);
+        if (countDiff !== 0) return countDiff;
+        return a.name.localeCompare(b.name, 'pt-BR');
+      });
+
+    // Top 5 mais usadas
+    const topUsed = usedCategories.slice(0, 5);
+    const topUsedIds = new Set(topUsed.map((c) => c.id));
+
+    // Demais categorias ordenadas alfabeticamente respeitando locale pt-BR (sem duplicar)
+    const remainingCategories = active
+      .filter((c) => !topUsedIds.has(c.id))
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+
+    const mostUsedOptions = topUsed.map((c) => ({
+      value: c.id,
+      label: c.name,
+      badge: 'Mais usada',
+      description: `${c.groupName || 'Plano de Contas'} • ${categoryUsageCounts.get(c.id)} lançamento(s)`,
+    }));
+
+    const remainingOptions = remainingCategories.map((c) => ({
+      value: c.id,
+      label: c.name,
+      description: c.groupName || undefined,
+    }));
+
+    return [...mostUsedOptions, ...remainingOptions];
+  }, [activeCategories, categoryUsageCounts]);
 
   const paymentMethodOptions = [
     { value: 'PIX', label: 'PIX' },
@@ -451,11 +496,16 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     { value: 'DINHEIRO', label: 'Dinheiro em Espécie' },
   ];
 
-  const bankAccountOptions = bankAccounts.map((b) => ({
-    value: b.id,
-    label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
-    description: `${b.isPreferred ? 'Conta Padrão • ' : ''}${b.bankName || 'Conta Bancária'}`,
-  }));
+  const bankAccountOptions = bankAccounts.map((b) => {
+    const isPj = b.accountType === 'CORRENTE_PJ';
+    return {
+      value: b.id,
+      label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
+      description: `${b.isPreferred ? 'Conta Padrão • ' : ''}${
+        isPj ? 'Conta Jurídica (PJ) • Clínica' : 'Conta Física (CPF) • Dentista / Livro Caixa'
+      }`,
+    };
+  });
 
   const isSeriesExpense = Boolean(
     expenseToEdit && (expenseToEdit.installmentGroupId || expenseToEdit.recurrenceId)

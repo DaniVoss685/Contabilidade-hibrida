@@ -253,11 +253,16 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
     }
   };
 
-  const bankAccountOptions = bankAccounts.map((b) => ({
-    value: b.id,
-    label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
-    description: `${b.isPreferred ? 'Conta Padrão • ' : ''}Saldo atual: ${formatCurrency(b.currentBalance)}`,
-  }));
+  const bankAccountOptions = bankAccounts.map((b) => {
+    const isPj = b.accountType === 'CORRENTE_PJ';
+    return {
+      value: b.id,
+      label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
+      description: `${b.isPreferred ? 'Conta Padrão • ' : ''}${
+        isPj ? 'Conta Jurídica (PJ)' : 'Conta Física (CPF)'
+      } • Saldo: ${formatCurrency(b.currentBalance)}`,
+    };
+  });
 
   const handleProcedureSelect = (procId: string) => {
     setSelectedProcedureId(procId);

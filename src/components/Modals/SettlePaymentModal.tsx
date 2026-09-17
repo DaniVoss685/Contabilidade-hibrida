@@ -68,7 +68,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
   const bankAccountOptions = bankAccounts.map((b) => ({
     value: b.id,
     label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
-    description: b.accountType === 'CORRENTE_PF' ? 'Conta Física (PF)' : 'Conta Jurídica (PJ)',
+    description: `${b.isPreferred ? '⭐ Padrão • ' : ''}${b.accountType === 'CORRENTE_PF' ? 'Conta Física (CPF)' : 'Conta Jurídica (PJ)'}`,
   }));
 
   const handleSubmit = (e: React.FormEvent) => {

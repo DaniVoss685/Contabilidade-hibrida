@@ -54,8 +54,8 @@ export const DEMO_BANK_ACCOUNTS: BankAccount[] = [
   {
     id: 'bank_01',
     orgId: 'org_mendes_01',
-    name: 'Itaú - Conta Profissional PF',
-    bankName: 'Banco Itaú',
+    name: 'Itaú CPF',
+    bankName: 'Itaú',
     accountType: 'CORRENTE_PF',
     initialBalance: 14500.00,
     currentBalance: 18250.00,
@@ -64,8 +64,8 @@ export const DEMO_BANK_ACCOUNTS: BankAccount[] = [
   {
     id: 'bank_02',
     orgId: 'org_mendes_01',
-    name: 'Santander - Clínica PJ',
-    bankName: 'Banco Santander',
+    name: 'Santander PJ',
+    bankName: 'Santander',
     accountType: 'CORRENTE_PJ',
     initialBalance: 32000.00,
     currentBalance: 46800.00,

@@ -40,8 +40,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
-  const [nameInput, setNameInput] = useState('');
-  const [institutionInput, setInstitutionInput] = useState('');
+  const [bankNameInput, setBankNameInput] = useState('');
   const [accountTypeInput, setAccountTypeInput] = useState<'CORRENTE_PF' | 'CORRENTE_PJ'>('CORRENTE_PJ');
   const [initialBalanceInput, setInitialBalanceInput] = useState<number>(0);
   const [isActiveInput, setIsActiveInput] = useState<boolean>(true);
@@ -97,11 +96,22 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
   const totalConsolidated = totalPfBalance + totalPjBalance;
   const activeCount = bankAccounts.filter((b) => b.isActive !== false).length;
 
+  // Helper Functions para formatação automática de Nome do Banco com sufixo PJ/CPF
+  const getBaseBankName = (name: string): string => {
+    return name.replace(/\s+(PJ|PF|CPF)$/i, '').trim();
+  };
+
+  const formatBankNameForType = (rawName: string, type: 'CORRENTE_PF' | 'CORRENTE_PJ'): string => {
+    const base = getBaseBankName(rawName);
+    if (!base) return '';
+    const suffix = type === 'CORRENTE_PJ' ? 'PJ' : 'CPF';
+    return `${base} ${suffix}`;
+  };
+
   // Handlers
   const handleOpenAdd = () => {
     setEditingAccountId(null);
-    setNameInput('');
-    setInstitutionInput('');
+    setBankNameInput('');
     setAccountTypeInput('CORRENTE_PJ');
     setInitialBalanceInput(0);
     setIsActiveInput(true);
@@ -111,13 +121,27 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
 
   const handleOpenEdit = (acc: BankAccount) => {
     setEditingAccountId(acc.id);
-    setNameInput(acc.name);
-    setInstitutionInput(acc.bankName || '');
-    setAccountTypeInput(acc.accountType === 'CORRENTE_PF' ? 'CORRENTE_PF' : 'CORRENTE_PJ');
+    const type = acc.accountType === 'CORRENTE_PF' ? 'CORRENTE_PF' : 'CORRENTE_PJ';
+    setAccountTypeInput(type);
+    setBankNameInput(acc.name || acc.bankName || '');
     setInitialBalanceInput(acc.initialBalance || 0);
     setIsActiveInput(acc.isActive !== false);
     setIsPreferredInput(Boolean(acc.isPreferred));
     setIsModalOpen(true);
+  };
+
+  const handleSelectAccountType = (newType: 'CORRENTE_PF' | 'CORRENTE_PJ') => {
+    setAccountTypeInput(newType);
+    if (bankNameInput.trim()) {
+      const updated = formatBankNameForType(bankNameInput, newType);
+      setBankNameInput(updated);
+    }
+  };
+
+  const handleBankNameBlur = () => {
+    if (bankNameInput.trim()) {
+      setBankNameInput(formatBankNameForType(bankNameInput, accountTypeInput));
+    }
   };
 
   const handleTogglePreferred = async (acc: BankAccount, e?: React.MouseEvent) => {
@@ -133,15 +157,18 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!nameInput.trim()) {
-      toast.warning('Informe a identificação da conta bancária.');
+    if (!bankNameInput.trim()) {
+      toast.warning('Informe o nome do banco.');
       return;
     }
 
+    const finalName = formatBankNameForType(bankNameInput, accountTypeInput) || bankNameInput.trim();
+    const baseInstitution = getBaseBankName(bankNameInput) || finalName;
+
     if (editingAccountId) {
       await db.updateBankAccount(editingAccountId, {
-        name: nameInput.trim(),
-        bankName: institutionInput.trim() || 'Banco',
+        name: finalName,
+        bankName: baseInstitution,
         accountType: accountTypeInput,
         initialBalance: initialBalanceInput,
         isActive: isActiveInput,
@@ -150,8 +177,8 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
       toast.success('Conta bancária atualizada com sucesso.');
     } else {
       await db.addBankAccountAsync({
-        name: nameInput.trim(),
-        bankName: institutionInput.trim() || 'Banco',
+        name: finalName,
+        bankName: baseInstitution,
         accountType: accountTypeInput,
         initialBalance: initialBalanceInput,
         currentBalance: initialBalanceInput,
@@ -574,30 +601,25 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
             <form onSubmit={handleSave} className="p-6 space-y-4 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 mb-1.5">
-                  Identificação / Apelido da Conta <span className="text-rose-500">*</span>
+                  Nome do Banco <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
-                  placeholder=""
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
+                  placeholder="Ex: Nubank, Itaú, Bradesco, Santander, Inter, Banco do Brasil..."
+                  value={bankNameInput}
+                  onChange={(e) => setBankNameInput(e.target.value)}
+                  onBlur={handleBankNameBlur}
                   className="w-full text-xs rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium"
                   required
                 />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1.5">
-                  Instituição Financeira (Banco) <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder=""
-                  value={institutionInput}
-                  onChange={(e) => setInstitutionInput(e.target.value)}
-                  className="w-full text-xs rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-medium"
-                  required
-                />
+                {bankNameInput.trim() && (
+                  <div className="text-[11px] text-slate-500 mt-1.5 flex items-center gap-1.5 flex-wrap">
+                    <span>Identificação nos lançamentos:</span>
+                    <span className="font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+                      {formatBankNameForType(bankNameInput, accountTypeInput) || bankNameInput.trim()}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Account Type / Entity Selection */}
@@ -608,7 +630,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                 <div className="grid grid-cols-2 gap-2.5">
                   <button
                     type="button"
-                    onClick={() => setAccountTypeInput('CORRENTE_PJ')}
+                    onClick={() => handleSelectAccountType('CORRENTE_PJ')}
                     className={`p-3 rounded-xl border text-left cursor-pointer transition-all flex flex-col justify-between ${
                       accountTypeInput === 'CORRENTE_PJ'
                         ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/15'
@@ -626,7 +648,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => setAccountTypeInput('CORRENTE_PF')}
+                    onClick={() => handleSelectAccountType('CORRENTE_PF')}
                     className={`p-3 rounded-xl border text-left cursor-pointer transition-all flex flex-col justify-between ${
                       accountTypeInput === 'CORRENTE_PF'
                         ? 'border-emerald-600 bg-emerald-50/60 ring-2 ring-emerald-500/15'
@@ -635,7 +657,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                   >
                     <div className="flex items-center gap-1.5 font-bold text-xs text-emerald-900">
                       <User className="w-3.5 h-3.5 text-emerald-700" />
-                      <span>Conta PF</span>
+                      <span>Conta PF (CPF)</span>
                     </div>
                     <span className="text-[10px] text-slate-500 mt-1 block">
                       Dentista • Carnê-Leão
