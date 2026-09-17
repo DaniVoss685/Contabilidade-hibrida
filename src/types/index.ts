@@ -60,6 +60,86 @@ export interface DentalTenantOption {
   created_at: string;
 }
 
+export type ConsultingHealthStatus = 'HEALTHY' | 'WARNING' | 'CRITICAL';
+export type ConsultingSyncStatus = 'SYNCED' | 'PENDING' | 'ERROR' | 'UNLINKED';
+
+export interface ConsultingClientSummary {
+  tenant_id: string;
+  clinic_name: string;
+  trade_name?: string;
+  cnpj?: string;
+  owner_name: string;
+  owner_email?: string;
+  owner_phone?: string;
+  monthly_revenue: number;
+  monthly_expenses: number;
+  payroll_amount: number;
+  rbt12?: number;
+  fs12?: number;
+  effective_rate?: number;
+  estimated_das?: number;
+  r_factor: number;
+  annex: 'III' | 'V';
+  overdue_receivables: number;
+  overdue_payables: number;
+  open_receivables: number;
+  open_payables: number;
+  contaju_sync_status: ConsultingSyncStatus;
+  health_status: ConsultingHealthStatus;
+  health_reasons: string[];
+}
+
+export interface ConsultingPortfolioTotals {
+  competency: string;
+  total_active_clinics: number;
+  total_portfolio_revenue: number;
+  total_portfolio_expenses: number;
+  total_portfolio_open_receivables: number;
+  total_portfolio_open_payables: number;
+  total_portfolio_overdue: number;
+  healthy_count: number;
+  warning_count: number;
+  critical_count: number;
+  annex_iii_count: number;
+  annex_v_count: number;
+  estimated_total_das: number;
+  pending_closing_count: number;
+}
+
+export interface ConsultingPriorityAlert {
+  tenant_id: string;
+  clinic_name: string;
+  severity: 'CRITICAL' | 'WARNING' | 'INFO';
+  type: 'FATOR_R' | 'OVERDUE' | 'INTEGRATION' | 'CLOSING';
+  message: string;
+  action_label?: string;
+}
+
+export interface ConsultingPortfolioData {
+  portfolio_summary: ConsultingPortfolioTotals;
+  clients: ConsultingClientSummary[];
+  priority_alerts: ConsultingPriorityAlert[];
+}
+
+export type ConsultingNavTab =
+  | 'portfolio'
+  | 'clients'
+  | 'financial_indicators'
+  | 'taxes_fator_r'
+  | 'overdue_accounts'
+  | 'alerts_pending'
+  | 'contaju_integrations'
+  | 'comparative'
+  | 'reports'
+  | 'consulting_settings';
+
+export type ConsultingSupervisedTab =
+  | 'summary'
+  | 'financial'
+  | 'taxes'
+  | 'pending'
+  | 'contaju';
+
 export interface StoredUserAccount {
   id: string;
   email: string;

@@ -31,8 +31,21 @@ import { ToastProvider, useToast } from './components/UI/ToastContext';
 import { ToastContainer } from './components/UI/Toast';
 import { GlobalPatientSearchModal } from './components/Navigation/GlobalPatientSearchModal';
 import { getEffectivePayableStatus, getEffectiveReceivableStatus } from './lib/statusHelper';
-import { Patient } from './types';
-import { ShieldAlert, ShieldCheck } from 'lucide-react';
+import { Patient, ConsultingPortfolioData, ConsultingClientSummary, ConsultingNavTab } from './types';
+import { ShieldAlert, ShieldCheck, ArrowLeft } from 'lucide-react';
+import { ConsultingHeader } from './components/Consulting/ConsultingHeader';
+import { ConsultingSidebar } from './components/Consulting/ConsultingSidebar';
+import { ConsultingPortfolioDashboard } from './components/Consulting/ConsultingPortfolioDashboard';
+import { ConsultingClinicsView } from './components/Consulting/ConsultingClinicsView';
+import { ConsultingFinancialIndicatorsView } from './components/Consulting/ConsultingFinancialIndicatorsView';
+import { ConsultingTaxesView } from './components/Consulting/ConsultingTaxesView';
+import { ConsultingOverdueView } from './components/Consulting/ConsultingOverdueView';
+import { ConsultingAlertsView } from './components/Consulting/ConsultingAlertsView';
+import { ConsultingIntegrationsView } from './components/Consulting/ConsultingIntegrationsView';
+import { ConsultingComparativeView } from './components/Consulting/ConsultingComparativeView';
+import { ConsultingReportsView } from './components/Consulting/ConsultingReportsView';
+import { ConsultingSettingsView } from './components/Consulting/ConsultingSettingsView';
+import { ConsultingClientSummaryModal } from './components/Consulting/ConsultingClientSummaryModal';
 
 function AppContent() {
   const toast = useToast();
@@ -106,21 +119,22 @@ function AppContent() {
     }
   }, [isPrimaryAccount, tick]);
 
-  const handleSelectClinic = async (targetTenantId: string) => {
+  const handleSelectClinic = async (targetTenantId: string, clinicName?: string) => {
     if (!targetTenantId) return;
-    if (currentSession?.tenantId === targetTenantId && !currentSession?.supportSession) return;
     if (currentSession?.supportSession?.targetTenantId === targetTenantId) return;
 
+    setSummaryClient(null);
     setIsSwitchingClinic(true);
     try {
       const selected = availableClinics.find((c) => c.tenant_id === targetTenantId);
+      const name = clinicName || selected?.clinic_name || targetTenantId;
       const res = await db.startSupportSessionAsync(
         targetTenantId,
-        selected?.clinic_name,
+        name,
         'Acesso gerencial e suporte contábil/consultoria'
       );
       if (res.success) {
-        toast.success(`Acessando clínica: ${selected?.clinic_name || targetTenantId}`);
+        toast.success(`Acessando clínica: ${name}`);
       } else {
         toast.error(res.error || 'Não foi possível alternar de clínica.');
       }
@@ -132,14 +146,52 @@ function AppContent() {
   };
 
   const handleReturnToPrimary = async () => {
+    setSummaryClient(null);
     setIsSwitchingClinic(true);
     try {
       db.endSupportSession();
-      toast.info('Retornado para sua conta primária.');
+      toast.info('Retornado para a Visão da Carteira.');
     } finally {
       setTimeout(() => setIsSwitchingClinic(false), 200);
     }
   };
+
+  // Estados exclusivos da Central de Supervisão de Consultoria (Escritório Contaju)
+  const [consultingCompetency, setConsultingCompetency] = useState<string>(() => {
+    const now = new Date();
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [consultingData, setConsultingData] = useState<ConsultingPortfolioData | null>(null);
+  const [isConsultingLoading, setIsConsultingLoading] = useState(false);
+  const [consultingTab, setConsultingTab] = useState<ConsultingNavTab>('portfolio');
+  const [summaryClient, setSummaryClient] = useState<ConsultingClientSummary | null>(null);
+  const [isConsultingSidebarCollapsed, setIsConsultingSidebarCollapsed] = useState(false);
+
+  const fetchConsultingData = async () => {
+    if (!isPrimaryAccount) return;
+    setIsConsultingLoading(true);
+    try {
+      const data = await SupabaseService.getConsultingPortfolioSummary(consultingCompetency);
+      if (data) {
+        setConsultingData(data);
+        if (summaryClient) {
+          const updated = data.clients.find((c) => c.tenant_id === summaryClient.tenant_id);
+          if (updated) setSummaryClient(updated);
+        }
+      }
+    } catch (err) {
+      console.error('[Consulting] Falha ao carregar carteira de supervisão:', err);
+    } finally {
+      setIsConsultingLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isPrimaryAccount) {
+      fetchConsultingData();
+    }
+  }, [isPrimaryAccount, consultingCompetency, tick]);
 
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -168,19 +220,31 @@ function AppContent() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [maskCpf, setMaskCpf] = useState(false); // CPF always displayed completely as required
 
-  // Global Period Filter State - Dynamic real environment date
-  const [selectedYear, setSelectedYear] = useState<number>(() => new Date().getFullYear());
-  const [selectedMonth, setSelectedMonth] = useState<number | 'ALL'>(() => new Date().getMonth() + 1);
+  // Global Period Filter State - Sincronizado com a última competência fechada por padrão
+  const [selectedYear, setSelectedYear] = useState<number>(() => {
+    const now = new Date();
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    return prev.getFullYear();
+  });
+  const [selectedMonth, setSelectedMonth] = useState<number | 'ALL'>(() => {
+    const now = new Date();
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    return prev.getMonth() + 1;
+  });
 
   const handleChangePeriod = (year: number, month: number | 'ALL') => {
     setSelectedYear(year);
     setSelectedMonth(month);
+    const m = month === 'ALL' ? '12' : String(month).padStart(2, '0');
+    setConsultingCompetency(`${year}-${m}`);
   };
 
   const handleResetPeriod = () => {
     const now = new Date();
-    setSelectedYear(now.getFullYear());
-    setSelectedMonth(now.getMonth() + 1);
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    setSelectedYear(prev.getFullYear());
+    setSelectedMonth(prev.getMonth() + 1);
+    setConsultingCompetency(`${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`);
   };
 
   // Modals state
@@ -355,13 +419,219 @@ function AppContent() {
     );
   }
 
+  const activeTenantIdTarget = currentSession?.supportSession?.targetTenantId || currentSession?.tenantId;
+  const clinicMatch = availableClinics.find((c) => c.tenant_id === activeTenantIdTarget);
+
   const activeClinicDisplayName =
-    db.getActiveClinicDisplayName?.() ||
-    currentSession?.supportSession?.targetTenantName ||
-    organization?.name ||
-    professional?.nomeFantasia ||
+    (clinicMatch?.clinic_name && clinicMatch.clinic_name !== 'Clínica sem nome' ? clinicMatch.clinic_name : '') ||
+    (clinicMatch?.trade_name && clinicMatch.trade_name !== 'Clínica sem nome' ? clinicMatch.trade_name : '') ||
+    (currentSession?.supportSession?.targetTenantName && currentSession.supportSession.targetTenantName !== 'Clínica sem nome'
+      ? currentSession.supportSession.targetTenantName
+      : '') ||
+    (db.getActiveClinicDisplayName?.() && db.getActiveClinicDisplayName?.() !== 'Clínica sem nome'
+      ? db.getActiveClinicDisplayName()
+      : '') ||
+    (organization?.name && organization.name !== 'Clínica sem nome' ? organization.name : '') ||
+    (professional?.nomeFantasia && professional.nomeFantasia !== 'Clínica sem nome' ? professional.nomeFantasia : '') ||
     professional?.razaoSocial ||
-    'Clínica sem nome';
+    'Clínica Ativa';
+
+  // Se o usuário for da Consultoria (Escritório Contaju / Assessoria) e NÃO estiver com suporte ativo em uma clínica:
+  // Renderiza a Central de Supervisão de Clientes (NÍVEL 1: Visão da Carteira)
+  if (isPrimaryAccount && !currentSession?.supportSession) {
+    const [compYear, compMonth] = consultingCompetency.split('-');
+    const compDate = new Date(Number(compYear), Number(compMonth) - 1, 1);
+    const compLabel =
+      compDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }).charAt(0).toUpperCase() +
+      compDate.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }).slice(1);
+
+    const defaultTotals = {
+      competency: consultingCompetency,
+      total_active_clinics: 0,
+      total_portfolio_revenue: 0,
+      total_portfolio_expenses: 0,
+      total_portfolio_open_receivables: 0,
+      total_portfolio_open_payables: 0,
+      total_portfolio_overdue: 0,
+      healthy_count: 0,
+      warning_count: 0,
+      critical_count: 0,
+      annex_iii_count: 0,
+      annex_v_count: 0,
+      estimated_total_das: 0,
+      pending_closing_count: 0,
+    };
+
+    const portfolioDataSafe: ConsultingPortfolioData = consultingData || {
+      portfolio_summary: defaultTotals,
+      clients: [],
+      priority_alerts: [],
+    };
+
+    const getConsultingTitle = (tab: ConsultingNavTab) => {
+      switch (tab) {
+        case 'portfolio':
+          return 'Visão da Carteira';
+        case 'clients':
+          return 'Clínicas Supervisionadas';
+        case 'financial_indicators':
+          return 'Indicadores Financeiros da Carteira';
+        case 'taxes_fator_r':
+          return 'Inteligência Fiscal & Fator R';
+        case 'overdue_accounts':
+          return 'Contas em Atraso da Carteira';
+        case 'alerts_pending':
+          return 'Central de Alertas & Pendências';
+        case 'contaju_integrations':
+          return 'Integrações Contaju / Contábilex';
+        case 'comparative':
+          return 'Comparativo de Clínicas';
+        case 'reports':
+          return 'Relatórios Gerenciais da Carteira';
+        case 'consulting_settings':
+          return 'Configurações da Consultoria';
+        default:
+          return 'Visão da Carteira';
+      }
+    };
+
+    return (
+      <div className="min-h-screen bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased">
+        <div className="flex-1 flex min-w-0">
+          <ConsultingSidebar
+            currentTab={consultingTab}
+            onSelectTab={(tab) => setConsultingTab(tab)}
+            pendingAlertsCount={portfolioDataSafe.priority_alerts?.length || 0}
+            overdueClinicsCount={
+              portfolioDataSafe.clients?.filter(
+                (c) => c.overdue_payables > 0 || c.overdue_receivables > 0
+              )?.length || 0
+            }
+            isCollapsed={isConsultingSidebarCollapsed}
+            onToggleCollapse={setIsConsultingSidebarCollapsed}
+            onLogout={handleLogout}
+          />
+
+          <div
+            className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${
+              isConsultingSidebarCollapsed ? 'lg:pl-[112px]' : 'lg:pl-[280px]'
+            }`}
+          >
+            <ConsultingHeader
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              onChangePeriod={handleChangePeriod}
+              clients={portfolioDataSafe.clients}
+              onInspectSummary={(client) => setSummaryClient(client)}
+              onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+              title={getConsultingTitle(consultingTab)}
+              onLogout={handleLogout}
+            />
+
+            <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+              {consultingTab === 'portfolio' && (
+                <ConsultingPortfolioDashboard
+                  portfolioData={portfolioDataSafe}
+                  isLoading={isConsultingLoading}
+                  onRefresh={fetchConsultingData}
+                  onInspectSummary={(client) => setSummaryClient(client)}
+                  onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'clients' && (
+                <ConsultingClinicsView
+                  clients={portfolioDataSafe.clients}
+                  onInspectSummary={(client) => setSummaryClient(client)}
+                  onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'financial_indicators' && (
+                <ConsultingFinancialIndicatorsView
+                  summary={portfolioDataSafe.portfolio_summary}
+                  clients={portfolioDataSafe.clients}
+                  onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'taxes_fator_r' && (
+                <ConsultingTaxesView
+                  summary={portfolioDataSafe.portfolio_summary}
+                  clients={portfolioDataSafe.clients}
+                  onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'overdue_accounts' && (
+                <ConsultingOverdueView
+                  clients={portfolioDataSafe.clients}
+                  onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'alerts_pending' && (
+                <ConsultingAlertsView
+                  alerts={portfolioDataSafe.priority_alerts}
+                  clients={portfolioDataSafe.clients}
+                  onInspectSummary={(client) => setSummaryClient(client)}
+                  onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'contaju_integrations' && (
+                <ConsultingIntegrationsView
+                  clients={portfolioDataSafe.clients}
+                  onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'comparative' && (
+                <ConsultingComparativeView
+                  clients={portfolioDataSafe.clients}
+                  onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'reports' && (
+                <ConsultingReportsView
+                  summary={portfolioDataSafe.portfolio_summary}
+                  clients={portfolioDataSafe.clients}
+                  competencyLabel={compLabel}
+                />
+              )}
+
+              {consultingTab === 'consulting_settings' && (
+                <ConsultingSettingsView />
+              )}
+            </main>
+          </div>
+        </div>
+
+        {/* Modal de Inspeção Rápida da Clínica */}
+        <ConsultingClientSummaryModal
+          isOpen={Boolean(summaryClient)}
+          onClose={() => setSummaryClient(null)}
+          client={summaryClient}
+          competency={consultingCompetency}
+          onAccessClinic={(tenantId, clinicName) => {
+            setSummaryClient(null);
+            handleSelectClinic(tenantId, clinicName);
+          }}
+        />
+
+        <ToastContainer />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased">

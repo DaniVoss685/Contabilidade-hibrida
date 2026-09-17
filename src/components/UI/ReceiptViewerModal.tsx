@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useEffect } from 'react';
+import React, { useMemo, useEffect } from 'react';
 import {
   X,
   ExternalLink,
@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { AttachmentMetadata } from '../../types';
 import { Portal } from './Portal';
+import { PdfCanvasViewer } from './PdfCanvasViewer';
 
 export interface ReceiptViewerModalProps {
   isOpen: boolean;
@@ -44,7 +45,8 @@ export const ReceiptViewerModal: React.FC<ReceiptViewerModalProps> = ({
           const parts = file.dataUrl.split(';base64,');
           if (parts.length === 2) {
             const contentType = parts[0].split(':')[1] || 'application/pdf';
-            const raw = window.atob(parts[1]);
+            const cleanBase64 = parts[1].replace(/[\r\n\s]/g, '');
+            const raw = window.atob(cleanBase64);
             const rawLength = raw.length;
             const uInt8Array = new Uint8Array(rawLength);
             for (let i = 0; i < rawLength; ++i) {
@@ -108,11 +110,11 @@ export const ReceiptViewerModal: React.FC<ReceiptViewerModalProps> = ({
         onClick={onClose}
       >
         <div
-          className="bg-white rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-200"
+          className="bg-white rounded-2xl max-w-5xl w-full h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-200"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Cabeçalho do Modal */}
-          <div className="p-4 sm:px-6 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50/70">
+          <div className="p-3.5 sm:px-6 border-b border-slate-200 flex items-center justify-between gap-3 bg-slate-50/80 shrink-0">
             <div className="flex items-center gap-2.5 min-w-0">
               <div
                 className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 border ${
@@ -145,7 +147,7 @@ export const ReceiptViewerModal: React.FC<ReceiptViewerModalProps> = ({
                   <button
                     type="button"
                     onClick={handleOpenInNewTab}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl transition-colors cursor-pointer shadow-2xs"
                     title="Abrir em nova aba"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
@@ -155,7 +157,7 @@ export const ReceiptViewerModal: React.FC<ReceiptViewerModalProps> = ({
                   <button
                     type="button"
                     onClick={handleDownload}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl transition-colors cursor-pointer shadow-2xs"
                     title="Baixar comprovante"
                   >
                     <Download className="w-3.5 h-3.5" />
@@ -176,25 +178,31 @@ export const ReceiptViewerModal: React.FC<ReceiptViewerModalProps> = ({
           </div>
 
           {/* Corpo de Visualização */}
-          <div className="flex-1 overflow-auto p-4 sm:p-6 bg-slate-900/5 flex items-center justify-center min-h-[350px]">
-            {resolvedUrl ? (
-              isPdf ? (
-                <iframe
-                  src={resolvedUrl}
-                  title={`Visualizador de ${displayName}`}
-                  className="w-full h-[70vh] rounded-xl border border-slate-200 bg-white shadow-xs"
+          {resolvedUrl ? (
+            isPdf ? (
+              <div className="flex-1 w-full h-full min-h-0 overflow-hidden flex flex-col">
+                <PdfCanvasViewer
+                  file={file}
+                  resolvedUrl={resolvedUrl}
+                  displayName={displayName}
+                  onOpenInNewTab={handleOpenInNewTab}
+                  onDownload={handleDownload}
                 />
-              ) : (
-                <div className="flex items-center justify-center max-h-[70vh] overflow-auto">
+              </div>
+            ) : (
+              <div className="flex-1 overflow-auto p-4 sm:p-6 bg-slate-900/5 flex items-center justify-center min-h-[350px]">
+                <div className="flex items-center justify-center max-h-[75vh] overflow-auto">
                   <img
                     src={resolvedUrl}
                     alt={displayName}
-                    className="max-h-[70vh] max-w-full object-contain rounded-xl shadow-xs"
+                    className="max-h-[75vh] max-w-full object-contain rounded-xl shadow-xs"
                   />
                 </div>
-              )
-            ) : (
-              /* Caso o anexo tenha sido registrado anteriormente sem o arquivo (apenas com o nome) */
+              </div>
+            )
+          ) : (
+            /* Caso o anexo tenha sido registrado anteriormente sem o arquivo (apenas com o nome) */
+            <div className="flex-1 overflow-auto p-4 sm:p-6 bg-slate-900/5 flex items-center justify-center min-h-[350px]">
               <div className="max-w-md w-full p-6 bg-white rounded-2xl border border-amber-200/80 shadow-xs text-center space-y-3">
                 <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center mx-auto text-amber-600">
                   <AlertCircle className="w-6 h-6" />
@@ -209,8 +217,8 @@ export const ReceiptViewerModal: React.FC<ReceiptViewerModalProps> = ({
                   💡 Para visualizar o documento completo aqui, basta abrir a edição desta despesa e anexar o arquivo novamente.
                 </p>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </Portal>

@@ -15,6 +15,10 @@ import {
   AuditLog,
   DentalTenantOption,
   Organization,
+  ConsultingPortfolioData,
+  ConsultingClientSummary,
+  ConsultingPortfolioTotals,
+  ConsultingPriorityAlert,
 } from '../types';
 
 export const SUPABASE_URL =
@@ -817,6 +821,83 @@ export const SupabaseService = {
     } catch (err) {
       console.error('[SupabaseService] Falha ao invocar get_all_dental_tenants:', err);
       return [];
+    }
+  },
+
+  /**
+   * Obtém o resumo completo da carteira de clínicas supervisionadas pela Consultoria (Contaju),
+   * agregando métricas fiscais, financeiras, atrasos e alertas da competência indicada.
+   */
+  async getConsultingPortfolioSummary(competency?: string): Promise<ConsultingPortfolioData | null> {
+    try {
+      const { data, error } = await supabase.rpc('get_consulting_portfolio_summary', {
+        p_competency: competency || null,
+      });
+
+      if (error) {
+        console.warn('[SupabaseService] Erro ao invocar get_consulting_portfolio_summary:', error.message);
+        return null;
+      }
+
+      if (!data) return null;
+
+      // Normalizar campos numéricos
+      const parsedData: ConsultingPortfolioData = {
+        portfolio_summary: {
+          competency: data.portfolio_summary?.competency || competency || '',
+          total_active_clinics: Number(data.portfolio_summary?.total_active_clinics || 0),
+          total_portfolio_revenue: Number(data.portfolio_summary?.total_portfolio_revenue || 0),
+          total_portfolio_expenses: Number(data.portfolio_summary?.total_portfolio_expenses || 0),
+          total_portfolio_open_receivables: Number(data.portfolio_summary?.total_portfolio_open_receivables || 0),
+          total_portfolio_open_payables: Number(data.portfolio_summary?.total_portfolio_open_payables || 0),
+          total_portfolio_overdue: Number(data.portfolio_summary?.total_portfolio_overdue || 0),
+          healthy_count: Number(data.portfolio_summary?.healthy_count || 0),
+          warning_count: Number(data.portfolio_summary?.warning_count || 0),
+          critical_count: Number(data.portfolio_summary?.critical_count || 0),
+          annex_iii_count: Number(data.portfolio_summary?.annex_iii_count || 0),
+          annex_v_count: Number(data.portfolio_summary?.annex_v_count || 0),
+          estimated_total_das: Number(data.portfolio_summary?.estimated_total_das || 0),
+          pending_closing_count: Number(data.portfolio_summary?.pending_closing_count || 0),
+        },
+        clients: (data.clients || []).map((c: any) => ({
+          tenant_id: c.tenant_id,
+          clinic_name: c.clinic_name || 'Clínica',
+          trade_name: c.trade_name || c.clinic_name || 'Clínica',
+          cnpj: c.cnpj || '',
+          owner_name: c.owner_name || 'Cirurgião-Dentista',
+          owner_email: c.owner_email || '',
+          owner_phone: c.owner_phone || '',
+          monthly_revenue: Number(c.monthly_revenue || 0),
+          monthly_expenses: Number(c.monthly_expenses || 0),
+          payroll_amount: Number(c.payroll_amount || 0),
+          rbt12: Number(c.rbt12 || 0),
+          fs12: Number(c.fs12 || c.payroll_amount || 0),
+          effective_rate: Number(c.effective_rate || 0),
+          estimated_das: Number(c.estimated_das || 0),
+          r_factor: Number(c.r_factor || 0),
+          annex: c.annex === 'III' ? 'III' : 'V',
+          overdue_receivables: Number(c.overdue_receivables || 0),
+          overdue_payables: Number(c.overdue_payables || 0),
+          open_receivables: Number(c.open_receivables || 0),
+          open_payables: Number(c.open_payables || 0),
+          contaju_sync_status: c.contaju_sync_status || 'PENDING',
+          health_status: c.health_status || 'HEALTHY',
+          health_reasons: Array.isArray(c.health_reasons) ? c.health_reasons : [],
+        })),
+        priority_alerts: (data.priority_alerts || []).map((a: any) => ({
+          tenant_id: a.tenant_id,
+          clinic_name: a.clinic_name,
+          severity: a.severity || 'INFO',
+          type: a.type || 'FATOR_R',
+          message: a.message,
+          action_label: a.action_label,
+        })),
+      };
+
+      return parsedData;
+    } catch (err) {
+      console.error('[SupabaseService] Falha geral ao carregar carteira de consultoria:', err);
+      return null;
     }
   },
 

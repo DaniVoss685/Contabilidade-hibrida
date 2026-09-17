@@ -68,9 +68,9 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
   });
 
   return (
-    <div className="bg-gradient-to-r from-emerald-50/80 via-slate-50/90 to-emerald-50/70 border-b border-emerald-200/70 px-4 sm:px-6 py-2 min-h-[52px] flex items-center justify-center relative z-40 backdrop-blur-xs">
+    <div className="bg-gradient-to-r from-emerald-50/90 via-slate-50/95 to-emerald-50/80 border-b border-emerald-200/80 px-4 sm:px-6 py-2 min-h-[52px] flex items-center justify-between relative z-40 backdrop-blur-xs">
       {/* Bloco Central Unificado */}
-      <div className="w-full max-w-5xl flex flex-wrap items-center justify-center sm:justify-between gap-3">
+      <div className="w-full flex items-center justify-between gap-3">
         {/* Lado Esquerdo / Central: Badge e Contexto */}
         <div className="flex items-center gap-2.5 sm:gap-4 flex-wrap justify-center">
           {/* Pill Verde: Modo Consultoria ativado */}
@@ -110,9 +110,20 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
                 Clínica ativa:
               </span>
 
-              <span className="text-xs font-bold text-slate-900 truncate max-w-[180px] sm:max-w-[240px]">
-                {activeClinicName || 'Selecione uma clínica'}
-              </span>
+              {(() => {
+                const found = availableClinics.find((c) => c.tenant_id === currentTenantId);
+                const resolvedName =
+                  (activeClinicName && activeClinicName !== 'Clínica sem nome' ? activeClinicName : '') ||
+                  found?.clinic_name ||
+                  found?.trade_name ||
+                  (activeClinicName ? activeClinicName : 'Selecione uma clínica');
+
+                return (
+                  <span className="text-xs font-bold text-slate-900 truncate max-w-[180px] sm:max-w-[240px]">
+                    {resolvedName}
+                  </span>
+                );
+              })()}
 
               <ChevronDown
                 className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 shrink-0 ml-0.5 ${
@@ -196,17 +207,17 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
           </div>
         </div>
 
-        {/* Lado Direito: Ação de Retorno (se em suporte a cliente) */}
+        {/* Lado Direito: Ação de Retorno à Carteira */}
         {isSupportActive && (
           <button
             type="button"
             onClick={onReturnToPrimary}
             disabled={isSwitching}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 hover:text-slate-900 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 border border-slate-200/80 shadow-2xs"
-            title="Encerrar suporte e voltar à sua conta principal"
+            className="flex items-center gap-2 px-3.5 py-1.5 bg-white hover:bg-emerald-600 text-emerald-800 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 border border-emerald-300 hover:border-emerald-600 shadow-2xs group"
+            title="Encerrar acesso à clínica e retornar à visão consolidada da carteira"
           >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Voltar à Minha Conta</span>
+            <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform text-emerald-700 group-hover:text-white" />
+            <span>Voltar para Carteira</span>
           </button>
         )}
       </div>

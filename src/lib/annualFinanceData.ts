@@ -1,4 +1,11 @@
-import { Sale, Expense, BankAccount } from '../types';
+import { Sale, Expense, BankAccount, AttachmentMetadata } from '../types';
+
+// PDF de exemplo em base64 com documento formatado
+const SAMPLE_RECEIPT_PDF_BASE64 =
+  'data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PAogIC9UeXBlIC9DYXRhbG9nCiAgL1BhZ2VzIDIgMCBSCj4+CmVuZG9iagoyIDAgb2JqCjw8CiAgL1R5cGUgL1BhZ2VzCiAgL0tpZHMgWzMgMCBSXQogIC9Db3VudCAxCj4+CmVuZG9iagozIDAgb2JqCjw8CiAgL1R5cGUgL1BhZ2UKICAvUGFyZW50IDIgMCBSCiAgL01lZGlhQm94IFswIDAgNTk1IDg0Ml0KICAvQ29udGVudHMgNCAwIFIKICAvUmVzb3VyY2VzIDw8CiAgICAvRm9udCA8PAogICAgICAvRjEgPDwKICAgICAgICAvVHlwZSAvRm9udAogICAgICAgIC9TdWJ0eXBlIC9UeXBlMQogICAgICAgIC9CYXNlRm9udCAvSGVsdmV0aWNhCiAgICAgID4+CiAgICA+PgogID4+Cj4+CmVuZG9iago0IDAgb2JqCjw8CiAgL0xlbmd0aCAxMjAKPj4Kc3RyZWFtCkJUCi9GMSAxOCBUZgo1MCA3ODAgVGQKKENPTVBST1ZBTlRFIEZJU0NBTCBERSBERVNQRVNBKSBUagovRjEgMTIgVGYKMCAtMzAgVGQKKEFsdWd1ZWwgZG8gQ29uc3VsdG9yaW8gLSBEZW50YWwgRmluYW5jZSkgVGoKRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA2OCAwMDAwMCBuIAowMDAwMDAwMTM3IDAwMDAwIG4gCjAwMDAwMDAzMzAgMDAwMDAgbiAKdHJhaWxlcgo8PAogIC9TaXplIDUKICAvUm9vdCAxIDAgUgo+PgpzdGFydHhyZWYKNTAzCiUlRU9G';
+
+const SAMPLE_RECEIPT_PNG_BASE64 =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAYAAACtWK6eAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAA/SURBVHhe7cEBDQAAAMKg909tDwcUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwZc7oAAf5eFwoAAAAASUVORK5CYII=';
 
 export function getMonthKey(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, '0')}`;
@@ -346,6 +353,32 @@ export function augmentYearlyDataset(
         impactaFatorRPj: tpl.impactaFatorRPj,
         despesaOperacionalPj: tpl.despesaOperacionalPj,
         status: status,
+        attachmentName:
+          idx === 0
+            ? 'recibo_aluguel_consultorio.pdf'
+            : idx === 1
+            ? 'comprovante_condominio.png'
+            : undefined,
+        attachment:
+          idx === 0
+            ? {
+                name: 'recibo_aluguel_consultorio.pdf',
+                extension: 'pdf',
+                type: 'application/pdf',
+                size: 14200,
+                formattedSize: '14.2 KB',
+                dataUrl: SAMPLE_RECEIPT_PDF_BASE64,
+              }
+            : idx === 1
+            ? {
+                name: 'comprovante_condominio.png',
+                extension: 'png',
+                type: 'image/png',
+                size: 8200,
+                formattedSize: '8.2 KB',
+                dataUrl: SAMPLE_RECEIPT_PNG_BASE64,
+              }
+            : undefined,
         createdAt: `${expDate}T09:00:00Z`,
       });
     });

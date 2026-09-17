@@ -1971,7 +1971,21 @@ export class DentalFinanceDB {
       }
     }
 
-    const clinicDisplayName = targetClinic?.name || targetClinicName || 'Clínica Selecionada';
+    const rawResolvedName =
+      (targetClinic?.tradeName && targetClinic.tradeName !== 'Clínica sem nome' ? targetClinic.tradeName : '') ||
+      (targetClinic?.name && targetClinic.name !== 'Clínica sem nome' ? targetClinic.name : '') ||
+      (targetClinicName && targetClinicName !== 'Clínica sem nome' ? targetClinicName : '');
+
+    const clinicDisplayName = rawResolvedName || targetClinicName || 'Clínica Selecionada';
+
+    if (targetClinic) {
+      if (!targetClinic.name || targetClinic.name === 'Clínica sem nome') {
+        targetClinic.name = clinicDisplayName;
+      }
+      if (!targetClinic.tradeName || targetClinic.tradeName === 'Clínica sem nome') {
+        targetClinic.tradeName = clinicDisplayName;
+      }
+    }
 
     const origTenantId =
       this.currentSession.supportSession?.originalTenantId ||
@@ -2176,8 +2190,9 @@ export class DentalFinanceDB {
 
   // Getters
   public getActiveClinicDisplayName(): string {
-    if (this.currentSession?.supportSession?.targetTenantName) {
-      return this.currentSession.supportSession.targetTenantName;
+    const supportName = this.currentSession?.supportSession?.targetTenantName?.trim();
+    if (supportName && supportName !== 'Clínica sem nome' && supportName !== 'Clínica Odontológica') {
+      return supportName;
     }
     const profName = (this.professional?.nomeFantasia || this.professional?.razaoSocial || '').trim();
     if (profName && profName !== 'Clínica sem nome' && profName !== 'Clínica Odontológica') {
@@ -2188,16 +2203,19 @@ export class DentalFinanceDB {
       return orgName;
     }
     const reg = this.registeredClinics.find((c) => c.id === this.activeTenantId);
-    if (reg?.name && reg.name !== 'Clínica Odontológica') {
-      return reg.name.trim();
-    }
-    if (reg?.tradeName && reg.tradeName !== 'Clínica Odontológica') {
+    if (reg?.tradeName && reg.tradeName !== 'Clínica Odontológica' && reg.tradeName !== 'Clínica sem nome') {
       return reg.tradeName.trim();
     }
-    if (this.currentSession?.clinic?.name && this.currentSession.clinic.name !== 'Clínica Odontológica') {
+    if (reg?.name && reg.name !== 'Clínica Odontológica' && reg.name !== 'Clínica sem nome') {
+      return reg.name.trim();
+    }
+    if (this.currentSession?.clinic?.tradeName && this.currentSession.clinic.tradeName !== 'Clínica Odontológica' && this.currentSession.clinic.tradeName !== 'Clínica sem nome') {
+      return this.currentSession.clinic.tradeName.trim();
+    }
+    if (this.currentSession?.clinic?.name && this.currentSession.clinic.name !== 'Clínica Odontológica' && this.currentSession.clinic.name !== 'Clínica sem nome') {
       return this.currentSession.clinic.name.trim();
     }
-    return this.org?.name || 'Clínica sem nome';
+    return (this.org?.name && this.org.name !== 'Clínica sem nome') ? this.org.name : 'Clínica Ativa';
   }
 
   public getOrg(): Organization {
