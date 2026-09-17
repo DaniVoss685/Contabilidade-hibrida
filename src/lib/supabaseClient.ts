@@ -1205,7 +1205,11 @@ export const SupabaseService = {
       method: 'POST',
       headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
       body: payload,
+      timeoutMs: 35000,
     });
+    if (error) {
+      console.error('[SupabaseService] Erro ao salvar despesa:', error, 'Payload ID:', payload?.id);
+    }
     return { success: !error, error: error || undefined };
   },
 
@@ -1217,7 +1221,11 @@ export const SupabaseService = {
       method: 'POST',
       headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
       body: payloads,
+      timeoutMs: 45000,
     });
+    if (error) {
+      console.error('[SupabaseService] Erro ao salvar despesas em lote:', error, 'Qtd:', payloads.length);
+    }
     return { success: !error, error: error || undefined };
   },
 

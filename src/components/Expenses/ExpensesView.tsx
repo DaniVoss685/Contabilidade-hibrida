@@ -795,14 +795,14 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4 text-center">Categoria</th>
-                <th className="py-3 px-4 text-center">Descrição</th>
-                <th className="py-3 px-4 text-center">Valor</th>
-                <th className="py-3 px-4 text-center">Data de Pagamento</th>
-                <th className="py-3 px-4 text-center">Data de Vencimento</th>
+                <th className="py-3 px-4 text-center min-w-[130px]">Categoria</th>
+                <th className="py-3 px-4 text-center min-w-[200px] max-w-[280px]">Descrição</th>
+                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[100px]">Valor</th>
+                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[110px]">Data de Pagamento</th>
+                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[110px]">Data de Vencimento</th>
                 <th className="py-3 px-4 text-center min-w-[110px] whitespace-nowrap">Status</th>
-                <th className="py-3 px-4 text-center">Atributos Fiscais</th>
-                <th className="py-3 px-4 text-center">Ações</th>
+                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[120px]">Atributos Fiscais</th>
+                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[130px]">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
@@ -856,7 +856,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                       </td>
 
                       {/* 2. Descrição */}
-                      <td className="py-3.5 px-4">
+                      <td className="py-3.5 px-4 min-w-[200px] max-w-[280px]">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-bold text-slate-900">{exp.description || exp.supplierName}</span>
                           {/* Titularidade Badge */}
@@ -891,22 +891,24 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                           )}
                         </div>
                         {exp.attachmentName && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewingAttachment({
-                                file: exp.attachment,
-                                name: exp.attachmentName || 'Comprovante',
-                              });
-                            }}
-                            className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-teal-700 hover:text-teal-900 bg-teal-50 hover:bg-teal-100/90 px-2 py-0.5 rounded-lg border border-teal-200/80 transition-colors mt-1 cursor-pointer max-w-full truncate shadow-2xs"
-                            title="Clique para visualizar o comprovante"
-                          >
-                            <Eye className="w-3 h-3 flex-shrink-0 text-teal-600" />
-                            <Paperclip className="w-3 h-3 flex-shrink-0 text-teal-500" />
-                            <span className="truncate">{exp.attachmentName}</span>
-                          </button>
+                          <div className="mt-1">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setViewingAttachment({
+                                  file: exp.attachment,
+                                  name: exp.attachmentName || 'Comprovante',
+                                });
+                              }}
+                              className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-teal-700 hover:text-teal-900 bg-teal-50 hover:bg-teal-100/90 px-2 py-0.5 rounded-lg border border-teal-200/80 transition-colors cursor-pointer max-w-[210px] truncate shadow-2xs group/att"
+                              title={`Clique para visualizar: ${exp.attachmentName}`}
+                            >
+                              <Eye className="w-3 h-3 flex-shrink-0 text-teal-600 group-hover/att:scale-110 transition-transform" />
+                              <Paperclip className="w-3 h-3 flex-shrink-0 text-teal-500" />
+                              <span className="truncate">{exp.attachmentName}</span>
+                            </button>
+                          </div>
                         )}
                       </td>
 
@@ -993,7 +995,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                       </td>
 
                       {/* 8. Ações */}
-                      <td className="py-3.5 px-4 text-center">
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap min-w-[130px]">
                         <div className="flex items-center justify-center gap-1.5">
                           {!isPaid ? (
                             <button

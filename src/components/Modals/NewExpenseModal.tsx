@@ -329,7 +329,10 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       setIsPaid(expenseToEdit.status === 'PAGO');
       setPaymentDate(expenseToEdit.paymentDate || new Date().toISOString().split('T')[0]);
       setPaymentMethod(expenseToEdit.paymentMethod || 'PIX');
-      setBankAccountId(expenseToEdit.bankAccountId || bankAccounts[0]?.id || '');
+      const activeBanks = bankAccounts.filter((b) => b.isActive !== false);
+      const isCurrentBankValid = activeBanks.some((b) => b.id === expenseToEdit.bankAccountId);
+      const preferredBank = activeBanks.find((b) => b.isPreferred) || activeBanks[0] || bankAccounts[0];
+      setBankAccountId(isCurrentBankValid ? expenseToEdit.bankAccountId! : (preferredBank?.id || ''));
       setDocumentNumber(expenseToEdit.documentNumber || '');
       setAttachmentName(expenseToEdit.attachmentName || '');
       if (expenseToEdit.attachment) {
@@ -555,7 +558,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     return { total, count, previewDates };
   }, [expenseType, value, recurrenceCount, recurrenceFrequency, dueDate]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
 
@@ -591,14 +594,18 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       // Descrição é a identificação principal; fornecedor recebe a descrição se omitido
       const finalDescription = description.trim();
       const finalSupplierName = supplierName.trim() || finalDescription;
-      const finalBankAccountId = isPaid ? bankAccountId : (bankAccountId || undefined);
+      const activeBanks = bankAccounts.filter((b) => b.isActive !== false);
+      const isBankValid = activeBanks.some((b) => b.id === bankAccountId);
+      const fallbackBank = activeBanks.find((b) => b.isPreferred) || activeBanks[0] || bankAccounts[0];
+      const validBankId = isBankValid ? bankAccountId : (fallbackBank?.id || undefined);
+      const finalBankAccountId = isPaid ? validBankId : (validBankId || undefined);
       const finalCompetenceDate = dueDate
         ? `${dueDate.substring(0, 7)}-01`
         : new Date().toISOString().split('T')[0];
 
       if (isEditing && expenseToEdit) {
         if (expenseToEdit.installmentGroupId || expenseToEdit.recurrenceId) {
-          db.updateExpenseSeries(
+          const res = await db.updateExpenseSeriesAsync(
             expenseToEdit.id,
             {
               supplierName: finalSupplierName,
@@ -628,15 +635,19 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
             },
             editScope
           );
-          toast.success(
-            editScope === 'ALL_SERIES'
-              ? 'Todas as despesas da série foram atualizadas.'
-              : editScope === 'THIS_AND_FUTURE'
-              ? 'Esta e as despesas seguintes foram atualizadas.'
-              : 'Despesa atualizada com sucesso.'
-          );
+          if (!res.success) {
+            toast.error('Erro ao sincronizar com o servidor: ' + (res.error || 'Verifique os dados.'));
+          } else {
+            toast.success(
+              editScope === 'ALL_SERIES'
+                ? 'Todas as despesas da série foram atualizadas.'
+                : editScope === 'THIS_AND_FUTURE'
+                ? 'Esta e as despesas seguintes foram atualizadas.'
+                : 'Despesa atualizada com sucesso.'
+            );
+          }
         } else {
-          db.updateExpense(expenseToEdit.id, {
+          const res = await db.updateExpenseAsync(expenseToEdit.id, {
             supplierName: finalSupplierName,
             supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
             description: finalDescription,
@@ -663,7 +674,11 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
             status: isPaid ? 'PAGO' : 'A_PAGAR',
             expenseType: 'UNICA',
           });
-          toast.success('Despesa atualizada com sucesso.');
+          if (!res.success) {
+            toast.error('Erro ao salvar no servidor: ' + (res.error || 'Verifique os dados.'));
+          } else {
+            toast.success('Despesa atualizada com sucesso.');
+          }
         }
       } else {
         if (expenseType === 'PARCELADA') {

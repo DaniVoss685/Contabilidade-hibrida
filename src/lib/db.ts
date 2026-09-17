@@ -3404,17 +3404,17 @@ export class DentalFinanceDB {
     return deletedCount;
   }
 
-  public updateExpenseSeries(
+  public async updateExpenseSeriesAsync(
     id: string,
     updates: Partial<Expense>,
     scope: 'ONLY_THIS' | 'THIS_AND_FUTURE' | 'ALL_SERIES'
-  ): number {
+  ): Promise<{ success: boolean; updatedCount: number; error?: string }> {
     const target = this.expenses.find((e) => e.id === id);
-    if (!target) return 0;
+    if (!target) return { success: false, updatedCount: 0, error: 'Despesa não encontrada' };
     const seriesId = target.installmentGroupId || target.recurrenceId;
     if (!seriesId || scope === 'ONLY_THIS') {
-      this.updateExpense(id, updates);
-      return 1;
+      const res = await this.updateExpenseAsync(id, updates);
+      return { success: res.success, updatedCount: 1, error: res.error };
     }
 
     const targetDueDate = target.dueDate;
@@ -3454,14 +3454,52 @@ export class DentalFinanceDB {
     if (updatedCount > 0) {
       saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
       if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
-        toSync.forEach((exp) => {
-          SupabaseService.saveExpense(exp, this.activeTenantId).catch(console.warn);
-        });
+        const bulkRes = await SupabaseService.saveExpensesBulk(toSync, this.activeTenantId);
+        if (!bulkRes.success) {
+          console.error('[db] Falha ao atualizar série no Supabase:', bulkRes.error);
+          return { success: false, updatedCount, error: bulkRes.error };
+        }
       }
       this.log('ATUALIZACAO_DESPESA_SERIE', 'EXPENSE', seriesId, `${updatedCount} despesas da série atualizadas.`);
       this.notify();
     }
-    return updatedCount;
+    return { success: true, updatedCount };
+  }
+
+  public updateExpenseSeries(
+    id: string,
+    updates: Partial<Expense>,
+    scope: 'ONLY_THIS' | 'THIS_AND_FUTURE' | 'ALL_SERIES'
+  ): number {
+    this.updateExpenseSeriesAsync(id, updates, scope).catch(console.warn);
+    const target = this.expenses.find((e) => e.id === id);
+    if (!target) return 0;
+    const seriesId = target.installmentGroupId || target.recurrenceId;
+    if (!seriesId || scope === 'ONLY_THIS') {
+      this.updateExpense(id, updates);
+      return 1;
+    }
+    const targetDueDate = target.dueDate;
+    let count = 0;
+    this.expenses = this.expenses.map((e) => {
+      const matchGroup =
+        (target.installmentGroupId && e.installmentGroupId === target.installmentGroupId) ||
+        (target.recurrenceId && e.recurrenceId === target.recurrenceId);
+      if (!matchGroup) return e;
+      if (scope === 'ALL_SERIES' || (scope === 'THIS_AND_FUTURE' && (e.id === target.id || e.dueDate >= targetDueDate))) {
+        count++;
+        const filteredUpdates = { ...updates };
+        delete filteredUpdates.installmentNumber;
+        delete filteredUpdates.recurrenceIndex;
+        delete filteredUpdates.dueDate;
+        delete filteredUpdates.competenceDate;
+        return { ...e, ...filteredUpdates };
+      }
+      return e;
+    });
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+    this.notify();
+    return count;
   }
 
 
