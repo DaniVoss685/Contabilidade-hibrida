@@ -51,6 +51,15 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
   const [showRegPassword, setShowRegPassword] = useState(false);
   const [showRegConfirmPassword, setShowRegConfirmPassword] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(true);
+  const [isExistingAccountDetected, setIsExistingAccountDetected] = useState(false);
+
+  const handleGoToLoginWithExistingEmail = () => {
+    setIdentifier(regEmail);
+    setPassword('');
+    setIsExistingAccountDetected(false);
+    setErrorMsg('');
+    setMode('login');
+  };
 
   // Password Recovery linear state machine
   type RecoveryViewStage =
@@ -202,6 +211,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
+    setIsExistingAccountDetected(false);
 
     if (!regEmail.trim()) {
       setErrorMsg('Por favor, informe um endereço de e-mail válido.');
@@ -230,6 +240,10 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
 
       setIsLoading(false);
       if (!res.success || !res.session) {
+        if (res.isExistingUser) {
+          setIsExistingAccountDetected(true);
+          return;
+        }
         setErrorMsg(res.error || 'Falha ao criar o acesso.');
         return;
       }
@@ -635,6 +649,31 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, onRecovery
                   </p>
                 </div>
               </div>
+
+              {/* Banner de Identidade Compartilhada Existente */}
+              {isExistingAccountDetected && (
+                <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 space-y-3 shadow-2xs">
+                  <div className="flex items-start gap-2.5">
+                    <Sparkles className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-sm text-amber-900">
+                        Este e-mail já possui uma conta na plataforma.
+                      </p>
+                      <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+                        Sua conta de acesso do Contábilex / Contaju é válida no Dental Finance. Entre com sua senha oficial para ativar e provisionar seu consultório odontológico imediatamente.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleGoToLoginWithExistingEmail}
+                    className="w-full py-2.5 px-3 rounded-lg bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white font-bold text-xs shadow-sm flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <span>Entrar para ativar o acesso ao Dental Finance</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
 
               <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-800 space-y-1">
                 <p className="font-semibold flex items-center gap-1.5">

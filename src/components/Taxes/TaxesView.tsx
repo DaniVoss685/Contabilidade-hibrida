@@ -57,6 +57,7 @@ import {
 } from '../../lib/taxEngine';
 import { formatCurrency, formatPercent, formatMonthYear, formatMonthYearShort } from '../../lib/masks';
 import { db } from '../../lib/db';
+import { supabase } from '../../lib/supabaseClient';
 import { getLastClosedCompetence, getTodayCivilDate } from '../../lib/statusHelper';
 import { PeriodPicker, CurrencyInput, useToast, ConfirmDialog } from '../UI';
 import { ContabilexIntegrationService } from '../../services/contabilexIntegrationService';
@@ -329,19 +330,53 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     return (contabilexSnapshots || []).slice(0, 12);
   }, [contabilexSnapshots]);
 
+  // 1. Carregamento inicial ao alternar de clínica
   useEffect(() => {
     loadContabilexData(activeTenantId);
   }, [activeTenantId]);
 
-  // Atualização por foco na janela quando PENDING ou CONTABILEX ativo
+  // 2. Atualização em tempo real (Supabase Realtime) + polling silencioso de fallback
   useEffect(() => {
+    if (!activeTenantId || activeTenantId === 'tenant_demo') return;
+
+    // Escuta alterações em accounting_monthly_snapshots publicadas pelo Contaju
+    const channel = supabase
+      .channel(`realtime_tax_snapshots_${activeTenantId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'accounting_monthly_snapshots',
+          filter: `dental_tenant_id=eq.${activeTenantId}`,
+        },
+        () => {
+          // Atualização automática e transparente para o dentista
+          loadContabilexData(activeTenantId);
+        }
+      )
+      .subscribe();
+
+    // Fallback silencioso a cada 45s se o modo contábil do Contaju estiver ativo
+    const fallbackTimer = setInterval(() => {
+      if (document.visibilityState === 'visible' && activeFiscalMode === 'CONTABILEX') {
+        loadContabilexData(activeTenantId);
+      }
+    }, 45000);
+
+    // Atualização imediata quando o dentista volta o foco para a aba do navegador
     const handleFocus = () => {
       if (contabilexLink?.status === 'PENDING' || activeFiscalMode === 'CONTABILEX') {
         loadContabilexData(activeTenantId);
       }
     };
     window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(fallbackTimer);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, [activeTenantId, contabilexLink?.status, activeFiscalMode]);
 
   const latestSnapshotPublishedAt = useMemo(() => {
@@ -1026,15 +1061,22 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                         </span>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleSyncWithContaju}
-                      disabled={isSyncingWithContaju || isLoadingSnapshots}
-                      className="px-3 py-1.5 rounded-xl bg-white hover:bg-teal-50 border border-teal-300 text-teal-900 text-xs font-bold shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5 self-start sm:self-auto"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingWithContaju || isLoadingSnapshots ? 'animate-spin' : ''}`} />
-                      <span>{isSyncingWithContaju ? 'Sincronizando...' : 'Sincronizar Agora'}</span>
-                    </button>
+                    <div className="flex items-center gap-2 self-start sm:self-auto">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-teal-100/70 border border-teal-200/80 text-[11px] font-semibold text-teal-800">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        Sincronização Automática Ativa
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleSyncWithContaju}
+                        disabled={isSyncingWithContaju || isLoadingSnapshots}
+                        title="Atualizar dados manualmente se necessário"
+                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-900 text-xs font-medium shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${isSyncingWithContaju || isLoadingSnapshots ? 'animate-spin' : ''}`} />
+                        <span>{isSyncingWithContaju ? 'Atualizando...' : 'Atualizar dados'}</span>
+                      </button>
+                    </div>
                   </div>
 
                   {displayedSnapshots.length === 0 ? (

@@ -1201,12 +1201,26 @@ export class DentalFinanceDB {
 
     try {
       // Buscar perfil mapeado na df_users
-      const userProfile = await SupabaseService.fetchUserProfileByAuthId(authData.user.id, authData.user.email);
+      let userProfile = await SupabaseService.fetchUserProfileByAuthId(authData.user.id, authData.user.email);
       if (!userProfile) {
-        this.log('LOGIN_FALHA', 'AUTH', authData.user.id, `Usuário autenticado no Supabase Auth mas sem perfil mapeado na df_users.`);
+        // IDENTIDADE COMPARTILHADA:
+        // Usuário autenticado com sucesso no Supabase Auth (ex: via Contábilex),
+        // mas que ainda não possui perfil Dental. Provisiona acesso de forma atômica.
+        this.log('AUTH_PROVISIONING', 'AUTH', authData.user.id, `Identidade Supabase válida sem perfil Dental. Provisionando acesso via RPC...`);
+        const provRes = await SupabaseService.reconcileOrProvisionDentalUser({
+          clinicName: 'Minha Clínica',
+          tradeName: 'Minha Clínica Odontológica',
+        });
+        if (provRes.success && provRes.tenant_id) {
+          userProfile = await SupabaseService.fetchUserProfileByAuthId(authData.user.id, authData.user.email);
+        }
+      }
+
+      if (!userProfile) {
+        this.log('LOGIN_FALHA', 'AUTH', authData.user.id, `Usuário autenticado no Supabase Auth mas falha no provisionamento Dental.`);
         return {
           success: false,
-          error: 'Perfil de clínica não configurado para este usuário. Entre em contato com o suporte.',
+          error: 'Não foi possível configurar o perfil de acesso Dental para esta conta. Entre em contato com o suporte.',
         };
       }
 
@@ -1327,7 +1341,7 @@ export class DentalFinanceDB {
     email: string;
     password: string;
     termsAccepted?: boolean;
-  }): Promise<{ success: boolean; session?: AuthSession; error?: string }> {
+  }): Promise<{ success: boolean; session?: AuthSession; error?: string; isExistingUser?: boolean }> {
     const normalizedEmail = (params.email || '').trim().toLowerCase();
 
     if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
@@ -1354,14 +1368,41 @@ export class DentalFinanceDB {
 
       if (authError) {
         console.error('[Supabase Auth] Erro no cadastro:', authError);
-        const msg = authError.message || '';
-        if (msg.toLowerCase().includes('database error saving new user')) {
+        const msg = (authError.message || '').toLowerCase();
+
+        // IDENTIDADE COMPARTILHADA:
+        // Se o usuário já existe no Supabase Auth (ex: via Contábilex),
+        // NUNCA exibir erro de beco sem saída. Retornar isExistingUser.
+        const isAlreadyRegistered =
+          msg.includes('already registered') ||
+          msg.includes('already exists') ||
+          msg.includes('already been registered') ||
+          (authError as any).status === 422;
+
+        if (isAlreadyRegistered) {
+          return {
+            success: false,
+            isExistingUser: true,
+            error: 'Este e-mail já possui uma conta na plataforma.',
+          };
+        }
+
+        if (msg.includes('database error saving new user')) {
           return {
             success: false,
             error: 'Não foi possível concluir seu cadastro no momento. Por favor, tente novamente ou contate o suporte.',
           };
         }
         return { success: false, error: authError.message };
+      }
+
+      // Se o Supabase Auth retornar usuário sem identidades (comportamento padrão quando já cadastrado)
+      if (authData.user && Array.isArray(authData.user.identities) && authData.user.identities.length === 0) {
+        return {
+          success: false,
+          isExistingUser: true,
+          error: 'Este e-mail já possui uma conta na plataforma.',
+        };
       }
 
       const authUserId = authData.user?.id;
