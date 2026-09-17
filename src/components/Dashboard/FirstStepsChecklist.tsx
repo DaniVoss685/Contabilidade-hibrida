@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   CheckCircle2,
   Circle,
@@ -15,9 +15,11 @@ import {
   Receipt,
   Plus,
   Calendar,
+  X,
 } from 'lucide-react';
 import { Professional } from '../../types';
 import { NavTab } from '../Layout/Sidebar';
+import { db } from '../../lib/db';
 
 interface FirstStepsChecklistProps {
   professional: Professional;
@@ -142,8 +144,65 @@ export const FirstStepsChecklist: React.FC<FirstStepsChecklistProps> = ({
   const allCompleted = completedCount === totalSteps;
   const progressPercent = Math.round((completedCount / totalSteps) * 100);
 
-  // Inicializa recolhido se todos estiverem prontos
-  const [isCollapsed, setIsCollapsed] = useState(allCompleted);
+  const tenantKey = professional?.orgId || professional?.id || 'default';
+  const storageKey = `df_onboarding_dismissed_${tenantKey}`;
+  const collapseKey = `df_onboarding_collapsed_${tenantKey}`;
+
+  // Estado de fechamento manual do checklist
+  const [isDismissed, setIsDismissed] = useState<boolean>(() => {
+    try {
+      const pref = db.getPreferences();
+      if (pref.dismissedOnboarding) return true;
+      return localStorage.getItem(storageKey) === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  // Estado de recolhido (persiste a preferência visual do usuário)
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(collapseKey);
+      if (saved !== null) return saved === 'true';
+      return false;
+    } catch {
+      return false;
+    }
+  });
+
+  // Sincroniza estado caso as preferências do sistema sejam atualizadas
+  useEffect(() => {
+    const unsub = db.subscribe(() => {
+      const pref = db.getPreferences();
+      const stored = localStorage.getItem(storageKey) === 'true';
+      setIsDismissed(Boolean(pref.dismissedOnboarding || stored));
+    });
+    return () => unsub();
+  }, [storageKey]);
+
+  const handleToggleCollapse = () => {
+    const next = !isCollapsed;
+    setIsCollapsed(next);
+    try {
+      localStorage.setItem(collapseKey, String(next));
+    } catch {}
+  };
+
+  const handleDismiss = () => {
+    try {
+      localStorage.setItem(storageKey, 'true');
+      db.updatePreferences({ dismissedOnboarding: true });
+    } catch (e) {
+      console.warn('Erro ao salvar fechamento do onboarding:', e);
+    }
+    setIsDismissed(true);
+  };
+
+  // 1. Se todas as 7 etapas foram concluídas, o onboarding some completamente
+  // 2. Se o usuário fechou manualmente o checklist, ele também não é exibido
+  if (allCompleted || isDismissed) {
+    return null;
+  }
 
   return (
     <div className="rounded-2xl border border-emerald-200/90 bg-gradient-to-r from-emerald-50/70 via-teal-50/50 to-white p-4 sm:p-5 shadow-2xs transition-all">
@@ -163,24 +222,35 @@ export const FirstStepsChecklist: React.FC<FirstStepsChecklistProps> = ({
               </span>
             </div>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              {allCompleted
-                ? 'Parabéns! Seu ambiente operacional está totalmente configurado e pronto para o dia a dia.'
-                : 'Siga a ordem recomendada abaixo para configurar sua clínica e liberar os cálculos automáticos.'}
+              Siga a ordem recomendada abaixo para configurar sua clínica e liberar os cálculos automáticos.
             </p>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer flex items-center gap-1 text-xs font-semibold shrink-0"
-          aria-label={isCollapsed ? 'Expandir checklist' : 'Recolher checklist'}
-        >
-          <span className="hidden sm:inline text-[11px]">
-            {isCollapsed ? 'Expandir' : 'Recolher'}
-          </span>
-          {isCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleToggleCollapse}
+            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer flex items-center gap-1 text-xs font-semibold shrink-0"
+            aria-label={isCollapsed ? 'Expandir checklist' : 'Recolher checklist'}
+          >
+            <span className="hidden sm:inline text-[11px]">
+              {isCollapsed ? 'Expandir' : 'Recolher'}
+            </span>
+            {isCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleDismiss}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer flex items-center gap-1 text-xs font-semibold shrink-0"
+            title="Fechar onboarding"
+            aria-label="Fechar onboarding"
+          >
+            <span className="hidden sm:inline text-[11px]">Fechar</span>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Progress Bar */}

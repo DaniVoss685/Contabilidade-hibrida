@@ -21,6 +21,7 @@ import {
   Lock,
   KeyRound,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import {
   Professional,
@@ -635,6 +636,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Switch 6: Onboarding de Primeiros Passos no Dashboard */}
+              <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3">
+                <div className="space-y-0.5 pr-2">
+                  <span className="font-bold text-slate-900 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                    Onboarding Operacional no Dashboard
+                  </span>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Exibir o checklist de primeiros passos no painel principal enquanto houver etapas a concluir
+                  </p>
+                </div>
+                <Switch
+                  checked={!preferences.dismissedOnboarding}
+                  onChange={(val) => {
+                    const dismissed = !val;
+                    handleUpdatePreferences({ dismissedOnboarding: dismissed });
+                    const tenantKey = professional.orgId || professional.id || 'default';
+                    try {
+                      if (dismissed) {
+                        localStorage.setItem(`df_onboarding_dismissed_${tenantKey}`, 'true');
+                      } else {
+                        localStorage.removeItem(`df_onboarding_dismissed_${tenantKey}`);
+                      }
+                    } catch {}
+                  }}
+                  ariaLabel="Onboarding Operacional no Dashboard"
+                />
               </div>
             </div>
           </div>

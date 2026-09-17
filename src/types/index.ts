@@ -802,4 +802,7 @@ export interface SystemPreferences {
   lunchBreakStart?: string; // ex: '11:00'
   lunchBreakEnd?: string; // ex: '13:00'
   cardFees?: CardFeeSettings;
+  dismissedOnboarding?: boolean; // Se o checklist de primeiros passos foi fechado manualmente pelo usuário
 }
+
+export * from './whatsapp';

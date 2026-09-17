@@ -2113,11 +2113,13 @@ export class DentalFinanceDB {
         lunchBreakEnabled: false,
         lunchBreakStart: undefined,
         lunchBreakEnd: undefined,
+        dismissedOnboarding: false,
       };
     }
     return {
       operationalReminders: true,
       lunchBreakEnabled: false,
+      dismissedOnboarding: false,
       ...this.preferences,
     };
   }
