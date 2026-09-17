@@ -59,6 +59,7 @@ export const DEMO_BANK_ACCOUNTS: BankAccount[] = [
     accountType: 'CORRENTE_PF',
     initialBalance: 14500.00,
     currentBalance: 18250.00,
+    isPreferred: true,
   },
   {
     id: 'bank_02',

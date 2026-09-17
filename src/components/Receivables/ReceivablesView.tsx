@@ -25,6 +25,7 @@ import { AccountReceivableItem, TaxOrigin, PaymentMethod, InstallmentStatus, Sal
 import { formatCurrency, formatDateBr, normalizeSearchText } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
+import { getEffectiveReceivableStatus } from '../../lib/statusHelper';
 import { EditReceivableModal } from '../Modals/EditReceivableModal';
 import { NewSaleModal } from '../Modals/NewSaleModal';
 import { CustomSelect, DatePicker, ConfirmDialog, useToast } from '../UI';
@@ -87,7 +88,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     new Date().toISOString().split('T')[0]
   );
   const [batchPaymentMethod, setBatchPaymentMethod] = useState<PaymentMethod>('PIX');
-  const [batchBankAccountId, setBatchBankAccountId] = useState<string>('bank_01');
+  const [batchBankAccountId, setBatchBankAccountId] = useState<string>(() => db.getPreferredBankAccountId() || 'bank_01');
 
   // Confirm dialog state
   const [confirmState, setConfirmState] = useState<{
@@ -128,8 +129,21 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
       const matchesOrigin =
         taxOriginFilter === 'ALL' || item.taxOrigin === taxOriginFilter;
 
-      const matchesStatus =
-        statusFilter === 'ALL' || item.status === statusFilter;
+      const effectiveStatus = getEffectiveReceivableStatus(item);
+      let matchesStatus = true;
+      if (statusFilter === 'ALL') {
+        matchesStatus = true;
+      } else if (statusFilter === 'EM_ATRASO' || statusFilter === 'VENCIDO') {
+        matchesStatus = effectiveStatus === 'EM_ATRASO' || item.status === 'EM_ATRASO' || item.status === 'VENCIDO';
+      } else if (statusFilter === 'A_VENCER') {
+        matchesStatus = effectiveStatus === 'A_VENCER' || item.status === 'A_VENCER';
+      } else if (statusFilter === 'RECEBIDO') {
+        matchesStatus = effectiveStatus === 'RECEBIDO' || item.status === 'RECEBIDO';
+      } else if (statusFilter === 'PARCIALMENTE_RECEBIDO') {
+        matchesStatus = effectiveStatus === 'PARCIALMENTE_RECEBIDO' || item.status === 'PARCIALMENTE_RECEBIDO';
+      } else {
+        matchesStatus = item.status === statusFilter;
+      }
 
       const matchesProcedure =
         procedureFilter === 'ALL' || item.procedureName === procedureFilter;
@@ -251,11 +265,17 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
   }, [items, taxOriginFilter]);
 
   const totalToReceive = originScopedItems
-    .filter((i) => i.status === 'A_VENCER')
+    .filter((i) => {
+      const eff = getEffectiveReceivableStatus(i);
+      return eff === 'A_VENCER' || eff === 'PARCIALMENTE_RECEBIDO';
+    })
     .reduce((sum, i) => sum + i.balance, 0);
 
   const totalOverdue = originScopedItems
-    .filter((i) => i.status === 'VENCIDO')
+    .filter((i) => {
+      const eff = getEffectiveReceivableStatus(i);
+      return eff === 'EM_ATRASO' || i.status === 'EM_ATRASO' || i.status === 'VENCIDO';
+    })
     .reduce((sum, i) => sum + i.balance, 0);
 
   const totalReceived = originScopedItems
@@ -496,7 +516,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
             options={[
               { value: 'ALL', label: 'Status: Todos' },
               { value: 'A_VENCER', label: 'A Vencer' },
-              { value: 'VENCIDO', label: 'Vencidas' },
+              { value: 'EM_ATRASO', label: 'Em Atraso' },
               { value: 'RECEBIDO', label: 'Recebidas (Liquidadas)' },
             ]}
           />
@@ -594,8 +614,15 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
               ) : (
                 filteredItems.map((item) => {
                   const isSelected = selectedIds.has(item.installmentId);
-                  const isOverdue = item.status === 'VENCIDO';
-                  const isReceived = item.status === 'RECEBIDO';
+                  const effectiveStatus = getEffectiveReceivableStatus(item);
+                  const isOverdue =
+                    effectiveStatus === 'EM_ATRASO' ||
+                    item.status === 'EM_ATRASO' ||
+                    item.status === 'VENCIDO';
+                  const isReceived = effectiveStatus === 'RECEBIDO' || item.status === 'RECEBIDO';
+                  const isPartial =
+                    effectiveStatus === 'PARCIALMENTE_RECEBIDO' ||
+                    item.status === 'PARCIALMENTE_RECEBIDO';
                   const isCpfPendingReceita =
                     item.taxOrigin === 'CPF' &&
                     isReceived &&
@@ -901,7 +928,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                       value={batchPaymentMethod}
                       onChange={(val) => setBatchPaymentMethod(val as PaymentMethod)}
                       options={[
-                        { value: 'PIX', label: 'PIX (Instantâneo)' },
+                        { value: 'PIX', label: 'PIX' },
                         { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
                         { value: 'CARTAO_DEBITO', label: 'Cartão de Débito' },
                         { value: 'DINHEIRO', label: 'Dinheiro em Espécie' },
@@ -920,7 +947,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                       onChange={setBatchBankAccountId}
                       options={bankAccounts.map((acc) => ({
                         value: acc.id,
-                        label: `${acc.name} (${acc.accountType === 'CORRENTE_PF' ? 'PF' : 'PJ'})`,
+                        label: `${acc.isPreferred ? '⭐ ' : ''}${acc.name} (${acc.accountType === 'CORRENTE_PF' ? 'PF' : 'PJ'})${acc.isPreferred ? ' - Principal' : ''}`,
                       }))}
                     />
                   </div>

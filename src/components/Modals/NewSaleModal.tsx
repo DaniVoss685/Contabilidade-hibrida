@@ -90,8 +90,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   // Bank Accounts & Card Fee
   const bankAccounts = db.getBankAccounts();
   const [bankAccountId, setBankAccountId] = useState<string>(() => {
-    const defaultBank = bankAccounts.find((b) => b.accountType === 'CORRENTE_PF') || bankAccounts[0];
-    return defaultBank?.id || '';
+    return db.getPreferredBankAccountId();
   });
   const [cardFeePercent, setCardFeePercent] = useState<number>(0);
 
@@ -130,8 +129,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
     setInstallmentsCount(1);
     setReceivedNow(bankAccounts.length > 0);
     setReceiptIdentifier('');
-    const defaultBank = bankAccounts.find((b) => b.accountType === 'CORRENTE_PF') || bankAccounts[0];
-    setBankAccountId(defaultBank?.id || '');
+    setBankAccountId(db.getPreferredBankAccountId());
     setCardFeePercent(0);
     setNfseStatus('EMITIDA');
     setNfseNumber('');
@@ -257,8 +255,8 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
 
   const bankAccountOptions = bankAccounts.map((b) => ({
     value: b.id,
-    label: b.name,
-    description: `Saldo atual: ${formatCurrency(b.currentBalance)}`,
+    label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
+    description: `${b.isPreferred ? 'Conta Padrão • ' : ''}Saldo atual: ${formatCurrency(b.currentBalance)}`,
   }));
 
   const handleProcedureSelect = (procId: string) => {
@@ -271,6 +269,10 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
       const found = procedures.find((p) => p.id === procId);
       if (found) {
         setProcedureName(found.name);
+        if (found.defaultPrice !== undefined && found.defaultPrice !== null && found.defaultPrice > 0) {
+          setTotalValue(found.defaultPrice);
+          setIsDirty(true);
+        }
       }
     }
   };
@@ -538,7 +540,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   const procedureOptions = [
     ...procedures.map((proc) => ({
       value: proc.id,
-      label: `[${proc.code}] ${proc.name}`,
+      label: proc.name,
       description: `Tabela: ${formatCurrency(proc.defaultPrice)} • Duração: ${proc.clinicalDurationMinutes} min`,
       badge: formatCurrency(proc.defaultPrice),
     })),
@@ -550,7 +552,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   ];
 
   const paymentOptions = [
-    { value: 'PIX', label: 'PIX (Instantâneo)' },
+    { value: 'PIX', label: 'PIX' },
     { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
     { value: 'CARTAO_DEBITO', label: 'Cartão de Débito' },
     { value: 'BOLETO', label: 'Boleto Bancário' },

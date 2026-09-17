@@ -16,6 +16,7 @@ import {
   DollarSign,
   Landmark,
   X,
+  Star,
 } from 'lucide-react';
 import { BankAccount } from '../../types';
 import { formatCurrency } from '../../lib/masks';
@@ -44,6 +45,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
   const [accountTypeInput, setAccountTypeInput] = useState<'CORRENTE_PF' | 'CORRENTE_PJ'>('CORRENTE_PJ');
   const [initialBalanceInput, setInitialBalanceInput] = useState<number>(0);
   const [isActiveInput, setIsActiveInput] = useState<boolean>(true);
+  const [isPreferredInput, setIsPreferredInput] = useState<boolean>(false);
 
   // Confirm Dialog State
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -103,6 +105,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
     setAccountTypeInput('CORRENTE_PJ');
     setInitialBalanceInput(0);
     setIsActiveInput(true);
+    setIsPreferredInput(bankAccounts.length === 0);
     setIsModalOpen(true);
   };
 
@@ -113,7 +116,19 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
     setAccountTypeInput(acc.accountType === 'CORRENTE_PF' ? 'CORRENTE_PF' : 'CORRENTE_PJ');
     setInitialBalanceInput(acc.initialBalance || 0);
     setIsActiveInput(acc.isActive !== false);
+    setIsPreferredInput(Boolean(acc.isPreferred));
     setIsModalOpen(true);
+  };
+
+  const handleTogglePreferred = async (acc: BankAccount, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (acc.isPreferred) {
+      toast.info(`A conta "${acc.name}" já está definida como padrão.`);
+      return;
+    }
+    await db.setPreferredBankAccount(acc.id);
+    toast.success(`Conta "${acc.name}" definida como banco preferido para receitas e despesas.`);
+    onRefreshData();
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -130,6 +145,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
         accountType: accountTypeInput,
         initialBalance: initialBalanceInput,
         isActive: isActiveInput,
+        isPreferred: isPreferredInput,
       });
       toast.success('Conta bancária atualizada com sucesso.');
     } else {
@@ -140,6 +156,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
         initialBalance: initialBalanceInput,
         currentBalance: initialBalanceInput,
         isActive: isActiveInput,
+        isPreferred: isPreferredInput,
       });
       toast.success('Nova conta bancária cadastrada.');
     }
@@ -403,6 +420,8 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                 className={`bg-white rounded-2xl border p-5 shadow-xs transition-all relative flex flex-col justify-between ${
                   !isActive
                     ? 'border-slate-200 bg-slate-50/70 opacity-75'
+                    : acc.isPreferred
+                    ? 'border-amber-300 ring-2 ring-amber-400/20 shadow-amber-500/5'
                     : isPf
                     ? 'border-emerald-200/90 hover:border-emerald-300'
                     : 'border-blue-200/90 hover:border-blue-300'
@@ -411,11 +430,31 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                 <div>
                   {/* Top Bar */}
                   <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={(e) => handleTogglePreferred(acc, e)}
+                          title={acc.isPreferred ? "Conta principal / preferida (padrão)" : "Definir como banco preferido"}
+                          className="p-1 -ml-1 rounded-lg hover:bg-amber-50 text-amber-400 hover:text-amber-500 transition-all cursor-pointer group"
+                        >
+                          <Star
+                            className={`w-4 h-4 transition-transform group-hover:scale-110 ${
+                              acc.isPreferred
+                                ? 'fill-amber-400 text-amber-500 drop-shadow-xs'
+                                : 'text-slate-300 hover:text-amber-400'
+                            }`}
+                          />
+                        </button>
                         <h4 className="font-bold text-slate-900 text-sm truncate">
                           {acc.name}
                         </h4>
+                        {acc.isPreferred && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold text-[10px] bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                            <Star className="w-3 h-3 fill-amber-500 text-amber-600" />
+                            <span>Padrão</span>
+                          </span>
+                        )}
                         <span
                           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold text-[10px] ${
                             isPf
@@ -427,7 +466,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                           {isPf ? 'Pessoa Física (PF)' : 'Pessoa Jurídica (PJ)'}
                         </span>
                       </div>
-                      <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
+                      <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 pl-6">
                         <Landmark className="w-3.5 h-3.5 text-slate-400" />
                         <span>{acc.bankName}</span>
                       </p>
@@ -628,6 +667,22 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                     className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
                   />
                   <span>Conta ativa e habilitada para liquidações</span>
+                </label>
+              </div>
+
+              {/* Preferred Bank Toggle */}
+              <div className="pt-1">
+                <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-700 select-none">
+                  <input
+                    type="checkbox"
+                    checked={isPreferredInput}
+                    onChange={(e) => setIsPreferredInput(e.target.checked)}
+                    className="w-4 h-4 text-amber-500 rounded border-slate-300 focus:ring-amber-400 cursor-pointer"
+                  />
+                  <span className="flex items-center gap-1.5 font-semibold text-slate-800">
+                    <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-400" />
+                    <span>Definir como banco preferido (padrão em novas receitas e despesas)</span>
+                  </span>
                 </label>
               </div>
 

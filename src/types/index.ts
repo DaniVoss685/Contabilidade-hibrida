@@ -3,8 +3,9 @@
 export type TaxOrigin = 'CPF' | 'CNPJ';
 export type ExpenseEntity = 'CPF' | 'CNPJ';
 
-export type InstallmentStatus = 'A_RECEBER' | 'RECEBIDO' | 'VENCIDO' | 'CANCELADO';
-export type ReceivableOverallStatus = 'A_VENCER' | 'VENCIDO' | 'RECEBIDO' | 'PARCIALMENTE_RECEBIDO' | 'CANCELADO';
+export type InstallmentStatus = 'A_RECEBER' | 'RECEBIDO' | 'VENCIDO' | 'EM_ATRASO' | 'CANCELADO';
+export type ReceivableOverallStatus = 'A_VENCER' | 'VENCIDO' | 'EM_ATRASO' | 'RECEBIDO' | 
+  'PARCIALMENTE_RECEBIDO' | 'CANCELADO';
 
 export type ReceitaSaudeStatus = 'A_EMITIR' | 'EMITIDO' | 'CANCELADO';
 export type NfseStatus = 'A_EMITIR' | 'EMITIDA' | 'CANCELADA';
@@ -446,7 +447,7 @@ export interface Expense {
   isOverridden?: boolean;
   overrideJustification?: string;
 
-  status: 'A_PAGAR' | 'PAGO' | 'VENCIDO' | 'CANCELADO';
+  status: 'A_PAGAR' | 'PAGO' | 'VENCIDO' | 'EM_ATRASO' | 'CANCELADO';
   createdAt: string;
 }
 
@@ -460,6 +461,7 @@ export interface BankAccount {
   initialBalance: number;
   currentBalance: number;
   isActive?: boolean;
+  isPreferred?: boolean;
 }
 
 // 10. Tax Brackets & Rules (Parametrized by Year)

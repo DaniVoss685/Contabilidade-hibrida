@@ -61,6 +61,7 @@ import {
 import { augmentYearlyDataset } from './annualFinanceData';
 import { hashPassword, verifyPassword, generateSalt } from './authCrypto';
 import { isValidEmail } from './masks';
+import { getTodayCivilDate, getEffectiveReceivableStatus, getEffectivePayableStatus } from './statusHelper';
 import { SupabaseService, supabase, getRecoveryRedirectUrl } from './supabaseClient';
 
 export const GLOBAL_STORAGE_KEYS = {
@@ -2072,6 +2073,31 @@ export class DentalFinanceDB {
   }
 
   // Getters
+  public getActiveClinicDisplayName(): string {
+    if (this.currentSession?.supportSession?.targetTenantName) {
+      return this.currentSession.supportSession.targetTenantName;
+    }
+    const profName = (this.professional?.nomeFantasia || this.professional?.razaoSocial || '').trim();
+    if (profName && profName !== 'Clínica sem nome' && profName !== 'Clínica Odontológica') {
+      return profName;
+    }
+    const orgName = (this.org?.name || this.org?.tradeName || '').trim();
+    if (orgName && orgName !== 'Clínica sem nome' && orgName !== 'Clínica Odontológica' && orgName !== 'Minha Clínica Odontológica') {
+      return orgName;
+    }
+    const reg = this.registeredClinics.find((c) => c.id === this.activeTenantId);
+    if (reg?.name && reg.name !== 'Clínica Odontológica') {
+      return reg.name.trim();
+    }
+    if (reg?.tradeName && reg.tradeName !== 'Clínica Odontológica') {
+      return reg.tradeName.trim();
+    }
+    if (this.currentSession?.clinic?.name && this.currentSession.clinic.name !== 'Clínica Odontológica') {
+      return this.currentSession.clinic.name.trim();
+    }
+    return this.org?.name || 'Clínica sem nome';
+  }
+
   public getOrg(): Organization {
     return this.org;
   }
@@ -2116,18 +2142,48 @@ export class DentalFinanceDB {
     return hasLinkedExpenses || hasLinkedSales;
   }
 
+  public getPreferredBankAccountId(): string {
+    const activeAccounts = (this.bankAccounts || []).filter((b) => b.isActive !== false);
+    const preferred = activeAccounts.find((b) => b.isPreferred);
+    if (preferred) return preferred.id;
+    const defaultPf = activeAccounts.find((b) => b.accountType === 'CORRENTE_PF');
+    return defaultPf?.id || activeAccounts[0]?.id || this.bankAccounts?.[0]?.id || '';
+  }
+
+  public async setPreferredBankAccount(id: string): Promise<void> {
+    this.bankAccounts = (this.bankAccounts || []).map((b) => ({
+      ...b,
+      isPreferred: b.id === id,
+    }));
+    saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
+    this.log('CONTA_BANCARIA_PREFERIDA', 'BANK_ACCOUNT', id, `Conta bancária definida como preferida/padrão.`);
+    this.notify();
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      await SupabaseService.saveBankAccountsBulk(this.bankAccounts, this.activeTenantId);
+    }
+  }
+
   public addBankAccount(account: Omit<BankAccount, 'id' | 'orgId'>): BankAccount {
+    const currentList = this.bankAccounts || [];
+    const isFirstAccount = currentList.length === 0;
+    const shouldBePreferred = account.isPreferred || isFirstAccount;
+
+    if (shouldBePreferred) {
+      this.bankAccounts = currentList.map((b) => ({ ...b, isPreferred: false }));
+    }
+
     const newAccount: BankAccount = {
       ...account,
       id: `bank_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       orgId: this.org?.id || 'org_dental',
+      isPreferred: shouldBePreferred,
     };
     this.bankAccounts = [...(this.bankAccounts || []), newAccount];
     saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
     this.log('CRIACAO_CONTA_BANCARIA', 'BANK_ACCOUNT', newAccount.id, `Conta bancária "${newAccount.name}" (${newAccount.accountType}) cadastrada.`);
     this.notify();
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
-      SupabaseService.saveBankAccount(newAccount, this.activeTenantId).catch(console.warn);
+      SupabaseService.saveBankAccountsBulk(this.bankAccounts, this.activeTenantId).catch(console.warn);
     }
     return newAccount;
   }
@@ -2135,19 +2191,24 @@ export class DentalFinanceDB {
   public async addBankAccountAsync(account: Omit<BankAccount, 'id' | 'orgId'>): Promise<BankAccount> {
     const newAccount = this.addBankAccount(account);
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
-      await SupabaseService.saveBankAccount(newAccount, this.activeTenantId);
+      await SupabaseService.saveBankAccountsBulk(this.bankAccounts, this.activeTenantId);
     }
     return newAccount;
   }
 
   public async updateBankAccount(id: string, updates: Partial<BankAccount>): Promise<void> {
-    this.bankAccounts = (this.bankAccounts || []).map((b) => (b.id === id ? { ...b, ...updates } : b));
+    if (updates.isPreferred) {
+      this.bankAccounts = (this.bankAccounts || []).map((b) =>
+        b.id === id ? { ...b, ...updates, isPreferred: true } : { ...b, isPreferred: false }
+      );
+    } else {
+      this.bankAccounts = (this.bankAccounts || []).map((b) => (b.id === id ? { ...b, ...updates } : b));
+    }
     saveItem(STORAGE_KEYS.BANK_ACCOUNTS, this.bankAccounts, this.activeTenantId);
     this.log('ATUALIZACAO_CONTA_BANCARIA', 'BANK_ACCOUNT', id, `Conta bancária atualizada.`);
     this.notify();
-    const updated = this.bankAccounts.find((b) => b.id === id);
-    if (updated && !this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
-      await SupabaseService.saveBankAccount(updated, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      await SupabaseService.saveBankAccountsBulk(this.bankAccounts, this.activeTenantId);
     }
   }
 
@@ -2275,23 +2336,23 @@ export class DentalFinanceDB {
   // Accounts Receivable View Derived
   public getAccountsReceivable(): AccountReceivableItem[] {
     const items: AccountReceivableItem[] = [];
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getTodayCivilDate();
 
     for (const sale of this.sales) {
       for (const inst of sale.installments) {
         const received = inst.amountReceived || (inst.status === 'RECEBIDO' ? inst.value : 0);
         const balance = Math.max(0, inst.value - received);
 
-        let overallStatus: AccountReceivableItem['status'] = 'A_VENCER';
-        if (inst.status === 'CANCELADO') {
-          overallStatus = 'CANCELADO';
-        } else if (inst.status === 'RECEBIDO' || balance === 0) {
-          overallStatus = 'RECEBIDO';
-        } else if (received > 0 && balance > 0) {
-          overallStatus = 'PARCIALMENTE_RECEBIDO';
-        } else if (inst.dueDate < todayStr) {
-          overallStatus = 'VENCIDO';
-        }
+        const overallStatus = getEffectiveReceivableStatus(
+          {
+            status: inst.status,
+            dueDate: inst.dueDate,
+            balance,
+            amountReceived: received,
+            value: inst.value,
+          },
+          todayStr
+        );
 
         const docSummary =
           sale.taxOrigin === 'CPF'

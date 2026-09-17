@@ -256,7 +256,10 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     new Date().toISOString().split('T')[0]
   );
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
-  const [bankAccountId, setBankAccountId] = useState(bankAccounts[0]?.id || '');
+  const preferredBank = bankAccounts.find((b) => b.isPreferred && b.isActive !== false) ||
+                        bankAccounts.find((b) => b.isActive !== false) ||
+                        bankAccounts[0];
+  const [bankAccountId, setBankAccountId] = useState(preferredBank?.id || '');
   const [documentNumber, setDocumentNumber] = useState('');
   const [attachmentName, setAttachmentName] = useState('');
   const [attachmentFile, setAttachmentFile] = useState<AttachmentMetadata | null>(null);
@@ -363,8 +366,10 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       setDueDate(new Date().toISOString().split('T')[0]);
       setIsPaid(true);
       setPaymentDate(new Date().toISOString().split('T')[0]);
-      setPaymentMethod('PIX');
-      setBankAccountId(bankAccounts[0]?.id || '');
+      const preferredBank = bankAccounts.find((b) => b.isPreferred && b.isActive !== false) ||
+                            bankAccounts.find((b) => b.isActive !== false) ||
+                            bankAccounts[0];
+      setBankAccountId(preferredBank?.id || '');
       setDocumentNumber('');
       setAttachmentName('');
       setAttachmentFile(null);
@@ -448,8 +453,8 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
   const bankAccountOptions = bankAccounts.map((b) => ({
     value: b.id,
-    label: b.name,
-    description: b.bankName || 'Conta Bancária',
+    label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
+    description: `${b.isPreferred ? 'Conta Padrão • ' : ''}${b.bankName || 'Conta Bancária'}`,
   }));
 
   const isSeriesExpense = Boolean(

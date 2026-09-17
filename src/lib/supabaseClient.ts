@@ -651,6 +651,7 @@ export function mapDbBankAccountToApp(db: any): BankAccount {
     initialBalance: Number(db.initial_balance || 0),
     currentBalance: Number(db.current_balance || 0),
     isActive: db.is_active !== false,
+    isPreferred: Boolean(db.is_preferred),
   };
 }
 
@@ -665,6 +666,7 @@ export function mapAppBankAccountToDb(app: BankAccount, tenantId: string): any {
     initial_balance: Number(app.initialBalance || 0),
     current_balance: Number(app.currentBalance || 0),
     is_active: app.isActive !== false,
+    is_preferred: Boolean(app.isPreferred),
   };
 }
 

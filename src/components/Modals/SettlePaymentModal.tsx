@@ -41,11 +41,13 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
   );
   const [amountReceived, setAmountReceived] = useState<number>(item.balance || item.value);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
-  const [bankAccountId, setBankAccountId] = useState<string>(
-    item.taxOrigin === 'CPF'
-      ? bankAccounts.find((b) => b.accountType === 'CORRENTE_PF')?.id || bankAccounts[0]?.id || ''
-      : bankAccounts.find((b) => b.accountType === 'CORRENTE_PJ')?.id || bankAccounts[0]?.id || ''
-  );
+  const [bankAccountId, setBankAccountId] = useState<string>(() => {
+    const preferred = bankAccounts.find((b) => b.isPreferred && b.isActive !== false);
+    if (preferred) return preferred.id;
+    return item.taxOrigin === 'CPF'
+      ? bankAccounts.find((b) => b.accountType === 'CORRENTE_PF' && b.isActive !== false)?.id || bankAccounts[0]?.id || ''
+      : bankAccounts.find((b) => b.accountType === 'CORRENTE_PJ' && b.isActive !== false)?.id || bankAccounts[0]?.id || '';
+  });
 
   // CPF Receita Saúde handling
   const isCpf = item.taxOrigin === 'CPF';
@@ -55,7 +57,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
   const [markAsEmitted, setMarkAsEmitted] = useState<boolean>(true);
 
   const paymentOptions = [
-    { value: 'PIX', label: 'PIX (Instantâneo)' },
+    { value: 'PIX', label: 'PIX' },
     { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
     { value: 'CARTAO_DEBITO', label: 'Cartão de Débito' },
     { value: 'DINHEIRO', label: 'Dinheiro em Espécie' },
@@ -65,7 +67,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
 
   const bankAccountOptions = bankAccounts.map((b) => ({
     value: b.id,
-    label: b.name,
+    label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
     description: b.accountType === 'CORRENTE_PF' ? 'Conta Física (PF)' : 'Conta Jurídica (PJ)',
   }));
 

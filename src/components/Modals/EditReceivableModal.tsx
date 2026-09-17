@@ -60,7 +60,7 @@ export const EditReceivableModal: React.FC<EditReceivableModalProps> = ({
   }, [item]);
 
   const paymentOptions = [
-    { value: 'PIX', label: 'PIX (Instantâneo)' },
+    { value: 'PIX', label: 'PIX' },
     { value: 'CARTAO_CREDITO', label: 'Cartão de Crédito' },
     { value: 'CARTAO_DEBITO', label: 'Cartão de Débito' },
     { value: 'DINHEIRO', label: 'Dinheiro em Espécie' },
@@ -70,7 +70,7 @@ export const EditReceivableModal: React.FC<EditReceivableModalProps> = ({
 
   const bankAccountOptions = bankAccounts.map((b) => ({
     value: b.id,
-    label: b.name,
+    label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
     description: b.accountType === 'CORRENTE_PF' ? 'Conta Física (PF)' : 'Conta Jurídica (PJ)',
   }));
 
