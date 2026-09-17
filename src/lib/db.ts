@@ -2421,28 +2421,44 @@ export class DentalFinanceDB {
     saveItem(STORAGE_KEYS.PROFESSIONAL, this.professional, this.activeTenantId);
 
     const clinicName = (updates.nomeFantasia || updates.razaoSocial || '').trim();
-    if (clinicName) {
-      this.org = {
-        ...this.org,
-        name: clinicName,
-        tradeName: clinicName,
-      };
-      saveItem(STORAGE_KEYS.ORGANIZATION, this.org, this.activeTenantId);
+    const updatedCnpj = updates.cnpj !== undefined ? updates.cnpj.trim() : undefined;
+
+    if (clinicName || updatedCnpj !== undefined) {
+      if (clinicName) {
+        this.org = {
+          ...this.org,
+          name: clinicName,
+          tradeName: clinicName,
+        };
+        saveItem(STORAGE_KEYS.ORGANIZATION, this.org, this.activeTenantId);
+      }
 
       const clinicIdx = this.registeredClinics.findIndex((c) => c.id === this.activeTenantId);
       if (clinicIdx >= 0) {
-        this.registeredClinics[clinicIdx].name = clinicName;
-        this.registeredClinics[clinicIdx].tradeName = clinicName;
+        if (clinicName) {
+          this.registeredClinics[clinicIdx].name = clinicName;
+          this.registeredClinics[clinicIdx].tradeName = clinicName;
+        }
+        if (updatedCnpj !== undefined) {
+          this.registeredClinics[clinicIdx].cnpj = updatedCnpj;
+          this.registeredClinics[clinicIdx].cpfCnpj = updatedCnpj;
+        }
         saveItem(GLOBAL_STORAGE_KEYS.REGISTERED_CLINICS, this.registeredClinics);
       }
 
       if (this.currentSession) {
-        if (this.currentSession.supportSession && this.currentSession.supportSession.targetTenantId === this.activeTenantId) {
+        if (clinicName && this.currentSession.supportSession && this.currentSession.supportSession.targetTenantId === this.activeTenantId) {
           this.currentSession.supportSession.targetTenantName = clinicName;
         }
         if (this.currentSession.clinic && this.currentSession.tenantId === this.activeTenantId) {
-          this.currentSession.clinic.name = clinicName;
-          this.currentSession.clinic.tradeName = clinicName;
+          if (clinicName) {
+            this.currentSession.clinic.name = clinicName;
+            this.currentSession.clinic.tradeName = clinicName;
+          }
+          if (updatedCnpj !== undefined) {
+            this.currentSession.clinic.cnpj = updatedCnpj;
+            this.currentSession.clinic.cpfCnpj = updatedCnpj;
+          }
         }
         saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
       }

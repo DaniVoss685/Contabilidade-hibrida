@@ -1129,13 +1129,15 @@ export const SupabaseService = {
       isDemo: tenantId === 'tenant_demo',
     });
 
-    // Atualiza explicitamente df_tenants para garantir que o nome real persista imediatamente
+    // Atualiza explicitamente df_tenants para garantir que o nome real e CNPJ persistam imediatamente
     if (realClinicName && realClinicName !== 'Clínica Odontológica') {
       supabaseFetch(`df_tenants?id=eq.${tenantId}`, {
         method: 'PATCH',
         body: {
           name: realClinicName,
           trade_name: realClinicName,
+          cnpj: prof.cnpj || '',
+          cpf_cnpj: prof.cnpj || '',
         },
       }).catch(console.warn);
     }

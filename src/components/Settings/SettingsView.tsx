@@ -34,6 +34,7 @@ import {
 import {
   formatCurrency,
 } from '../../lib/masks';
+import { formatCnpj, normalizeCnpj } from '../../types/contabilexIntegration';
 import { db } from '../../lib/db';
 import { useToast, CurrencyInput, ConfirmDialog, Switch } from '../UI';
 
@@ -56,16 +57,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const toast = useToast();
 
-  // 1. Dados Profissionais & Clínica (Estritamente os 5 campos aprovados na Rodada 12)
+  // 1. Dados Profissionais & Clínica
   const [name, setName] = useState(professional.name || '');
   const [nomeClinica, setNomeClinica] = useState(
     professional.nomeFantasia || professional.razaoSocial || organization.name || ''
   );
+  const [cnpj, setCnpj] = useState(() => {
+    const raw = (professional.cnpj || '').replace(/\D/g, '');
+    return raw.length === 14 ? formatCnpj(raw) : (professional.cnpj || '');
+  });
   const [cro, setCro] = useState(professional.cro || '');
   const [croUf, setCroUf] = useState(professional.croUf || 'SP');
   const [especialidade, setEspecialidade] = useState(
     professional.especialidade || 'Cirurgião-Dentista / Clínica Geral'
   );
+
+  // Sincroniza dados profissionais caso o perfil mude externamente
+  useEffect(() => {
+    setName(professional.name || '');
+    setNomeClinica(professional.nomeFantasia || professional.razaoSocial || organization.name || '');
+    const raw = (professional.cnpj || '').replace(/\D/g, '');
+    setCnpj(raw.length === 14 ? formatCnpj(raw) : (professional.cnpj || ''));
+    setCro(professional.cro || '');
+    setCroUf(professional.croUf || 'SP');
+    setEspecialidade(professional.especialidade || 'Cirurgião-Dentista / Clínica Geral');
+    setDependentes(professional.numDependentes || 0);
+    setInss(professional.inssProprioMensal || 0);
+  }, [professional, organization.name]);
 
   // 2. Deduções do Carnê-Leão (PF) — Totalmente segregadas da PJ
   const [dependentes, setDependentes] = useState(professional.numDependentes || 0);
@@ -167,9 +185,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     handleUpdatePreferences({ [key]: value });
   };
 
-  // Salvar formulário (apenas os 5 campos profissionais + deduções PF)
+  // Salvar formulário (dados profissionais & clínica + deduções PF)
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    const cleanCnpj = normalizeCnpj(cnpj);
+    if (cleanCnpj && cleanCnpj.length !== 14) {
+      toast.error('O CNPJ deve conter exatamente 14 dígitos numéricos.');
+      return;
+    }
 
     setIsSavingProfile(true);
     const res = await db.updateProfessionalAsync({
@@ -179,6 +203,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       especialidade: especialidade.trim(),
       nomeFantasia: nomeClinica.trim(),
       razaoSocial: nomeClinica.trim(),
+      cnpj: cleanCnpj.length === 14 ? formatCnpj(cleanCnpj) : '',
       numDependentes: dependentes,
       inssProprioMensal: inss,
     });
@@ -204,6 +229,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         const p = db.getProfessional();
         setName(p.name);
         setNomeClinica(p.nomeFantasia || p.razaoSocial || '');
+        setCnpj(p.cnpj ? formatCnpj(p.cnpj) : '');
         setCro(p.cro);
         setCroUf(p.croUf);
         setEspecialidade(p.especialidade || 'Cirurgião-Dentista / Clínica Geral');
@@ -292,10 +318,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="text"
                   value={nomeClinica}
                   onChange={(e) => setNomeClinica(e.target.value)}
-                  placeholder=""
+                  placeholder="Nome da clínica ou consultório"
                   className="w-full text-xs rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium shadow-2xs"
                   required
                 />
+              </div>
+
+              {/* Campo 3: CNPJ da Clínica */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block font-semibold text-slate-700">
+                    CNPJ da Clínica *
+                  </label>
+                  <span className="text-[10px] font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-md border border-teal-200">
+                    Integração Contábil Contaju
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  value={cnpj}
+                  onChange={(e) => setCnpj(formatCnpj(e.target.value))}
+                  placeholder="00.000.000/0000-00"
+                  maxLength={18}
+                  className="w-full text-xs rounded-xl border border-slate-200 px-3.5 py-2.5 bg-white text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium shadow-2xs"
+                />
+                <span className="text-[10px] text-slate-500 mt-1 block">
+                  Utilizado para a integração oficial e automática de apurações com o Escritório Contaju.
+                </span>
               </div>
 
               {/* Campos 3 e 4: CRO e UF do CRO */}

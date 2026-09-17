@@ -220,10 +220,23 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   const [contabilexLink, setContabilexLink] = useState<IntegrationClientLink | null>(null);
   const [isLoadingLink, setIsLoadingLink] = useState(false);
   const [isRequestingLink, setIsRequestingLink] = useState(false);
-  const [contabilexCnpjInput, setContabilexCnpjInput] = useState(() => {
+  const savedCnpj = useMemo(() => {
     const raw = (professional.cnpj || clinicTenant?.cnpj || '').replace(/\D/g, '');
-    return raw.length === 14 ? formatCnpj(raw) : '';
+    return raw.length === 14 ? raw : '';
+  }, [professional.cnpj, clinicTenant?.cnpj]);
+
+  const hasSavedCnpj = Boolean(savedCnpj);
+
+  const [contabilexCnpjInput, setContabilexCnpjInput] = useState(() => {
+    return savedCnpj ? formatCnpj(savedCnpj) : '';
   });
+
+  useEffect(() => {
+    if (savedCnpj) {
+      setContabilexCnpjInput(formatCnpj(savedCnpj));
+    }
+  }, [savedCnpj]);
+
   const [contabilexSnapshots, setContabilexSnapshots] = useState<ContabilexSnapshotPayload[]>([]);
   const [contabilexConfirmations, setContabilexConfirmations] = useState<Record<string, CompetencyConfirmationRecord>>({});
   const [isLoadingSnapshots, setIsLoadingSnapshots] = useState(false);
@@ -349,9 +362,10 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   }, [activeFiscalMode, contabilexSnapshots, competenceStr]);
 
   const handleRequestContabilexLink = async () => {
-    const clean = normalizeCnpj(contabilexCnpjInput);
+    const targetCnpj = savedCnpj || normalizeCnpj(contabilexCnpjInput);
+    const clean = normalizeCnpj(targetCnpj);
     if (!clean || clean.length !== 14 || /^0+$/.test(clean)) {
-      toast.error('Informe um CNPJ válido com 14 dígitos.');
+      toast.error('Informe um CNPJ válido com 14 dígitos nas Configurações da clínica.');
       return;
     }
 
@@ -380,6 +394,12 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       toast.error('Erro ao solicitar vínculo: ' + (res.error || 'Verifique os dados.'));
       return;
     }
+
+    // Se o CNPJ ainda não estava cadastrado nos Dados Profissionais, persiste automaticamente
+    if (!professional.cnpj) {
+      await db.updateProfessionalAsync({ cnpj: formatCnpj(clean) });
+    }
+
     db.log(
       'CONTABILEX_LINK_REQUESTED',
       'INTEGRATION',
@@ -2266,23 +2286,55 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                           </div>
                         )}
 
-                        <div>
-                          <label className="text-[10px] text-slate-500 block uppercase font-bold mb-1">
-                            CNPJ da Clínica (14 dígitos)
-                          </label>
-                          <input
-                            type="text"
-                            value={contabilexCnpjInput}
-                            onChange={(e) => setContabilexCnpjInput(formatCnpj(e.target.value))}
-                            placeholder="00.000.000/0000-00"
-                            maxLength={18}
-                            disabled={tenantAuthStatus === 'AUTH_LOADING' || tenantAuthStatus === 'DEMO' || tenantAuthStatus === 'AUTHENTICATED_WITHOUT_TENANT' || tenantAuthStatus === 'UNAUTHENTICATED'}
-                            className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono text-sm font-bold text-slate-800 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:opacity-60 disabled:bg-slate-100"
-                          />
-                          <span className="text-[10px] text-slate-400 block mt-1">
-                            A correspondência é realizada estritamente pelo CNPJ cadastrado no Escritório Contaju.
-                          </span>
-                        </div>
+                        {hasSavedCnpj ? (
+                          <div className="p-3.5 rounded-xl bg-teal-50/80 border border-teal-200 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] text-teal-800 uppercase font-bold tracking-wider flex items-center gap-1.5">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                                CNPJ Identificado nos Dados Profissionais
+                              </span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 border border-teal-200">
+                                Preenchido em Configurações
+                              </span>
+                            </div>
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                              <div>
+                                <span className="font-mono text-base font-bold text-slate-900 block">
+                                  {formatCnpj(savedCnpj)}
+                                </span>
+                                <span className="text-xs text-slate-600">
+                                  Clínica: <strong>{clinicName}</strong>
+                                </span>
+                              </div>
+                            </div>
+                            <p className="text-[11px] text-teal-900 leading-relaxed border-t border-teal-200/60 pt-2">
+                              A integração com o Escritório Contaju utilizará diretamente o CNPJ salvo nos dados profissionais da sua clínica.
+                            </p>
+                          </div>
+                        ) : (
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-[10px] text-slate-500 uppercase font-bold">
+                                CNPJ da Clínica (14 dígitos)
+                              </label>
+                              <span className="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                                Não cadastrado em Configurações
+                              </span>
+                            </div>
+                            <input
+                              type="text"
+                              value={contabilexCnpjInput}
+                              onChange={(e) => setContabilexCnpjInput(formatCnpj(e.target.value))}
+                              placeholder="00.000.000/0000-00"
+                              maxLength={18}
+                              disabled={tenantAuthStatus === 'AUTH_LOADING' || tenantAuthStatus === 'DEMO' || tenantAuthStatus === 'AUTHENTICATED_WITHOUT_TENANT' || tenantAuthStatus === 'UNAUTHENTICATED'}
+                              className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono text-sm font-bold text-slate-800 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 disabled:opacity-60 disabled:bg-slate-100"
+                            />
+                            <span className="text-[10px] text-slate-400 block mt-1">
+                              Dica: cadastre o CNPJ da clínica na aba <strong>Configurações</strong> para não precisar digitá-lo novamente.
+                            </span>
+                          </div>
+                        )}
 
                         <div className="pt-2 flex items-center justify-end">
                           <button
@@ -2291,7 +2343,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                             disabled={
                               isRequestingLink ||
                               tenantAuthStatus !== 'AUTHENTICATED_WITH_TENANT' ||
-                              normalizeCnpj(contabilexCnpjInput).length !== 14
+                              normalizeCnpj(savedCnpj || contabilexCnpjInput).length !== 14
                             }
                             className="px-4 py-2 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 disabled:opacity-50 text-white font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 disabled:cursor-not-allowed"
                           >
