@@ -487,54 +487,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     }
   };
 
-  // Seção Folha da Competência Atual (Unificada em "Valor da Folha")
-  const [payrollValueInput, setPayrollValueInput] = useState<number>(0);
-  const [chargesInput, setChargesInput] = useState<number>(0);
   const [isSavingBases, setIsSavingBases] = useState<boolean>(false);
-  const [isSavingPayroll, setIsSavingPayroll] = useState<boolean>(false);
-
-  // Sincronizar inputs de folha quando a competência mudar
-  useEffect(() => {
-    if (effectiveMonth !== 'ALL') {
-      const existing = db.getMonthlyPayroll(competenceStr);
-      if (existing) {
-        // Se houver registro anterior salvo com separação, soma pró-labore e salários no Valor da Folha
-        const combined = (existing.salaries || 0) + (existing.proLabore || 0);
-        setPayrollValueInput(combined);
-        setChargesInput(existing.charges || 0);
-      } else {
-        setPayrollValueInput(professional.proLaboreMensal || 0);
-        setChargesInput(0);
-      }
-    }
-  }, [competenceStr, effectiveMonth, professional.proLaboreMensal]);
-
-  const totalMonthlyPayroll = payrollValueInput + chargesInput;
-
-  const handleSaveMonthlyPayroll = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (effectiveMonth === 'ALL') {
-      toast.error('Selecione um mês específico para registrar a folha da competência.');
-      return;
-    }
-
-    setIsSavingPayroll(true);
-    const res = await db.upsertMonthlyPayrollAsync({
-      month: competenceStr,
-      salaries: 0,
-      charges: chargesInput,
-      proLabore: payrollValueInput,
-      totalPayroll: totalMonthlyPayroll,
-    });
-    setIsSavingPayroll(false);
-
-    if (!res.success) {
-      toast.error('Não foi possível salvar. Tente novamente.');
-      return;
-    }
-
-    toast.success(`Folha da competência ${formatMonthYear(competenceStr)} registrada com sucesso!`);
-  };
 
   // CPF Calculation (Carnê-Leão) — 100% segregado de PJ/RBT12/FS12
   const cpfTax = useMemo(() => {
@@ -1256,72 +1209,6 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
             </div>
           )}
         </div>
-      </div>
-
-      {/* 8. ÁREA "VALOR DA FOLHA DA COMPETÊNCIA" */}
-      <div className="bg-white rounded-2xl border border-slate-200/90 p-6 shadow-xs space-y-4">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-          <div>
-            <div className="flex items-center gap-2">
-              <Briefcase className="w-4 h-4 text-emerald-600" />
-              <h3 className="text-sm font-bold text-slate-900">
-                Valor da Folha da Competência ({formatMonthYear(competenceStr)})
-              </h3>
-            </div>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Remuneração total deste mês (pró-labore e salários) que alimenta dinamicamente a janela móvel do Fator R
-            </p>
-          </div>
-
-          <div className="text-right">
-            <span className="text-[10px] text-slate-400 block uppercase font-bold">Total do Mês</span>
-            <span className="text-sm font-bold font-mono text-emerald-700">
-              {formatCurrency(totalMonthlyPayroll)}
-            </span>
-          </div>
-        </div>
-
-        <form onSubmit={handleSaveMonthlyPayroll} className="space-y-4 text-xs">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <CurrencyInput
-                label="Valor da Folha (R$)"
-                value={payrollValueInput}
-                onChange={setPayrollValueInput}
-                placeholder="R$ 0,00"
-              />
-              <span className="text-[10px] text-slate-400 mt-1 block">
-                Total de remuneração oficial: pró-labore dos sócios e/ou salários da equipe CLT
-              </span>
-            </div>
-
-            <div>
-              <CurrencyInput
-                label="Encargos Trabalhistas (R$)"
-                value={chargesInput}
-                onChange={setChargesInput}
-                placeholder="R$ 0,00"
-              />
-              <span className="text-[10px] text-slate-400 mt-1 block">
-                INSS patronal, FGTS e provisões legais (se houver)
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-            <span className="text-[11px] text-slate-500">
-              Esta folha compõe o FS12 dos próximos 12 meses, garantindo o enquadramento no Anexo III.
-            </span>
-            <button
-              type="submit"
-              disabled={isSavingPayroll}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
-            >
-              <Check className="w-3.5 h-3.5" />
-              <span>{isSavingPayroll ? 'Salvando folha no banco...' : 'Salvar Folha da Competência'}</span>
-            </button>
-          </div>
-        </form>
       </div>
 
       {/* Grid com CPF à Esquerda, CNPJ à Direita */}

@@ -12,6 +12,7 @@ export * from './useModalAccessibility';
 export * from './ToastContext';
 export * from './Toast';
 export * from './ReceiptUploader';
+export * from './ReceiptViewerModal';
 export * from './EmptyState';
 export * from './LoadingState';
 export * from './ErrorState';

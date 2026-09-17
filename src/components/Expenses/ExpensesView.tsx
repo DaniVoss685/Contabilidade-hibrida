@@ -20,6 +20,7 @@ import {
   CheckCircle,
   Clock,
   AlertTriangle,
+  Eye,
 } from 'lucide-react';
 import { Expense, ExpenseCategory, ExpenseEntity } from '../../types';
 import { formatCurrency, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
@@ -28,7 +29,7 @@ import { db } from '../../lib/db';
 import { getEffectivePayableStatus } from '../../lib/statusHelper';
 import { BatchEditExpensesModal } from '../Modals/BatchEditExpensesModal';
 import { NewExpenseModal } from '../Modals/NewExpenseModal';
-import { CustomSelect, ConfirmDialog, useToast } from '../UI';
+import { CustomSelect, ConfirmDialog, useToast, ReceiptViewerModal } from '../UI';
 
 const MONTH_NAMES = [
   '',
@@ -89,6 +90,10 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBatchEditOpen, setIsBatchEditOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [viewingAttachment, setViewingAttachment] = useState<{
+    file?: any;
+    name: string;
+  } | null>(null);
 
   // Confirm dialog state
   const [confirmState, setConfirmState] = useState<{
@@ -886,9 +891,22 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                           )}
                         </div>
                         {exp.attachmentName && (
-                          <div className="inline-flex items-center gap-1 text-[10px] text-teal-700 mt-0.5">
-                            <Paperclip className="w-3 h-3" /> {exp.attachmentName}
-                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewingAttachment({
+                                file: exp.attachment,
+                                name: exp.attachmentName || 'Comprovante',
+                              });
+                            }}
+                            className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-teal-700 hover:text-teal-900 bg-teal-50 hover:bg-teal-100/90 px-2 py-0.5 rounded-lg border border-teal-200/80 transition-colors mt-1 cursor-pointer max-w-full truncate shadow-2xs"
+                            title="Clique para visualizar o comprovante"
+                          >
+                            <Eye className="w-3 h-3 flex-shrink-0 text-teal-600" />
+                            <Paperclip className="w-3 h-3 flex-shrink-0 text-teal-500" />
+                            <span className="truncate">{exp.attachmentName}</span>
+                          </button>
                         )}
                       </td>
 
@@ -1126,6 +1144,14 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Visualizador de Comprovantes para a Tabela */}
+      <ReceiptViewerModal
+        isOpen={Boolean(viewingAttachment)}
+        onClose={() => setViewingAttachment(null)}
+        file={viewingAttachment?.file}
+        fallbackName={viewingAttachment?.name}
+      />
     </div>
   );
 };

@@ -27,6 +27,7 @@ import {
   ExpenseCategory,
   BankAccount,
   AttachmentMetadata,
+  AllowedReceiptExtension,
 } from '../../types';
 import { DatePicker, CurrencyInput, CustomSelect, useToast, ReceiptUploader, ConfirmDialog } from '../UI';
 import { formatCpf, formatCnpj, formatCurrency, formatDateBr } from '../../lib/masks';
@@ -331,11 +332,17 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       setBankAccountId(expenseToEdit.bankAccountId || bankAccounts[0]?.id || '');
       setDocumentNumber(expenseToEdit.documentNumber || '');
       setAttachmentName(expenseToEdit.attachmentName || '');
-      if (expenseToEdit.attachmentName) {
+      if (expenseToEdit.attachment) {
+        setAttachmentFile(expenseToEdit.attachment);
+      } else if (expenseToEdit.attachmentName) {
+        const ext = expenseToEdit.attachmentName.split('.').pop()?.toLowerCase() as AllowedReceiptExtension | undefined;
+        const isPdf = ext === 'pdf' || expenseToEdit.attachmentName.toLowerCase().endsWith('.pdf');
         setAttachmentFile({
+          id: `att_legacy_${Date.now()}`,
           name: expenseToEdit.attachmentName,
           size: 150000,
-          type: expenseToEdit.attachmentName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg',
+          extension: ext || (isPdf ? 'pdf' : 'png'),
+          type: isPdf ? 'application/pdf' : 'image/jpeg',
           uploadedAt: new Date().toISOString(),
         });
       } else {
@@ -609,6 +616,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
               bankAccountId: finalBankAccountId,
               documentNumber: documentNumber.trim() || undefined,
               attachmentName: finalAttachmentName,
+              attachment: attachmentFile || null,
               notes: notes.trim() || undefined,
               entity,
               dedutivelLivroCaixaPf,
@@ -644,6 +652,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
             bankAccountId: finalBankAccountId,
             documentNumber: documentNumber.trim() || undefined,
             attachmentName: finalAttachmentName,
+            attachment: attachmentFile || null,
             notes: notes.trim() || undefined,
             entity,
             dedutivelLivroCaixaPf,
@@ -683,6 +692,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
               bankAccountId: isFirstPaid ? finalBankAccountId : (finalBankAccountId || undefined),
               documentNumber: documentNumber.trim() || undefined,
               attachmentName: finalAttachmentName,
+              attachment: attachmentFile || null,
               notes: notes.trim() || undefined,
               entity,
               dedutivelLivroCaixaPf,
@@ -735,6 +745,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
               bankAccountId: isFirstPaid ? finalBankAccountId : (finalBankAccountId || undefined),
               documentNumber: documentNumber.trim() || undefined,
               attachmentName: finalAttachmentName,
+              attachment: attachmentFile || null,
               notes: notes.trim() || undefined,
               entity,
               dedutivelLivroCaixaPf,
@@ -769,6 +780,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
             bankAccountId: finalBankAccountId,
             documentNumber: documentNumber.trim() || undefined,
             attachmentName: finalAttachmentName,
+            attachment: attachmentFile || null,
             notes: notes.trim() || undefined,
             entity,
             dedutivelLivroCaixaPf,

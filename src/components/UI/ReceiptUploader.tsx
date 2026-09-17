@@ -13,6 +13,7 @@ import {
 import { AttachmentMetadata, AllowedReceiptExtension } from '../../types';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Portal } from './Portal';
+import { ReceiptViewerModal } from './ReceiptViewerModal';
 
 export interface ReceiptUploaderProps {
   file?: AttachmentMetadata | null;
@@ -48,7 +49,7 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isReading, setIsReading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [showImagePreview, setShowImagePreview] = useState(false);
+  const [showViewerModal, setShowViewerModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -144,8 +145,15 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
     }
   };
 
-  // Abertura segura de PDF em nova aba
-  const handleOpenPdf = () => {
+  // Detecção robusta se o anexo é um PDF
+  const isPdf = Boolean(
+    file?.extension?.toLowerCase() === 'pdf' ||
+    file?.name?.toLowerCase().endsWith('.pdf') ||
+    file?.type?.includes('pdf')
+  );
+
+  // Abertura segura do comprovante em nova aba
+  const handleOpenExternal = () => {
     if (!file) return;
 
     if (file.url) {
@@ -153,26 +161,39 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
       return;
     }
 
-    if (file.dataUrl) {
-      // Converte dataUrl base64 em Blob para abertura fluida sem URL gigante
-      try {
-        const parts = file.dataUrl.split(';base64,');
-        const contentType = parts[0].split(':')[1] || 'application/pdf';
-        const raw = window.atob(parts[1]);
-        const rawLength = raw.length;
-        const uInt8Array = new Uint8Array(rawLength);
-
-        for (let i = 0; i < rawLength; ++i) {
-          uInt8Array[i] = raw.charCodeAt(i);
-        }
-
-        const blob = new Blob([uInt8Array], { type: contentType });
-        const blobUrl = URL.createObjectURL(blob);
-        window.open(blobUrl, '_blank', 'noopener,noreferrer');
-      } catch {
-        window.open(file.dataUrl, '_blank', 'noopener,noreferrer');
-      }
+    if (file.signedUrl) {
+      window.open(file.signedUrl, '_blank', 'noopener,noreferrer');
+      return;
     }
+
+    if (file.dataUrl) {
+      if (isPdf) {
+        try {
+          const parts = file.dataUrl.split(';base64,');
+          const contentType = parts[0].split(':')[1] || 'application/pdf';
+          const raw = window.atob(parts[1]);
+          const rawLength = raw.length;
+          const uInt8Array = new Uint8Array(rawLength);
+
+          for (let i = 0; i < rawLength; ++i) {
+            uInt8Array[i] = raw.charCodeAt(i);
+          }
+
+          const blob = new Blob([uInt8Array], { type: contentType });
+          const blobUrl = URL.createObjectURL(blob);
+          window.open(blobUrl, '_blank', 'noopener,noreferrer');
+          return;
+        } catch {
+          window.open(file.dataUrl, '_blank', 'noopener,noreferrer');
+          return;
+        }
+      }
+      window.open(file.dataUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    // Se não tiver dataUrl/url (registro legado), abre o modal que já dá orientação clara
+    setShowViewerModal(true);
   };
 
   // Confirmação de remoção
@@ -208,14 +229,18 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
         <div className="p-3.5 bg-slate-50 border border-slate-200/90 rounded-2xl flex items-center justify-between gap-3 transition-all hover:border-slate-300">
           <div className="flex items-center gap-3 min-w-0">
             {/* Ícone ou Miniatura */}
-            {file.extension === 'pdf' ? (
-              <div className="w-10 h-10 rounded-xl bg-rose-50 border border-rose-200/70 flex items-center justify-center flex-shrink-0 text-rose-600">
+            {isPdf ? (
+              <div
+                className="w-10 h-10 rounded-xl bg-rose-50 border border-rose-200/70 flex items-center justify-center flex-shrink-0 text-rose-600 cursor-pointer hover:bg-rose-100 transition-colors"
+                onClick={() => setShowViewerModal(true)}
+                title="Clique para visualizar o comprovante PDF"
+              >
                 <FileText className="w-5 h-5" />
               </div>
             ) : file.dataUrl ? (
               <div
-                className="w-10 h-10 rounded-xl border border-slate-200 overflow-hidden flex-shrink-0 cursor-pointer bg-slate-100"
-                onClick={() => setShowImagePreview(true)}
+                className="w-10 h-10 rounded-xl border border-slate-200 overflow-hidden flex-shrink-0 cursor-pointer bg-slate-100 hover:opacity-90 transition-opacity"
+                onClick={() => setShowViewerModal(true)}
                 title="Clique para ampliar a imagem"
               >
                 <img
@@ -225,7 +250,11 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
                 />
               </div>
             ) : (
-              <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200/70 flex items-center justify-center flex-shrink-0 text-blue-600">
+              <div
+                className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200/70 flex items-center justify-center flex-shrink-0 text-blue-600 cursor-pointer hover:bg-blue-100 transition-colors"
+                onClick={() => setShowViewerModal(true)}
+                title="Clique para visualizar o comprovante"
+              >
                 <ImageIcon className="w-5 h-5" />
               </div>
             )}
@@ -234,13 +263,14 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
                 <span
-                  className="text-xs font-bold text-slate-800 truncate"
+                  className="text-xs font-bold text-slate-800 truncate cursor-pointer hover:underline"
                   title={file.name}
+                  onClick={() => setShowViewerModal(true)}
                 >
                   {file.name}
                 </span>
                 <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 font-bold">
-                  {file.extension}
+                  {isPdf ? 'PDF' : file.extension || 'ARQUIVO'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 font-mono mt-0.5">
@@ -251,26 +281,25 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
 
           {/* Botões de Ação */}
           <div className="flex items-center gap-1 flex-shrink-0">
-            {/* Botão Visualizar */}
-            {file.extension === 'pdf' ? (
-              <button
-                type="button"
-                onClick={handleOpenPdf}
-                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 transition-colors cursor-pointer"
-                title="Abrir PDF em nova aba"
-              >
-                <ExternalLink className="w-4 h-4" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setShowImagePreview(true)}
-                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 transition-colors cursor-pointer"
-                title="Visualizar comprovante"
-              >
-                <Eye className="w-4 h-4" />
-              </button>
-            )}
+            {/* Botão Visualizar (Olhinho unificado para PDF e Imagem) */}
+            <button
+              type="button"
+              onClick={() => setShowViewerModal(true)}
+              className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer"
+              title="Visualizar comprovante"
+            >
+              <Eye className="w-4 h-4" />
+            </button>
+
+            {/* Botão Abrir em Nova Aba */}
+            <button
+              type="button"
+              onClick={handleOpenExternal}
+              className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-200/70 transition-colors cursor-pointer"
+              title="Abrir comprovante em nova aba"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </button>
 
             {/* Botão Remover (com confirmação) */}
             <button
@@ -356,44 +385,12 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
         onClose={() => setShowDeleteConfirm(false)}
       />
 
-      {/* Modal de Preview de Imagem em Alta Resolução */}
-      {showImagePreview && file?.dataUrl && (
-        <Portal>
-          <div
-            className="fixed inset-0 z-[100000] bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
-            onClick={() => setShowImagePreview(false)}
-          >
-            <div
-              className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                <div className="flex items-center gap-2 truncate">
-                  <ImageIcon className="w-4 h-4 text-slate-500 flex-shrink-0" />
-                  <span className="text-xs font-bold text-slate-800 truncate">
-                    {file.name}
-                  </span>
-                  <span className="text-[10px] text-slate-400">({file.formattedSize})</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowImagePreview(false)}
-                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="p-4 overflow-auto flex items-center justify-center bg-slate-900/5">
-                <img
-                  src={file.dataUrl}
-                  alt={file.name}
-                  className="max-h-[70vh] object-contain rounded-lg shadow-xs"
-                />
-              </div>
-            </div>
-          </div>
-        </Portal>
-      )}
+      {/* Modal Unificado de Visualização de Comprovantes (PDF e Imagens) */}
+      <ReceiptViewerModal
+        isOpen={showViewerModal}
+        onClose={() => setShowViewerModal(false)}
+        file={file}
+      />
     </div>
   );
 };
