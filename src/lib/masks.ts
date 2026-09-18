@@ -257,3 +257,47 @@ export function maskCnpjInput(value: string): string {
   return `${digits.slice(0, 2)}.${digits.slice(2, 5)}.${digits.slice(5, 8)}/${digits.slice(8, 12)}-${digits.slice(12, 14)}`;
 }
 
+/**
+ * Máscara dinâmica durante a digitação de Telefone/WhatsApp brasileiro
+ * Suporta fixo: (XX) XXXX-XXXX (10 dígitos) e celular: (XX) XXXXX-XXXX (11 dígitos)
+ * Trata colagem com prefixo DDI 55
+ */
+export function maskPhoneInput(value: string): string {
+  if (!value) return '';
+  let digits = value.replace(/\D/g, '');
+
+  // Se o usuário colou com 55 na frente (ex: 5534999999999)
+  if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) {
+    digits = digits.substring(2);
+  }
+
+  digits = digits.slice(0, 11);
+
+  if (digits.length === 0) return '';
+  if (digits.length <= 2) return `(${digits}`;
+  if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+  if (digits.length <= 10) {
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  }
+  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`;
+}
+
+/**
+ * Validação de telefone brasileiro (DDD de 2 dígitos + 8 ou 9 dígitos locais)
+ */
+export function isValidPhone(phone: string | undefined | null): boolean {
+  if (!phone) return false;
+  let clean = phone.replace(/\D/g, '');
+  if (clean.startsWith('55') && (clean.length === 12 || clean.length === 13)) {
+    clean = clean.substring(2);
+  }
+  if (clean.length < 10 || clean.length > 11) return false;
+
+  // DDD válido no Brasil (de 11 a 99)
+  const ddd = parseInt(clean.substring(0, 2), 10);
+  if (ddd < 11 || ddd > 99) return false;
+
+  return true;
+}
+
+

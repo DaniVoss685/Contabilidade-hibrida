@@ -2653,7 +2653,7 @@ export class DentalFinanceDB {
     if (!found) return { success: false, error: 'Paciente não encontrado' };
     const updated: Patient = { ...found, ...updates };
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
-      const res = await SupabaseService.savePatient(updated, this.activeTenantId);
+      const res = await SupabaseService.updatePatient(updated, this.activeTenantId);
       if (!res.success) {
         return { success: false, error: res.error || 'Erro ao atualizar paciente no servidor' };
       }

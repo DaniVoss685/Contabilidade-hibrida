@@ -1284,6 +1284,24 @@ export const SupabaseService = {
     return { success: !error, error: error || undefined };
   },
 
+  async updatePatient(patient: Patient, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = {
+      name: patient.name,
+      cpf: patient.cpf || '',
+      email: patient.email || '',
+      phone: patient.phone || '',
+      birth_date: patient.birthDate || '',
+      notes: patient.notes || '',
+    };
+    const { error } = await supabaseFetch(`df_patients?id=eq.${patient.id}&tenant_id=eq.${tenantId}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
   async deletePatient(patientId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
     const { error } = await supabaseFetch(`df_patients?id=eq.${patientId}&tenant_id=eq.${tenantId}`, {
       method: 'DELETE',

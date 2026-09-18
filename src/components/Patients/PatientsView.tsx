@@ -13,6 +13,7 @@ import {
   X,
   CreditCard,
   CheckCircle2,
+  Pencil,
 } from 'lucide-react';
 import { Patient, Sale } from '../../types';
 import { formatCpf, formatCurrency, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
@@ -52,12 +53,14 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
     }
   }, [initialSelectedPatientId]);
 
-  // New patient modal state
-  const [showAddModal, setShowAddModal] = useState<boolean>(initialOpenNewModal);
+  // Modal state (create or edit)
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(initialOpenNewModal);
+  const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
 
   React.useEffect(() => {
     if (initialOpenNewModal) {
-      setShowAddModal(true);
+      setEditingPatient(null);
+      setIsModalOpen(true);
       if (onClearAction) onClearAction();
     }
   }, [initialOpenNewModal, onClearAction]);
@@ -119,7 +122,11 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
         </div>
 
         <button
-          onClick={() => setShowAddModal(true)}
+          type="button"
+          onClick={() => {
+            setEditingPatient(null);
+            setIsModalOpen(true);
+          }}
           className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs transition-all cursor-pointer"
         >
           <Plus className="w-4 h-4" />
@@ -161,32 +168,47 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                   .toUpperCase();
 
                 return (
-                  <button
+                  <div
                     key={p.id}
                     onClick={() => setSelectedPatientId(p.id)}
-                    className={`w-full p-3.5 text-left transition-all flex items-center justify-between cursor-pointer ${
+                    className={`w-full p-3.5 text-left transition-all flex items-center justify-between cursor-pointer group ${
                       isSelected
                         ? 'bg-emerald-50/70 border-l-3 border-emerald-600'
                         : 'hover:bg-slate-50/80'
                     }`}
                   >
-                    <div className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
                         isSelected ? 'bg-emerald-600 text-white shadow-2xs' : 'bg-slate-100 text-slate-600'
                       }`}>
                         {initials}
                       </div>
-                      <div>
-                        <div className="font-bold text-xs text-slate-900">{p.name}</div>
-                        <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                      <div className="min-w-0">
+                        <div className="font-bold text-xs text-slate-900 truncate">{p.name}</div>
+                        <div className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">
                           CPF: {formatCpf(p.cpf, maskCpf)}
                         </div>
                       </div>
                     </div>
-                    {p.phone && (
-                      <span className="text-[10px] text-slate-400 font-mono">{p.phone}</span>
-                    )}
-                  </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {p.phone && (
+                        <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">{p.phone}</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingPatient(p);
+                          setIsModalOpen(true);
+                        }}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer"
+                        title="Editar paciente"
+                        aria-label="Editar paciente"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
                 );
               })
             )}
@@ -224,16 +246,31 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                   </div>
                 </div>
 
-        {onOpenNewSaleForPatient && (
+                <div className="flex items-center gap-2.5 flex-wrap">
                   <button
                     type="button"
-                    onClick={() => onOpenNewSaleForPatient(activePatient.id)}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs hover:shadow cursor-pointer transition-all"
+                    onClick={() => {
+                      setEditingPatient(activePatient);
+                      setIsModalOpen(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-900 shadow-2xs cursor-pointer transition-all"
+                    title="Editar paciente"
                   >
-                    <Plus className="w-4 h-4" />
-                    <span>Nova Receita / Atendimento</span>
+                    <Pencil className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Editar Paciente</span>
                   </button>
-                )}
+
+                  {onOpenNewSaleForPatient && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenNewSaleForPatient(activePatient.id)}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs hover:shadow cursor-pointer transition-all"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Nova Receita / Atendimento</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Patient Financial Summary */}
@@ -333,14 +370,22 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
         </div>
       </div>
 
-      {/* Modern Patient Modal with Validation, Duplicate Check and Success Dialog */}
+      {/* Modern Patient Modal with Validation, Duplicate Check and Modes create/edit */}
       <PatientModal
-        isOpen={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        onSave={(newPatient) => {
-          setSelectedPatientId(newPatient.id);
-          setSearchTerm(''); // limpa a busca para exibir o paciente recém-criado
-          setShowAddModal(false);
+        isOpen={isModalOpen}
+        mode={editingPatient ? 'edit' : 'create'}
+        patient={editingPatient}
+        onClose={() => {
+          setIsModalOpen(false);
+          setEditingPatient(null);
+        }}
+        onSave={(savedPatient) => {
+          setSelectedPatientId(savedPatient.id);
+          if (!editingPatient) {
+            setSearchTerm(''); // limpa a busca para exibir o paciente recém-criado
+          }
+          setIsModalOpen(false);
+          setEditingPatient(null);
         }}
       />
     </div>
