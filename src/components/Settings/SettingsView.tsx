@@ -22,6 +22,7 @@ import {
   KeyRound,
   ShieldCheck,
   Sparkles,
+  Users,
 } from 'lucide-react';
 import {
   Professional,
@@ -38,6 +39,8 @@ import {
 import { formatCnpj, normalizeCnpj } from '../../types/contabilexIntegration';
 import { db } from '../../lib/db';
 import { useToast, CurrencyInput, ConfirmDialog, Switch } from '../UI';
+import { TeamManagementTab } from './TeamManagementTab';
+import { hasPermission } from '../../lib/permissions';
 
 interface SettingsViewProps {
   professional: Professional;
@@ -57,6 +60,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onRefreshData,
 }) => {
   const toast = useToast();
+  const currentSession = db.getCurrentSession();
+  const activeTenantId = db.getActiveTenantId();
+  const [activeSubTab, setActiveSubTab] = useState<'general' | 'team'>('general');
+  const canManageTeam = hasPermission(
+    currentSession?.user?.role,
+    'team:manage',
+    undefined,
+    currentSession?.user?.isPrimary
+  );
 
   // 1. Dados Profissionais & Clínica
   const [name, setName] = useState(professional.name || '');
@@ -272,16 +284,51 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </button>
       </div>
 
-      {/* Scenario Alert */}
-      {scenarioMessage && (
-        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs text-emerald-950 font-semibold flex items-center gap-3 animate-in fade-in shadow-xs">
-          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
-          <span className="flex-1">{scenarioMessage}</span>
-        </div>
-      )}
+      {/* Subtabs Selector */}
+      <div className="flex items-center gap-2 border-b border-slate-200/80 pb-2">
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('general')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeSubTab === 'general'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+          }`}
+        >
+          <Settings className="w-4 h-4" />
+          <span>Geral, Fiscal & Preferências</span>
+        </button>
 
-      {/* Main Settings Form & Grid */}
-      <form onSubmit={handleSaveProfile} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('team')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeSubTab === 'team'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Equipe & Acessos</span>
+        </button>
+      </div>
+
+      {activeSubTab === 'team' ? (
+        <TeamManagementTab
+          tenantId={activeTenantId}
+          currentUserId={currentSession?.user?.id}
+          canManageTeam={canManageTeam}
+        />
+      ) : (
+        <>
+          {scenarioMessage && (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs text-emerald-950 font-semibold flex items-center gap-3 animate-in fade-in shadow-xs">
+              <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span className="flex-1">{scenarioMessage}</span>
+            </div>
+          )}
+          {/* Main Settings Form & Grid */}
+          <form onSubmit={handleSaveProfile} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Column: Dados Profissionais (5 campos) + Regime Somente Leitura + Deduções PF (7 cols) */}
         <div className="lg:col-span-7 space-y-6">
           {/* Section: Dados Profissionais & Clínica (Estritamente 5 campos) */}
@@ -904,6 +951,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
       </form>
+      </>
+      )}
 
       {/* Confirm Dialog */}
       <ConfirmDialog

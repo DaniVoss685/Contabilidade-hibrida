@@ -23,6 +23,7 @@ import {
   Repeat,
   MessageSquare,
 } from 'lucide-react';
+import { canAccessTab } from '../../lib/permissions';
 
 export type NavTab =
   | 'dashboard'
@@ -55,6 +56,8 @@ interface SidebarProps {
   onLogout?: () => void;
   isCollapsed?: boolean;
   onToggleCollapse?: (collapsed: boolean) => void;
+  userRole?: string;
+  userIsPrimary?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -69,6 +72,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   isCollapsed = false,
   onToggleCollapse,
+  userRole,
+  userIsPrimary,
 }) => {
   interface NavSection {
     title: string;
@@ -194,6 +199,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
   ];
 
+  const filteredSections = sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) =>
+        canAccessTab(userRole || 'OWNER', item.id, undefined, userIsPrimary)
+      ),
+    }))
+    .filter((section) => section.items.length > 0);
+
   return (
     <>
       {/* Mobile Backdrop */}
@@ -275,7 +289,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             isCollapsed ? 'px-1.5 space-y-2' : 'px-3.5 space-y-4'
           }`}
         >
-          {sections.map((section, idx) => (
+          {filteredSections.map((section, idx) => (
             <div key={section.title} className="space-y-1">
               {isCollapsed ? (
                 idx > 0 && <div className="h-px bg-slate-200/60 my-2 mx-1" />

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, ArrowRightLeft, User, AlertCircle, MessageSquare } from 'lucide-react';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
+import { hasPermission } from '../../lib/permissions';
 
 interface TransferModalProps {
   isOpen: boolean;
@@ -39,8 +40,10 @@ export const TransferModal: React.FC<TransferModalProps> = ({
     setLoadingStaff(true);
     try {
       const data = await DentalWhatsAppService.getStaff(tenantId);
-      // Filtrar o próprio usuário atual
-      const available = data.filter((u) => u.id !== currentUserId);
+      // Filtrar o próprio usuário atual E membros que possuem permissão de WhatsApp
+      const available = data.filter(
+        (u) => u.id !== currentUserId && hasPermission(u.role, 'whatsapp:chat')
+      );
       setStaff(available);
       if (available.length > 0) {
         setSelectedUserId(available[0].id);

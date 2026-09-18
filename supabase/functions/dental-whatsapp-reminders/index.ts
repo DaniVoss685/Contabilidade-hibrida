@@ -53,22 +53,129 @@ function formatDateBr(dateStr: string): string {
 }
 
 /**
- * Preenche variáveis no template da mensagem
+ * Extrai a data local no formato YYYY-MM-DD considerando o timezone da clínica.
+ */
+function getLocalDateString(date: Date, timezone: string = "America/Sao_Paulo"): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(date);
+}
+
+/**
+ * Retorna o rótulo canônico de contexto temporal relativo:
+ * - 'HOJE' se a consulta for no mesmo dia local
+ * - 'AMANHÃ' se a consulta for no dia local imediatamente seguinte
+ * - 'DATA' para qualquer outro dia
+ */
+function getAppointmentRelativeDayLabel(
+  appointmentDate: string,
+  tenantTimezone: string = "America/Sao_Paulo",
+  now: Date = new Date()
+): "HOJE" | "AMANHÃ" | "DATA" {
+  if (!appointmentDate) return "DATA";
+
+  const todayStr = getLocalDateString(now, tenantTimezone);
+
+  const [curY, curM, curD] = todayStr.split("-").map(Number);
+  const [apptY, apptM, apptD] = appointmentDate.split("-").map(Number);
+
+  if (isNaN(curY) || isNaN(apptY)) return "DATA";
+
+  const curMidnightUtc = Date.UTC(curY, curM - 1, curD);
+  const apptMidnightUtc = Date.UTC(apptY, apptM - 1, apptD);
+
+  const diffDays = Math.round((apptMidnightUtc - curMidnightUtc) / (24 * 60 * 60 * 1000));
+
+  if (diffDays === 0) {
+    return "HOJE";
+  } else if (diffDays === 1) {
+    return "AMANHÃ";
+  } else {
+    return "DATA";
+  }
+}
+
+/**
+ * Renderiza o texto semântico correspondente à tag {{quando}}:
+ * - 'HOJE' -> "hoje, DD/MM/YYYY"
+ * - 'AMANHÃ' -> "amanhã, DD/MM/YYYY"
+ * - 'DATA' -> "DD/MM/YYYY"
+ */
+function formatAppointmentWhen(
+  appointmentDate: string,
+  tenantTimezone: string = "America/Sao_Paulo",
+  now: Date = new Date()
+): string {
+  const label = getAppointmentRelativeDayLabel(appointmentDate, tenantTimezone, now);
+  const dateFormatted = formatDateBr(appointmentDate);
+
+  if (label === "HOJE") {
+    return `hoje, ${dateFormatted}`;
+  } else if (label === "AMANHÃ") {
+    return `amanhã, ${dateFormatted}`;
+  } else {
+    return dateFormatted;
+  }
+}
+
+/**
+ * Previne inconsistências semânticas em templates legados que possuem
+ * a palavra "amanhã" codificada de forma estática no texto.
+ */
+function sanitizeTemplateText(
+  template: string,
+  appointmentDate: string,
+  tenantTimezone: string = "America/Sao_Paulo",
+  now: Date = new Date()
+): string {
+  if (!template) return "";
+  const label = getAppointmentRelativeDayLabel(appointmentDate, tenantTimezone, now);
+
+  let sanitized = template;
+
+  // Se o template legado usa "marcada para amanhã, *{{data}}*" ou "amanhã, {{data}}"
+  sanitized = sanitized.replace(/para\s+amanh[aã],?\s*(\*?\{\{data\}\}\*?)/gi, "para {{quando}}");
+  sanitized = sanitized.replace(/amanh[aã],?\s*(\*?\{\{data\}\}\*?)/gi, "{{quando}}");
+
+  // Proteção contra a palavra "amanhã" avulsa quando a consulta é HOJE ou OUTRA DATA
+  if (label === "HOJE") {
+    sanitized = sanitized.replace(/\bamanh[aã]\b/gi, "hoje");
+  } else if (label === "DATA") {
+    sanitized = sanitized.replace(/\bamanh[aã],?\s*/gi, "");
+  }
+
+  return sanitized;
+}
+
+/**
+ * Preenche variáveis no template da mensagem com tratamento temporal rigoroso
  */
 function renderTemplate(
   template: string,
   variables: {
     paciente: string;
+    appointmentDate: string;
     data: string;
     hora: string;
     profissional: string;
     procedimento: string;
     clinica: string;
-  }
+  },
+  tenantTimezone: string = "America/Sao_Paulo",
+  now: Date = new Date()
 ): string {
-  return template
+  const sanitized = sanitizeTemplateText(template, variables.appointmentDate, tenantTimezone, now);
+  const quandoText = formatAppointmentWhen(variables.appointmentDate, tenantTimezone, now);
+  const dataText = variables.data || formatDateBr(variables.appointmentDate);
+
+  return sanitized
     .replace(/\{\{paciente\}\}/gi, variables.paciente || "Paciente")
-    .replace(/\{\{data\}\}/gi, variables.data || "")
+    .replace(/\{\{quando\}\}/gi, quandoText)
+    .replace(/\{\{data\}\}/gi, dataText)
     .replace(/\{\{hora\}\}/gi, variables.hora || "")
     .replace(/\{\{profissional\}\}/gi, variables.profissional || "")
     .replace(/\{\{procedimento\}\}/gi, variables.procedimento || "Consulta")
@@ -368,17 +475,23 @@ Deno.serve(async (req) => {
 
           // 6. Montar o texto do lembrete usando template configurado
           const defaultReminderTemplate =
-            "Olá, *{{paciente}}*! Lembramos que sua consulta está marcada para o dia *{{data}}* às *{{hora}}* com *{{profissional}}*. Aguardamos você! Caso tenha algum imprevisto, nos avise por aqui 😬";
+            "Olá, *{{paciente}}*! Lembramos que sua consulta está marcada para {{quando}} às *{{hora}}* com *{{profissional}}*. Aguardamos você! Caso tenha algum imprevisto, nos avise por aqui 😬";
           const templateToUse = settings.reminder_template || defaultReminderTemplate;
 
-          const renderedMessage = renderTemplate(templateToUse, {
-            paciente: patientName,
-            data: formatDateBr(appt.date),
-            hora: appt.start_time,
-            profissional: appt.dentist_name || "seu dentista",
-            procedimento: appt.procedure_name || "Consulta",
-            clinica: clinicName,
-          });
+          const renderedMessage = renderTemplate(
+            templateToUse,
+            {
+              paciente: patientName,
+              appointmentDate: appt.date,
+              data: formatDateBr(appt.date),
+              hora: appt.start_time,
+              profissional: appt.dentist_name || "seu dentista",
+              procedimento: appt.procedure_name || "Consulta",
+              clinica: clinicName,
+            },
+            "America/Sao_Paulo",
+            new Date()
+          );
 
           if (dryRun) {
             logs.push({

@@ -22,6 +22,7 @@ import {
   ArrowRightLeft,
   CheckCircle,
   UserCheck,
+  User,
   Lock,
   Smile,
   RefreshCw,
@@ -165,6 +166,19 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   const [contactPhoto, setContactPhoto] = useState<string | null>(conversation.contact?.profile_pic_url || null);
   const [activeReactionPickerMsgId, setActiveReactionPickerMsgId] = useState<string | null>(null);
   const [headerNextAppointment, setHeaderNextAppointment] = useState<Appointment | null>(null);
+  const [staffMap, setStaffMap] = useState<Record<string, { id: string; name: string; role?: string }>>({});
+
+  useEffect(() => {
+    if (tenantId) {
+      DentalWhatsAppService.getStaff(tenantId).then((list) => {
+        const map: Record<string, { id: string; name: string; role?: string }> = {};
+        list.forEach((u) => {
+          map[u.id] = u;
+        });
+        setStaffMap(map);
+      });
+    }
+  }, [tenantId]);
 
   useEffect(() => {
     setContactPhoto(conversation.contact?.profile_pic_url || null);
@@ -1469,6 +1483,18 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                           : 'bg-white text-slate-800 border border-slate-200/80 rounded-tl-xs'
                       }`}
                     >
+                      {/* Autoria Visual Interna do Atendente */}
+                      {isMine && msg.sender_id && (!msg.origin || msg.origin === 'attendant') && (
+                        <div className="mb-1 text-[10px] font-bold text-emerald-100 flex items-center gap-1 opacity-90">
+                          <User className="w-2.5 h-2.5" />
+                          <span>
+                            {msg.sender_id === currentUserId
+                              ? `${currentUserName || staffMap[msg.sender_id]?.name || 'Você'} (Você)`
+                              : staffMap[msg.sender_id]?.name || 'Atendente'}
+                          </span>
+                        </div>
+                      )}
+
                       {/* Tag de Mensagem Transacional da Agenda */}
                       {msg.origin && msg.origin !== 'attendant' && (
                         <div

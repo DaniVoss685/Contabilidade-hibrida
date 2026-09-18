@@ -284,6 +284,7 @@ export interface WhatsAppReminderSettings {
   reschedule_template: string;
   reschedule_enabled?: boolean;
   cancellation_enabled?: boolean;
+  agent_identification_policy?: 'AUTOMATICO' | 'SEMPRE' | 'NUNCA';
   updated_at: string;
 }
 

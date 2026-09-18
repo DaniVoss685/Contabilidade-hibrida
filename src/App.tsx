@@ -34,6 +34,7 @@ import { GlobalPatientSearchModal } from './components/Navigation/GlobalPatientS
 import { getEffectivePayableStatus, getEffectiveReceivableStatus } from './lib/statusHelper';
 import { Patient, ConsultingPortfolioData, ConsultingClientSummary, ConsultingNavTab } from './types';
 import { ShieldAlert, ShieldCheck, ArrowLeft } from 'lucide-react';
+import { canAccessTab } from './lib/permissions';
 import { ConsultingHeader } from './components/Consulting/ConsultingHeader';
 import { ConsultingSidebar } from './components/Consulting/ConsultingSidebar';
 import { ConsultingPortfolioDashboard } from './components/Consulting/ConsultingPortfolioDashboard';
@@ -240,6 +241,22 @@ function AppContent() {
   const [initialWhatsAppPatientId, setInitialWhatsAppPatientId] = useState<string | undefined>(undefined);
   const [initialAgendaDate, setInitialAgendaDate] = useState<string | undefined>(undefined);
   const [initialAgendaPatientId, setInitialAgendaPatientId] = useState<string | undefined>(undefined);
+
+  // Redirecionamento defensivo se o perfil do usuário não tiver permissão para a aba atual
+  useEffect(() => {
+    const role = currentSession?.user?.role;
+    if (role && !canAccessTab(role, currentTab, undefined, currentSession?.user?.isPrimary)) {
+      if (canAccessTab(role, 'whatsapp', undefined, currentSession?.user?.isPrimary)) {
+        setCurrentTab('whatsapp');
+      } else if (canAccessTab(role, 'agenda', undefined, currentSession?.user?.isPrimary)) {
+        setCurrentTab('agenda');
+      } else if (canAccessTab(role, 'patients', undefined, currentSession?.user?.isPrimary)) {
+        setCurrentTab('patients');
+      } else if (canAccessTab(role, 'settings', undefined, currentSession?.user?.isPrimary)) {
+        setCurrentTab('settings');
+      }
+    }
+  }, [currentSession?.user?.role, currentTab]);
 
   useEffect(() => {
     if (!activeTenantId) return;
@@ -730,6 +747,8 @@ function AppContent() {
           onLogout={handleLogout}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={setIsSidebarCollapsed}
+          userRole={currentSession?.user?.role}
+          userIsPrimary={currentSession?.user?.isPrimary}
         />
 
         {/* Main Content Area */}

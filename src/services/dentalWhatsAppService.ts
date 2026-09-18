@@ -21,6 +21,7 @@ import {
 } from '../types/whatsapp';
 import { normalizeBrazilianNumber, isValidBrazilianPhone, formatPhoneDisplay } from '../lib/phoneUtils';
 import { formatDateBr } from '../lib/masks';
+import { renderAppointmentTemplate } from '../lib/appointmentDateUtils';
 import { db } from '../lib/db';
 async function extractEdgeFunctionError(error: any): Promise<string> {
   if (!error) return 'Erro desconhecido.';
@@ -517,6 +518,91 @@ export const DentalWhatsAppService = {
   },
 
   /**
+   * Obtém a política de identificação do atendente configurada para o tenant (AUTOMATICO, SEMPRE, NUNCA).
+   */
+  async getAgentIdentificationPolicy(tenantId: string): Promise<'AUTOMATICO' | 'SEMPRE' | 'NUNCA'> {
+    if (!tenantId) return 'AUTOMATICO';
+    try {
+      const { data } = await supabase
+        .from('df_wa_reminder_settings')
+        .select('agent_identification_policy')
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+
+      return (data?.agent_identification_policy as any) || 'AUTOMATICO';
+    } catch {
+      return 'AUTOMATICO';
+    }
+  },
+
+  /**
+   * Atualiza a política de identificação do atendente para o tenant.
+   */
+  async updateAgentIdentificationPolicy(
+    tenantId: string,
+    policy: 'AUTOMATICO' | 'SEMPRE' | 'NUNCA'
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!tenantId) return { success: false, error: 'tenantId ausente' };
+    const { error } = await supabase
+      .from('df_wa_reminder_settings')
+      .update({ agent_identification_policy: policy, updated_at: new Date().toISOString() })
+      .eq('tenant_id', tenantId);
+
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+  },
+
+  /**
+   * Aplica a assinatura externa do atendente à mensagem enviada para a Evolution API.
+   * Não altera o texto interno salvo no banco (df_wa_messages.content).
+   */
+  async formatOutboundTextWithAgent(params: {
+    tenantId: string;
+    senderId?: string;
+    text: string;
+  }): Promise<string> {
+    const { tenantId, senderId, text } = params;
+    if (!text || !senderId || !tenantId) return text;
+
+    try {
+      const policy = await this.getAgentIdentificationPolicy(tenantId);
+      if (policy === 'NUNCA') return text;
+
+      // Buscar nome do atendente
+      const { data: userRow } = await supabase
+        .from('df_users')
+        .select('name, role, is_active')
+        .eq('id', senderId)
+        .eq('clinic_id', tenantId)
+        .maybeSingle();
+
+      if (!userRow?.name) return text;
+      const firstName = userRow.name.trim().split(' ')[0] || userRow.name.trim();
+
+      if (policy === 'SEMPRE') {
+        return `${firstName}:\n${text}`;
+      }
+
+      // Se AUTOMATICO: verificar se há 2 ou mais atendentes ativos com permissão de WhatsApp
+      const staffList = await this.getStaff(tenantId);
+      const activeAttendants = staffList.filter(
+        (u) =>
+          u.role &&
+          ['OWNER', 'ADMIN', 'RECEPTION', 'ASSISTANT', 'DENTIST', 'PROFESSIONAL', 'SUPER_ADMIN'].includes(u.role)
+      );
+
+      if (activeAttendants.length >= 2) {
+        return `${firstName}:\n${text}`;
+      }
+
+      return text;
+    } catch (e) {
+      console.warn('[DentalWhatsAppService] Aviso ao formatar nome do atendente:', e);
+      return text;
+    }
+  },
+
+  /**
    * Envia mensagem de texto via Evolution API e persiste localmente.
    */
   async sendMessage(params: {
@@ -561,6 +647,13 @@ export const DentalWhatsAppService = {
       }
     }
 
+    // Formatar texto de saída para o WhatsApp do paciente de acordo com a política de identificação
+    const outboundText = await this.formatOutboundTextWithAgent({
+      tenantId,
+      senderId,
+      text: content.trim(),
+    });
+
     // Envio server-side seguro via Edge Function dental-whatsapp-api (a api_key nunca chega ao frontend)
     try {
       const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke('dental-whatsapp-api', {
@@ -569,7 +662,7 @@ export const DentalWhatsAppService = {
           tenant_id: tenantId,
           conversation_id: conversationId,
           recipient_number: recipientNumber,
-          text: content.trim(),
+          text: outboundText,
           quoted: quotedPayload,
         },
       });
@@ -668,6 +761,15 @@ export const DentalWhatsAppService = {
       }
       const b64 = btoa(binary);
 
+      let outboundCaption = caption;
+      if (caption && caption.trim()) {
+        outboundCaption = await this.formatOutboundTextWithAgent({
+          tenantId,
+          senderId,
+          text: caption.trim(),
+        });
+      }
+
       const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke('dental-whatsapp-api', {
         body: {
           action: 'send_media',
@@ -678,7 +780,7 @@ export const DentalWhatsAppService = {
           base64: b64,
           mime_type: file.type || 'application/octet-stream',
           file_name: file.name,
-          caption,
+          caption: outboundCaption,
         },
       });
 
@@ -2527,9 +2629,9 @@ export const DentalWhatsAppService = {
       reschedule_enabled: true,
       cancellation_enabled: true,
       confirmation_template:
-        'Olá, {{paciente}}! Sua consulta está agendada para {{data}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
+        'Olá, {{paciente}}! Sua consulta está agendada para {{quando}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
       reminder_template:
-        'Olá, {{paciente}}! Lembramos da sua consulta marcada para o dia {{data}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
+        'Olá, {{paciente}}! Lembramos que sua consulta está marcada para {{quando}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
       cancellation_template:
         'Olá, {{paciente}}! Informamos que sua consulta do dia {{data}} às {{hora}} foi cancelada. Se desejar reagendar para outra data, estamos à disposição!',
       reschedule_template:
@@ -2701,13 +2803,20 @@ export const DentalWhatsAppService = {
         template = settings.reschedule_template;
       }
 
-      text = template
-        .replace(/\{\{paciente\}\}/gi, patientFirstName)
-        .replace(/\{\{clinica\}\}/gi, orgName)
-        .replace(/\{\{data\}\}/gi, formattedDate)
-        .replace(/\{\{hora\}\}/gi, appointment.startTime)
-        .replace(/\{\{profissional\}\}/gi, professional)
-        .replace(/\{\{procedimento\}\}/gi, procedure);
+      text = renderAppointmentTemplate(
+        template,
+        {
+          paciente: patientFirstName,
+          appointmentDate: appointment.date,
+          data: formattedDate,
+          hora: appointment.startTime,
+          profissional: professional,
+          procedimento: procedure,
+          clinica: orgName,
+        },
+        'America/Sao_Paulo',
+        new Date()
+      );
     }
 
     // 6. Mapear origin da mensagem

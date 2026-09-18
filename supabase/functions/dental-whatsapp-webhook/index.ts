@@ -619,14 +619,13 @@ Deno.serve(async (req) => {
           .maybeSingle();
 
         if (activeConv) {
+          // Se já existe atendimento humano ativo, associa à conversa existente sem fechá-la
           conversationId = activeConv.id;
-        } else if (!isTransactionalReminder) {
-          // Requisito 27 / Regra 30: Mensagem transacional de lembrete/confirmação NUNCA cria atendimento artificial
-          const initialStatus = isFromMe
-            ? 'em_atendimento'
-            : isConfirmedAction
-            ? 'finalizado' // Concluído sem exigir operador na fila
-            : 'na_fila';
+        } else if (!isTransactionalReminder && !isConfirmedAction) {
+          // REGRA DEFINITIVA: Nem disparo automático nem confirmação de agendamento do paciente
+          // criam df_wa_conversations quando não existe atendimento humano ativo.
+          // Somente mensagens livres que demandem suporte humano criam atendimento na fila.
+          const initialStatus = isFromMe ? 'em_atendimento' : 'na_fila';
 
           const newConvId = `cnv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
           const { data: createdConv, error: convErr } = await supabase
@@ -636,8 +635,6 @@ Deno.serve(async (req) => {
               tenant_id: tenantId,
               contact_id: contactId,
               status: initialStatus,
-              finalized_at: isConfirmedAction ? new Date().toISOString() : null,
-              finalization_reason: isConfirmedAction ? 'Confirmação automática de consulta' : null,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             })

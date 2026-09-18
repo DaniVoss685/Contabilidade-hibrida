@@ -20,6 +20,7 @@ interface WhatsAppMessageTemplatesTabProps {
 
 const AVAILABLE_VARIABLES = [
   { tag: '{{paciente}}', label: 'Nome do Paciente', example: 'Daniel Arantes' },
+  { tag: '{{quando}}', label: 'Quando (hoje, amanhã ou data)', example: 'amanhã, 25/10/2026' },
   { tag: '{{data}}', label: 'Data da Consulta', example: '25/10/2026' },
   { tag: '{{hora}}', label: 'Horário', example: '14:30' },
   { tag: '{{profissional}}', label: 'Profissional', example: 'Dr. Carlos Eduardo Mendes' },
@@ -29,9 +30,9 @@ const AVAILABLE_VARIABLES = [
 
 const DEFAULT_TEMPLATES = {
   confirmation:
-    'Olá, {{paciente}}! Sua consulta está agendada para {{data}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
+    'Olá, {{paciente}}! Sua consulta está agendada para {{quando}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
   reminder:
-    'Olá, {{paciente}}! Lembramos da sua consulta marcada para o dia {{data}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
+    'Olá, {{paciente}}! Lembramos que sua consulta está marcada para {{quando}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
   reschedule:
     'Olá, {{paciente}}! Sua consulta foi remarcada para o dia {{data}} às {{hora}} com {{profissional}}. Estamos te esperando 😊',
   cancellation:
@@ -61,6 +62,9 @@ export const WhatsAppMessageTemplatesTab: React.FC<WhatsAppMessageTemplatesTabPr
   const [cancellationEnabled, setCancellationEnabled] = useState<boolean>(true);
   const [cancellationTemplate, setCancellationTemplate] = useState<string>('');
 
+  // Identificação do Atendente
+  const [agentIdentificationPolicy, setAgentIdentificationPolicy] = useState<'AUTOMATICO' | 'SEMPRE' | 'NUNCA'>('AUTOMATICO');
+
   // Refs para inserção de variáveis na posição do cursor
   const confirmationRef = useRef<HTMLTextAreaElement | null>(null);
   const reminderRef = useRef<HTMLTextAreaElement | null>(null);
@@ -88,6 +92,8 @@ export const WhatsAppMessageTemplatesTab: React.FC<WhatsAppMessageTemplatesTabPr
 
       setCancellationEnabled(s.cancellation_enabled ?? true);
       setCancellationTemplate(s.cancellation_template || DEFAULT_TEMPLATES.cancellation);
+
+      setAgentIdentificationPolicy(s.agent_identification_policy || 'AUTOMATICO');
     } catch (e: any) {
       toast.error('Erro ao carregar modelos de mensagem.');
     } finally {
@@ -156,6 +162,7 @@ export const WhatsAppMessageTemplatesTab: React.FC<WhatsAppMessageTemplatesTabPr
         reschedule_template: rescheduleTemplate.trim(),
         cancellation_enabled: cancellationEnabled,
         cancellation_template: cancellationTemplate.trim(),
+        agent_identification_policy: agentIdentificationPolicy,
       };
 
       const res = await DentalWhatsAppService.saveReminderSettings(payload);
@@ -239,6 +246,75 @@ export const WhatsAppMessageTemplatesTab: React.FC<WhatsAppMessageTemplatesTabPr
         <p className="text-emerald-800 text-[11px] leading-relaxed">
           Clique nos botões de variáveis abaixo de cada campo para inseri-las automaticamente na posição do cursor. Ao disparar, o sistema preencherá com as informações reais da consulta.
         </p>
+      </div>
+
+      {/* CARD 0: IDENTIFICAÇÃO DO ATENDENTE NAS MENSAGENS */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-slate-900">Identificação do Atendente nas Mensagens</h4>
+              <p className="text-xs text-slate-500">
+                Define se as mensagens enviadas pela equipe exibem o nome do atendente no WhatsApp do paciente (ex: <code className="bg-slate-100 px-1 py-0.5 rounded text-[11px] font-mono">Luana:\nBom dia!</code>).
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+          <button
+            type="button"
+            onClick={() => setAgentIdentificationPolicy('AUTOMATICO')}
+            className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+              agentIdentificationPolicy === 'AUTOMATICO'
+                ? 'bg-purple-50/80 border-purple-300 ring-2 ring-purple-500/20 shadow-xs'
+                : 'bg-slate-50/60 border-slate-200 hover:bg-slate-100/80'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-bold text-xs text-slate-900">Automático</span>
+              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">
+                Recomendado
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Prefixa o nome do atendente somente quando a clínica tiver 2 ou mais membros ativos com acesso ao WhatsApp.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setAgentIdentificationPolicy('SEMPRE')}
+            className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+              agentIdentificationPolicy === 'SEMPRE'
+                ? 'bg-purple-50/80 border-purple-300 ring-2 ring-purple-500/20 shadow-xs'
+                : 'bg-slate-50/60 border-slate-200 hover:bg-slate-100/80'
+            }`}
+          >
+            <div className="font-bold text-xs text-slate-900 mb-1">Sempre</div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Sempre inclui o nome do atendente no início de qualquer mensagem humana enviada pela clínica.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setAgentIdentificationPolicy('NUNCA')}
+            className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+              agentIdentificationPolicy === 'NUNCA'
+                ? 'bg-purple-50/80 border-purple-300 ring-2 ring-purple-500/20 shadow-xs'
+                : 'bg-slate-50/60 border-slate-200 hover:bg-slate-100/80'
+            }`}
+          >
+            <div className="font-bold text-xs text-slate-900 mb-1">Nunca</div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              As mensagens saem apenas com o texto limpo, sem identificação do nome do atendente no WhatsApp externo.
+            </p>
+          </button>
+        </div>
       </div>
 
       {/* CARD 1: CONFIRMAÇÃO DE AGENDAMENTO */}
