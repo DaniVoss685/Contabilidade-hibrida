@@ -1,0 +1,717 @@
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  MessageSquare,
+  Columns3,
+  RefreshCw,
+  Plus,
+  Settings,
+  AlertCircle,
+  Inbox,
+} from 'lucide-react';
+import {
+  WhatsAppConversation,
+  WhatsAppContact,
+  WhatsAppChatStatus,
+  WhatsAppMessage,
+} from '../../types/whatsapp';
+import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
+import { supabase } from '../../lib/supabaseClient';
+import { WhatsAppSidebar, WhatsAppTab } from './WhatsAppSidebar';
+import { WhatsAppChatArea } from './WhatsAppChatArea';
+import { WhatsAppContextDrawer } from './WhatsAppContextDrawer';
+import { WhatsAppKanban } from './WhatsAppKanban';
+import { NewContactModal } from './NewContactModal';
+import { EditContactModal } from './EditContactModal';
+import { InstanceConfigModal } from './InstanceConfigModal';
+import { AppointmentModal } from '../Appointments/AppointmentModal';
+import { AppointmentDetailsModal } from '../Appointments/AppointmentDetailsModal';
+import { Appointment } from '../../types';
+
+export interface RealtimeMessageEvent {
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE';
+  message: WhatsAppMessage;
+  timestamp: number;
+}
+
+interface WhatsAppMainViewProps {
+  tenantId: string;
+  currentUserId?: string;
+  currentUserName?: string;
+  onNavigateToAgenda?: (date?: string, patientId?: string) => void;
+  initialPatientId?: string;
+}
+
+export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
+  tenantId,
+  currentUserId,
+  currentUserName,
+  onNavigateToAgenda,
+  initialPatientId,
+}) => {
+  const [conversations, setConversations] = useState<WhatsAppConversation[]>([]);
+  const [history, setHistory] = useState<WhatsAppConversation[]>([]);
+  const [contacts, setContacts] = useState<WhatsAppContact[]>([]);
+  const [selectedConversation, setSelectedConversation] = useState<WhatsAppConversation | null>(null);
+  const selectedConversationRef = useRef<WhatsAppConversation | null>(null);
+  selectedConversationRef.current = selectedConversation;
+
+  const [activeChatRealtimeEvent, setActiveChatRealtimeEvent] = useState<RealtimeMessageEvent | null>(null);
+  const [activeTab, setActiveTab] = useState<WhatsAppTab>('em_atendimento');
+  const [viewMode, setViewMode] = useState<'chat' | 'kanban'>('chat');
+  const [showContext, setShowContext] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // Modais
+  const [isNewContactOpen, setIsNewContactOpen] = useState(false);
+  const [isEditContactOpen, setIsEditContactOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  // Modais de Integração com a Agenda
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [schedulePatientId, setSchedulePatientId] = useState<string | undefined>(undefined);
+  const [scheduleRescheduleFrom, setScheduleRescheduleFrom] = useState<Appointment | null>(null);
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  const [detailsAppointment, setDetailsAppointment] = useState<Appointment | null>(null);
+
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Carregar conversas
+  const loadConversations = async (showSpinner = true) => {
+    if (!tenantId) return;
+    if (showSpinner) setLoading(true);
+
+    try {
+      const [convs, hist, ctcs] = await Promise.all([
+        DentalWhatsAppService.getConversations(tenantId),
+        DentalWhatsAppService.getHistory(tenantId),
+        DentalWhatsAppService.getContacts(tenantId),
+      ]);
+
+      setConversations(convs);
+      setHistory(hist);
+      setContacts(ctcs);
+
+      // Sincronizar conversa selecionada com dados atualizados
+      if (selectedConversationRef.current) {
+        const found = [...convs, ...hist].find(
+          (c) => c.id === selectedConversationRef.current?.id
+        );
+        if (found) {
+          setSelectedConversation(found);
+        }
+      }
+    } catch (err) {
+      console.warn('[WhatsAppMainView] Erro ao carregar dados:', err);
+    } finally {
+      if (showSpinner) setLoading(false);
+    }
+  };
+
+  const triggerDebouncedLoad = (delay = 400) => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      loadConversations(false);
+    }, delay);
+  };
+
+  useEffect(() => {
+    loadConversations(true);
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [tenantId]);
+
+  // Canal Único Realtime por Tenant (Sem duplicação de listeners e com atualização instantânea)
+  useEffect(() => {
+    if (!tenantId) return;
+
+    const hubChannel = supabase
+      .channel(`dental_wa_hub_${tenantId}`)
+      // 1. MENSAGENS RECEBIDAS OU ENVIADAS (INSERT)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'df_wa_messages',
+          filter: `tenant_id=eq.${tenantId}`,
+        },
+        (payload) => {
+          const newMsg = payload.new as any;
+          if (!newMsg || !newMsg.conversation_id) return;
+
+          // Determinar preview amigável
+          let previewText = newMsg.content;
+          if (!previewText || !previewText.trim()) {
+            switch (newMsg.msg_type) {
+              case 'audio': previewText = '🎵 Áudio'; break;
+              case 'image': previewText = '📷 Imagem'; break;
+              case 'video': previewText = '🎥 Vídeo'; break;
+              case 'document': previewText = '📄 Documento'; break;
+              case 'call': previewText = '📞 Chamada'; break;
+              case 'sticker': previewText = '🏷️ Figurinha'; break;
+              default: previewText = 'Mensagem';
+            }
+          }
+
+          // Atualizar conversa instantaneamente na lista e subir para o topo
+          setConversations((prevConvs) => {
+            const index = prevConvs.findIndex((c) => c.id === newMsg.conversation_id);
+            if (index === -1) {
+              // Conversa nova, recarregar lista completa
+              triggerDebouncedLoad(100);
+              return prevConvs;
+            }
+
+            const targetConv = prevConvs[index];
+            const isCurrentlySelected = selectedConversationRef.current?.id === newMsg.conversation_id;
+
+            const updatedConv: WhatsAppConversation = {
+              ...targetConv,
+              last_message_content: previewText,
+              last_message_at: newMsg.created_at,
+              last_message_from_me: Boolean(newMsg.from_me),
+              unread_count: isCurrentlySelected || newMsg.from_me
+                ? 0
+                : (targetConv.unread_count || 0) + 1,
+              updated_at: new Date().toISOString(),
+            };
+
+            const otherConvs = prevConvs.filter((c) => c.id !== newMsg.conversation_id);
+            const newList = [updatedConv, ...otherConvs];
+
+            // Ordenação estrita por last_message_at DESC
+            newList.sort((a, b) => {
+              const timeA = new Date(a.last_message_at || a.created_at).getTime();
+              const timeB = new Date(b.last_message_at || b.created_at).getTime();
+              return timeB - timeA;
+            });
+
+            return newList;
+          });
+
+          const currentSel = selectedConversationRef.current;
+          const isCurrentSelectedTarget =
+            currentSel?.id === newMsg.conversation_id ||
+            (currentSel?.contact_id &&
+              (newMsg.contact_id === currentSel.contact_id ||
+                conversations.find((c) => c.id === newMsg.conversation_id)?.contact_id === currentSel.contact_id));
+
+          // Atualizar selectedConversation e repassar mensagem imediatamente para o chat aberto se for a conversa/contato ativo
+          if (isCurrentSelectedTarget) {
+            setSelectedConversation((prev) => {
+              if (!prev) return null;
+              return {
+                ...prev,
+                last_message_content: previewText,
+                last_message_at: newMsg.created_at,
+                last_message_from_me: Boolean(newMsg.from_me),
+              };
+            });
+
+            // Dispara evento imediato para a Timeline do chat aberto (zero delay, sem reload)
+            setActiveChatRealtimeEvent({
+              eventType: 'INSERT',
+              message: newMsg as WhatsAppMessage,
+              timestamp: Date.now(),
+            });
+          }
+
+          // Sincronização em segundo plano suave
+          triggerDebouncedLoad(1200);
+        }
+      )
+      // 1.1 MENSAGENS ATUALIZADAS (UPDATE - ex: status, reação, mídia resolvida)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'df_wa_messages',
+          filter: `tenant_id=eq.${tenantId}`,
+        },
+        (payload) => {
+          const updatedMsg = payload.new as WhatsAppMessage;
+          if (!updatedMsg) return;
+
+          const currentSel = selectedConversationRef.current;
+          const isCurrentSelectedTarget =
+            currentSel?.id === updatedMsg.conversation_id ||
+            (currentSel?.contact_id &&
+              (updatedMsg as any).contact_id === currentSel.contact_id);
+
+          // Se pertencer à conversa/contato aberto, repassar para o chat aberto
+          if (isCurrentSelectedTarget) {
+            setActiveChatRealtimeEvent({
+              eventType: 'UPDATE',
+              message: updatedMsg,
+              timestamp: Date.now(),
+            });
+          }
+        }
+      )
+      // 1.2 MENSAGENS EXCLUÍDAS (DELETE)
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'df_wa_messages',
+          filter: `tenant_id=eq.${tenantId}`,
+        },
+        (payload) => {
+          const oldId = (payload.old as any)?.id;
+          if (oldId) {
+            setActiveChatRealtimeEvent({
+              eventType: 'DELETE',
+              message: { id: oldId, conversation_id: selectedConversationRef.current?.id } as any,
+              timestamp: Date.now(),
+            });
+          }
+        }
+      )
+      // 2. STATUS DE CONVERSAS (UPDATE/INSERT/DELETE)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'df_wa_conversations',
+          filter: `tenant_id=eq.${tenantId}`,
+        },
+        (payload) => {
+          if (payload.eventType === 'UPDATE') {
+            const updatedRow = payload.new as any;
+            const isFinished = updatedRow.status === 'finalizado' || updatedRow.status === 'arquivado';
+
+            // Movimentação automática de status entre abas em Realtime sem reload
+            if (isFinished) {
+              setConversations((prev) => prev.filter((c) => c.id !== updatedRow.id));
+              setHistory((prev) => {
+                const exists = prev.some((c) => c.id === updatedRow.id);
+                if (exists) {
+                  return prev.map((c) => (c.id === updatedRow.id ? { ...c, ...updatedRow } : c));
+                }
+                const foundInConv = conversations.find((c) => c.id === updatedRow.id);
+                return foundInConv ? [{ ...foundInConv, ...updatedRow }, ...prev] : prev;
+              });
+            } else {
+              setHistory((prev) => prev.filter((c) => c.id !== updatedRow.id));
+              setConversations((prevConvs) => {
+                const index = prevConvs.findIndex((c) => c.id === updatedRow.id);
+                if (index >= 0) {
+                  const updated = prevConvs.map((c) => (c.id === updatedRow.id ? { ...c, ...updatedRow } : c));
+                  updated.sort((a, b) => {
+                    const timeA = new Date(a.last_message_at || a.created_at).getTime();
+                    const timeB = new Date(b.last_message_at || b.created_at).getTime();
+                    return timeB - timeA;
+                  });
+                  return updated;
+                }
+                const foundInHist = history.find((c) => c.id === updatedRow.id);
+                if (foundInHist) {
+                  const updated = [{ ...foundInHist, ...updatedRow }, ...prevConvs];
+                  updated.sort((a, b) => {
+                    const timeA = new Date(a.last_message_at || a.created_at).getTime();
+                    const timeB = new Date(b.last_message_at || b.created_at).getTime();
+                    return timeB - timeA;
+                  });
+                  return updated;
+                }
+                return prevConvs;
+              });
+            }
+
+            // Preservar a conversa selecionada aberta com status atualizado
+            if (selectedConversationRef.current?.id === updatedRow.id) {
+              setSelectedConversation((prev) => {
+                if (!prev) return null;
+                return {
+                  ...prev,
+                  status: updatedRow.status,
+                  assigned_to: updatedRow.assigned_to,
+                  unread_count: updatedRow.unread_count,
+                };
+              });
+            }
+          } else {
+            triggerDebouncedLoad(200);
+          }
+        }
+      )
+      // 3. CONTATOS (INSERT/UPDATE)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'df_wa_contacts',
+          filter: `tenant_id=eq.${tenantId}`,
+        },
+        () => {
+          triggerDebouncedLoad(300);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(hubChannel);
+    };
+  }, [tenantId]);
+
+  // Navegação direta vinda da Agenda ou Pacientes para abrir conversa do paciente
+  useEffect(() => {
+    if (initialPatientId && tenantId) {
+      DentalWhatsAppService.getOrCreateContactForPatient(initialPatientId, tenantId).then((ctc) => {
+        if (ctc) {
+          handleSelectContact(ctc);
+        }
+      });
+    }
+  }, [initialPatientId, tenantId]);
+
+  const isProcessingContactRef = useRef(false);
+
+  // Ao selecionar um contato na aba Contatos (Navegação Pura - Modo Consulta sem criar atendimento no banco)
+  const handleSelectContact = async (contact: WhatsAppContact) => {
+    if (!contact?.id || isProcessingContactRef.current) return;
+    isProcessingContactRef.current = true;
+
+    try {
+      // 1. Verificar se já existe conversa ativa nas abas ativas em memória
+      let activeConv = conversations.find(
+        (c) =>
+          c.contact_id === contact.id &&
+          c.status !== 'finalizado' &&
+          c.status !== 'arquivado'
+      );
+
+      // 2. Se não estiver em memória, verificar no banco se há atendimento ativo para o contato
+      if (!activeConv) {
+        const dbActive = await DentalWhatsAppService.getActiveConversationByContact(
+          contact.id,
+          tenantId
+        );
+        if (dbActive) {
+          activeConv = dbActive;
+        }
+      }
+
+      if (activeConv) {
+        // Possui atendimento em andamento: abre a conversa ativa
+        setSelectedConversation(activeConv);
+        setViewMode('chat');
+        return;
+      }
+
+      // 3. Se não houver atendimento ativo, procurar histórico mais recente do contato
+      let histConv = history.find((c) => c.contact_id === contact.id);
+
+      if (!histConv) {
+        // Buscar no banco se existe alguma conversa finalizada para obter metadados
+        const { data: dbHist } = await supabase
+          .from('df_wa_conversations')
+          .select(`
+            *,
+            contact:df_wa_contacts(*, patient:df_patients(id, name, cpf, phone, email)),
+            assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role)
+          `)
+          .eq('tenant_id', tenantId)
+          .eq('contact_id', contact.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (dbHist) {
+          histConv = dbHist as any as WhatsAppConversation;
+        }
+      }
+
+      if (histConv) {
+        // Abre o histórico em modo somente consulta (sem criar nada no banco!)
+        setSelectedConversation(histConv);
+        setViewMode('chat');
+        return;
+      }
+
+      // 4. Se for contato novo sem nenhum atendimento prévio, cria conversa de consulta em memória
+      const consultConv: WhatsAppConversation = {
+        id: `consult_${contact.id}`,
+        tenant_id: tenantId,
+        contact_id: contact.id,
+        contact: contact,
+        status: 'finalizado',
+        unread_count: 0,
+        priority: 'media',
+        tags: [],
+        last_message_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      setSelectedConversation(consultConv);
+      setViewMode('chat');
+    } catch (err: any) {
+      console.error('[WhatsAppMainView] Erro ao abrir contato em modo consulta:', err.message);
+    } finally {
+      setTimeout(() => {
+        isProcessingContactRef.current = false;
+      }, 300);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full flex-1 min-h-0 bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+      {/* Top View Bar (Alternador Chat vs Kanban) */}
+      <div className="flex items-center justify-between px-4 sm:px-6 py-2.5 bg-white border-b border-slate-200/80 z-10 shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-700">
+            <MessageSquare className="w-4 h-4" />
+          </div>
+          <div>
+            <h1 className="text-sm font-bold text-slate-800">Atendimento & WhatsApp</h1>
+          </div>
+        </div>
+
+        {/* View Mode Toggle */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200">
+            <button
+              onClick={() => setViewMode('chat')}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer ${
+                viewMode === 'chat'
+                  ? 'bg-white text-emerald-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>Chat</span>
+            </button>
+            <button
+              onClick={() => setViewMode('kanban')}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer ${
+                viewMode === 'kanban'
+                  ? 'bg-white text-emerald-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Columns3 className="w-3.5 h-3.5" />
+              <span>Kanban</span>
+            </button>
+          </div>
+
+          <button
+            onClick={() => loadConversations(false)}
+            className="p-1.5 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+            title="Atualizar lista"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {viewMode === 'kanban' ? (
+          /* MODO KANBAN */
+          <WhatsAppKanban
+            conversations={conversations}
+            history={history}
+            tenantId={tenantId}
+            currentUserId={currentUserId}
+            onSelectConversation={(conv) => {
+              setSelectedConversation(conv);
+              setViewMode('chat');
+            }}
+            onRefresh={() => loadConversations(false)}
+            onBackToChat={() => setViewMode('chat')}
+          />
+        ) : (
+          /* MODO CHAT TRADICIONAL */
+          <>
+            {/* Sidebar com Lista de Conversas */}
+            <div
+              className={`${
+                selectedConversation ? 'hidden lg:flex' : 'flex'
+              } w-full lg:w-84 xl:w-96 shrink-0 h-full min-h-0 overflow-hidden`}
+            >
+              <WhatsAppSidebar
+                conversations={conversations}
+                history={history}
+                contacts={contacts}
+                selectedConversationId={selectedConversation?.id}
+                onSelectConversation={(conv) => {
+                  setSelectedConversation(conv);
+                }}
+                onSelectContact={handleSelectContact}
+                activeTab={activeTab}
+                onChangeTab={setActiveTab}
+                onOpenNewContact={() => setIsNewContactOpen(true)}
+                onOpenSettings={() => setIsSettingsOpen(true)}
+                currentUserId={currentUserId}
+                loading={loading}
+              />
+            </div>
+
+            {/* Área Central de Conversa ou Estado Vazio */}
+            {selectedConversation ? (
+              <div className="flex-1 min-h-0 flex h-full overflow-hidden">
+                <WhatsAppChatArea
+                  conversation={selectedConversation}
+                  tenantId={tenantId}
+                  currentUserId={currentUserId}
+                  currentUserName={currentUserName}
+                  onBackMobile={() => setSelectedConversation(null)}
+                  onToggleContext={() => setShowContext(!showContext)}
+                  showContext={showContext}
+                  onConversationUpdated={() => loadConversations(false)}
+                  onSelectConversation={(conv) => setSelectedConversation(conv)}
+                  realtimeMessageEvent={activeChatRealtimeEvent}
+                />
+
+                {/* Gaveta de Contexto do Atendimento */}
+                <WhatsAppContextDrawer
+                  isOpen={showContext}
+                  onClose={() => setShowContext(false)}
+                  conversation={selectedConversation}
+                  timelineItems={[]}
+                  tenantId={tenantId}
+                  currentUserId={currentUserId}
+                  onOpenEditContact={() => setIsEditContactOpen(true)}
+                  onNoteAdded={() => loadConversations(false)}
+                  onNavigateToAgenda={onNavigateToAgenda}
+                  onOpenScheduleModal={(patId) => {
+                    setSchedulePatientId(patId);
+                    setScheduleRescheduleFrom(null);
+                    setScheduleModalOpen(true);
+                  }}
+                  onOpenAppointmentDetails={(app) => {
+                    setDetailsAppointment(app);
+                    setDetailsModalOpen(true);
+                  }}
+                  onRescheduleAppointment={(app) => {
+                    setScheduleRescheduleFrom(app);
+                    setSchedulePatientId(app.patientId);
+                    setScheduleModalOpen(true);
+                  }}
+                  onTimelineRefresh={() => loadConversations(false)}
+                />
+              </div>
+            ) : (
+              /* Estado Vazio */
+              <div className="hidden lg:flex flex-1 flex-col items-center justify-center p-8 bg-slate-50/50 text-center">
+                <div className="w-16 h-16 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center mb-4 shadow-xs">
+                  <MessageSquare className="w-8 h-8" />
+                </div>
+                <h3 className="text-base font-bold text-slate-800 mb-1">Central de Atendimento</h3>
+                <p className="text-xs text-slate-500 max-w-sm mb-4">
+                  Selecione uma conversa ativa na barra lateral para continuar o atendimento.
+                </p>
+
+                <div className="flex flex-col gap-2 max-w-sm w-full mb-6 text-xs text-slate-600 bg-white p-3.5 rounded-xl border border-slate-200/80 shadow-2xs text-left">
+                  <div className="flex items-start gap-2">
+                    <span className="text-emerald-600 font-bold">•</span>
+                    <p>
+                      <strong>Para contatos já cadastrados:</strong> Acesse a aba <strong>Contatos</strong> ao lado e clique no contato para abrir ou iniciar um atendimento.
+                    </p>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="text-emerald-600 font-bold">•</span>
+                    <p>
+                      <strong>Para novo contato ou vínculo com paciente:</strong> Utilize o botão abaixo.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setIsNewContactOpen(true)}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  <Plus className="w-4 h-4" />
+                  Cadastrar Novo Contato / Vincular Paciente
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* MODAIS DA AGENDA DENTRO DO WHATSAPP */}
+      {scheduleModalOpen && (
+        <AppointmentModal
+          isOpen={scheduleModalOpen}
+          onClose={() => {
+            setScheduleModalOpen(false);
+            setSchedulePatientId(undefined);
+            setScheduleRescheduleFrom(null);
+          }}
+          initialPatientId={schedulePatientId}
+          rescheduleFromAppointment={scheduleRescheduleFrom}
+          activeTenantId={tenantId}
+          onSaved={(_saved) => {
+            loadConversations(false);
+          }}
+        />
+      )}
+
+      {detailsModalOpen && detailsAppointment && (
+        <AppointmentDetailsModal
+          isOpen={detailsModalOpen}
+          onClose={() => {
+            setDetailsModalOpen(false);
+            setDetailsAppointment(null);
+          }}
+          appointment={detailsAppointment}
+          activeTenantId={tenantId}
+          onEdit={(_app) => {
+            // Em caso de edição
+          }}
+          onReschedule={(app) => {
+            setDetailsModalOpen(false);
+            setScheduleRescheduleFrom(app);
+            setSchedulePatientId(app.patientId);
+            setScheduleModalOpen(true);
+          }}
+          onStatusChanged={() => {
+            loadConversations(false);
+          }}
+        />
+      )}
+
+      {/* MODAL NOVO CONTATO */}
+      <NewContactModal
+        isOpen={isNewContactOpen}
+        onClose={() => setIsNewContactOpen(false)}
+        tenantId={tenantId}
+        onContactCreated={(contact, conversation) => {
+          loadConversations(false);
+          setSelectedConversation(conversation);
+          setViewMode('chat');
+        }}
+      />
+
+      {/* MODAL EDITAR CONTATO */}
+      {selectedConversation?.contact && (
+        <EditContactModal
+          isOpen={isEditContactOpen}
+          onClose={() => setIsEditContactOpen(false)}
+          contact={selectedConversation.contact}
+          tenantId={tenantId}
+          onUpdated={(updatedContact) => {
+            setSelectedConversation((prev) =>
+              prev ? { ...prev, contact: updatedContact } : null
+            );
+            loadConversations(false);
+          }}
+        />
+      )}
+
+      {/* MODAL CONFIGURAÇÃO EVOLUTION */}
+      <InstanceConfigModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        tenantId={tenantId}
+      />
+    </div>
+  );
+};

@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { X, Calendar, Clock, User, Stethoscope, FileText, Send, CheckCircle2, ArrowRight, AlertCircle } from 'lucide-react';
+import { X, Calendar, Clock, User, Stethoscope, FileText, Send, CheckCircle2, ArrowRight, AlertCircle, MessageCircle } from 'lucide-react';
 import { db } from '../../lib/db';
 import { Patient, DentalProcedure, Appointment, AppointmentStatus, AppointmentOrigin, Professional } from '../../types';
 import { PatientSearchSelect } from '../UI/PatientSearchSelect';
 import { DatePicker, TimePicker, CustomSelect, ConfirmDialog, useToast, CurrencyInput } from '../UI';
 
 import { formatDateBr } from '../../lib/masks';
+import { isValidBrazilianPhone, formatPhoneDisplay } from '../../lib/phoneUtils';
+import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 
 interface AppointmentModalProps {
   isOpen: boolean;
@@ -14,6 +16,8 @@ interface AppointmentModalProps {
   rescheduleFromAppointment?: Appointment | null;
   defaultDate?: string;
   defaultStartTime?: string;
+  initialPatientId?: string;
+  activeTenantId?: string;
   onSaved?: (appointment: Appointment) => void;
   onNavigateToProcedures?: () => void;
 }
@@ -72,10 +76,23 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
   rescheduleFromAppointment,
   defaultDate,
   defaultStartTime,
+  initialPatientId,
+  activeTenantId,
   onSaved,
   onNavigateToProcedures,
 }) => {
   const toast = useToast();
+
+  const effectiveTenantId = useMemo(() => {
+    const raw =
+      activeTenantId ||
+      appointmentToEdit?.tenantId ||
+      (appointmentToEdit as any)?.orgId ||
+      db.getOrg()?.id ||
+      '';
+    return DentalWhatsAppService.sanitizeTenantId(raw);
+  }, [activeTenantId, appointmentToEdit?.tenantId, (appointmentToEdit as any)?.orgId]);
+
   const [patients, setPatients] = useState<Patient[]>([]);
   const [procedures, setProcedures] = useState<DentalProcedure[]>([]);
   const [professionals, setProfessionals] = useState<Professional[]>([]);
@@ -103,6 +120,11 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+
+  // Estados da tela de sucesso pós-agendamento imediato
+  const [savedSuccessAppointment, setSavedSuccessAppointment] = useState<Appointment | null>(null);
+  const [isSendingWhatsApp, setIsSendingWhatsApp] = useState<boolean>(false);
+  const [whatsAppSentStatus, setWhatsAppSentStatus] = useState<'idle' | 'sent' | 'failed'>('idle');
 
   // Load resources
   useEffect(() => {
@@ -166,11 +188,16 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
   // Reset or populate clean state whenever modal opens or item to edit changes
   useEffect(() => {
     if (isOpen) {
+      setSavedSuccessAppointment(null);
+      setIsSendingWhatsApp(false);
+      setWhatsAppSentStatus('idle');
+
       if (appointmentToEdit) {
+        const freshPatient = db.getPatients().find((p) => p.id === appointmentToEdit.patientId);
         setSelectedPatientId(appointmentToEdit.patientId);
-        setPatientName(appointmentToEdit.patientName);
-        setPatientPhone(appointmentToEdit.patientPhone || '');
-        setPatientCpf(appointmentToEdit.patientCpf || '');
+        setPatientName(freshPatient?.name || appointmentToEdit.patientName);
+        setPatientPhone(freshPatient?.phone || appointmentToEdit.patientPhone || '');
+        setPatientCpf(freshPatient?.cpf || appointmentToEdit.patientCpf || '');
         setDate(appointmentToEdit.date);
         setStartTime(appointmentToEdit.startTime);
         setDurationMinutes(appointmentToEdit.durationMinutes);
@@ -190,19 +217,19 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         setSendWhatsappReminder(appointmentToEdit.sendWhatsappReminder ?? true);
         setDentistName(appointmentToEdit.dentistName);
       } else if (rescheduleFromAppointment) {
-        // Reagendamento após falta: reutiliza paciente, procedimento, profissional e duração
-        // NÃO reutiliza automaticamente data e horário para forçar nova escolha
+        // Reagendamento: sempre obtém telefone fresco do paciente e reseta para PENDENTE de confirmação
+        const freshPatient = db.getPatients().find((p) => p.id === rescheduleFromAppointment.patientId);
         setSelectedPatientId(rescheduleFromAppointment.patientId);
-        setPatientName(rescheduleFromAppointment.patientName);
-        setPatientPhone(rescheduleFromAppointment.patientPhone || '');
-        setPatientCpf(rescheduleFromAppointment.patientCpf || '');
+        setPatientName(freshPatient?.name || rescheduleFromAppointment.patientName);
+        setPatientPhone(freshPatient?.phone || rescheduleFromAppointment.patientPhone || '');
+        setPatientCpf(freshPatient?.cpf || rescheduleFromAppointment.patientCpf || '');
         setDate(defaultDate || '');
         setStartTime(defaultStartTime || '');
         setDurationMinutes(rescheduleFromAppointment.durationMinutes || 45);
         setEndTime('');
         setSelectedProcedureId(rescheduleFromAppointment.procedureId || '');
         setProcedureName(rescheduleFromAppointment.procedureName);
-        setStatus('CONFIRMADA');
+        setStatus('PENDENTE');
         setOrigin(rescheduleFromAppointment.origin || 'WHATSAPP');
         setNotes(
           rescheduleFromAppointment.notes
@@ -213,10 +240,13 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         setDentistName(rescheduleFromAppointment.dentistName);
       } else {
         // Clean initial state with intentional defaults
-        setSelectedPatientId('');
-        setPatientName('');
-        setPatientPhone('');
-        setPatientCpf('');
+        const initPatient = initialPatientId
+          ? db.getPatients().find((p) => p.id === initialPatientId)
+          : null;
+        setSelectedPatientId(initPatient ? initPatient.id : '');
+        setPatientName(initPatient ? initPatient.name : '');
+        setPatientPhone(initPatient ? initPatient.phone || '' : '');
+        setPatientCpf(initPatient ? initPatient.cpf || '' : '');
         setDate(defaultDate || new Date().toISOString().split('T')[0]);
         setStartTime(defaultStartTime || '09:00');
         setDurationMinutes(45);
@@ -233,8 +263,12 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
       }
       setErrors({});
       setShowDiscardConfirm(false);
+    } else {
+      setSavedSuccessAppointment(null);
+      setIsSendingWhatsApp(false);
+      setWhatsAppSentStatus('idle');
     }
-  }, [isOpen, appointmentToEdit, rescheduleFromAppointment, defaultDate, defaultStartTime]);
+  }, [isOpen, appointmentToEdit, rescheduleFromAppointment, defaultDate, defaultStartTime, initialPatientId]);
 
   // Check if form is modified compared to blank (unconditionally declared at top!)
   const isDirty = useMemo(() => {
@@ -411,12 +445,79 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
       if (onSaved) {
         onSaved(savedAppointment);
       }
-      onClose();
+
+      // Se for edição existente, fecha normalmente
+      if (appointmentToEdit) {
+        onClose();
+        return;
+      }
+
+      // Para novo agendamento ou reagendamento: exibe tela visual de sucesso imediato
+      setSavedSuccessAppointment(savedAppointment);
+
+      // Disparo automático seguro caso a opção de WhatsApp esteja marcada
+      if (sendWhatsappReminder && patientPhone && isValidBrazilianPhone(patientPhone)) {
+        setIsSendingWhatsApp(true);
+        const reminderType = rescheduleFromAppointment ? 'reschedule' : 'confirmation';
+        DentalWhatsAppService.sendAppointmentTransactionalMessage({
+          appointment: {
+            ...savedAppointment,
+            tenantId: effectiveTenantId,
+          },
+          reminderType,
+          tenantId: effectiveTenantId,
+        })
+          .then((res) => {
+            if (res.success) {
+              setWhatsAppSentStatus('sent');
+              toast.success('Confirmação enviada para o WhatsApp do paciente!');
+            } else {
+              setWhatsAppSentStatus('failed');
+              toast.warning(res.error || 'Não foi possível enviar WhatsApp automaticamente.');
+            }
+          })
+          .catch((err) => {
+            console.warn('[AppointmentModal] Aviso no envio automático de WhatsApp:', err);
+            setWhatsAppSentStatus('failed');
+          })
+          .finally(() => {
+            setIsSendingWhatsApp(false);
+          });
+      }
     } catch (err) {
       console.error(err);
       toast.error('Ocorreu um erro ao salvar o agendamento.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleManualSendWhatsApp = async (targetAppointment: Appointment) => {
+    if (!targetAppointment || isSendingWhatsApp) return;
+    setIsSendingWhatsApp(true);
+    try {
+      const reminderType = rescheduleFromAppointment ? 'reschedule' : 'confirmation';
+      const res = await DentalWhatsAppService.sendAppointmentTransactionalMessage({
+        appointment: {
+          ...targetAppointment,
+          tenantId: effectiveTenantId,
+        },
+        reminderType,
+        tenantId: effectiveTenantId,
+      });
+
+      if (res.success) {
+        setWhatsAppSentStatus('sent');
+        toast.success('Confirmação enviada para o WhatsApp do paciente!');
+      } else {
+        setWhatsAppSentStatus('failed');
+        toast.error(res.error || 'Não foi possível enviar a confirmação por WhatsApp.');
+      }
+    } catch (err: any) {
+      setWhatsAppSentStatus('failed');
+      toast.error(err.message || 'Erro ao disparar WhatsApp.');
+    } finally {
+      setIsSendingWhatsApp(false);
     }
   };
 
@@ -478,13 +579,91 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
             </button>
           </div>
 
-          {/* Form Body */}
-          <form onSubmit={handleSubmit} className="p-6 space-y-5">
-            {/* Patient Selection */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                Paciente <span className="text-rose-500">*</span>
-              </label>
+          {/* Body: Tela de Sucesso ou Formulário */}
+          {savedSuccessAppointment ? (
+            <div className="p-8 text-center space-y-6 animate-in fade-in zoom-in-95 duration-200">
+              <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto shadow-inner">
+                <CheckCircle2 className="w-9 h-9" />
+              </div>
+
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">Consulta agendada com sucesso!</h3>
+                <p className="text-sm text-slate-500 mt-1">O horário foi reservado na agenda clínica.</p>
+              </div>
+
+              {/* Card Resumo do Agendamento */}
+              <div className="p-5 bg-slate-50/90 rounded-2xl border border-slate-200 text-left max-w-md mx-auto space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                  <span className="text-xs font-semibold text-slate-500">Paciente</span>
+                  <span className="text-sm font-bold text-slate-800">{savedSuccessAppointment.patientName}</span>
+                </div>
+                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                  <span className="text-xs font-semibold text-slate-500">Data e Horário</span>
+                  <span className="text-sm font-bold text-emerald-700">
+                    {formatDateBr(savedSuccessAppointment.date)} às {savedSuccessAppointment.startTime}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                  <span className="text-xs font-semibold text-slate-500">Profissional</span>
+                  <span className="text-sm font-medium text-slate-800">{savedSuccessAppointment.dentistName}</span>
+                </div>
+                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                  <span className="text-xs font-semibold text-slate-500">Procedimento</span>
+                  <span className="text-sm font-medium text-slate-800">{savedSuccessAppointment.procedureName}</span>
+                </div>
+                {savedSuccessAppointment.patientPhone && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-500">WhatsApp</span>
+                    <span className="text-sm font-mono text-slate-700">
+                      {formatPhoneDisplay(savedSuccessAppointment.patientPhone)}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Status do Envio do WhatsApp */}
+              {whatsAppSentStatus === 'sent' ? (
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-semibold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <span>Confirmação enviada pelo WhatsApp para o paciente</span>
+                </div>
+              ) : isSendingWhatsApp ? (
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-50 text-blue-800 border border-blue-200 text-xs font-semibold">
+                  <div className="w-3.5 h-3.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                  <span>Enviando confirmação via WhatsApp...</span>
+                </div>
+              ) : null}
+
+              {/* Botões de Ação */}
+              <div className="flex items-center justify-center gap-3 pt-2">
+                {whatsAppSentStatus !== 'sent' && savedSuccessAppointment.patientPhone && (
+                  <button
+                    type="button"
+                    disabled={isSendingWhatsApp}
+                    onClick={() => handleManualSendWhatsApp(savedSuccessAppointment)}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-sm transition-colors cursor-pointer"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    <span>{isSendingWhatsApp ? 'Enviando...' : 'Enviar confirmação pelo WhatsApp'}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="p-6 space-y-5">
+              {/* Patient Selection */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Paciente <span className="text-rose-500">*</span>
+                </label>
               <PatientSearchSelect
                 patients={patients}
                 value={selectedPatientId}
@@ -727,6 +906,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
               </button>
             </div>
           </form>
+        )}
         </div>
       </div>
 

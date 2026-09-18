@@ -30,14 +30,16 @@ export const DatePicker: React.FC<DatePickerProps> = ({
   disabled = false,
   required = false,
   className = '',
+  minDate,
+  maxDate,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const triggerRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
   const { coords } = useFloatingPosition(triggerRef, isOpen, {
-    estimatedHeight: 330,
-    estimatedWidth: 288,
+    estimatedHeight: 340,
+    estimatedWidth: 320,
     gap: 6,
   });
 
@@ -88,6 +90,13 @@ export const DatePicker: React.FC<DatePickerProps> = ({
 
   const currentYear = viewDate.getFullYear();
   const currentMonth = viewDate.getMonth();
+
+  const minYear = minDate ? parseInt(minDate.split('-')[0], 10) : 1920;
+  const maxYear = maxDate ? parseInt(maxDate.split('-')[0], 10) : new Date().getFullYear() + 10;
+  const yearsList: number[] = [];
+  for (let y = maxYear; y >= minYear; y--) {
+    yearsList.push(y);
+  }
 
   // Navigation
   const prevMonth = () => {
@@ -207,26 +216,50 @@ export const DatePicker: React.FC<DatePickerProps> = ({
               left: `${coords.left}px`,
               zIndex: 99999,
             }}
-            className="p-3.5 bg-white rounded-2xl shadow-2xl border border-slate-200/90 w-72 animate-in fade-in zoom-in-95 duration-150 select-none"
+            className="p-3.5 bg-white rounded-2xl shadow-2xl border border-slate-200/90 w-80 animate-in fade-in zoom-in-95 duration-150 select-none"
           >
             {/* Month & Year Navigation */}
-            <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
+            <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100 gap-1.5">
               <button
                 type="button"
                 onClick={prevMonth}
-                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+                title="Mês anterior"
+                aria-label="Mês anterior"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
 
-              <span className="text-xs font-bold text-slate-800 font-mono">
-                {MONTH_NAMES[currentMonth]} {currentYear}
-              </span>
+              <div className="flex items-center gap-1.5 min-w-0">
+                <select
+                  value={currentMonth}
+                  onChange={(e) => setViewDate(new Date(currentYear, Number(e.target.value), 1))}
+                  className="text-xs font-bold text-slate-800 bg-slate-50 border border-slate-200/80 rounded-lg px-2 py-1 cursor-pointer focus:outline-none focus:border-emerald-500"
+                  aria-label="Selecionar mês"
+                >
+                  {MONTH_NAMES.map((m, idx) => (
+                    <option key={m} value={idx}>{m}</option>
+                  ))}
+                </select>
+
+                <select
+                  value={currentYear}
+                  onChange={(e) => setViewDate(new Date(Number(e.target.value), currentMonth, 1))}
+                  className="text-xs font-bold text-slate-800 bg-slate-50 border border-slate-200/80 rounded-lg px-2 py-1 cursor-pointer focus:outline-none focus:border-emerald-500 font-mono"
+                  aria-label="Selecionar ano"
+                >
+                  {yearsList.map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              </div>
 
               <button
                 type="button"
                 onClick={nextMonth}
-                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+                title="Próximo mês"
+                aria-label="Próximo mês"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
@@ -251,20 +284,26 @@ export const DatePicker: React.FC<DatePickerProps> = ({
               {days.map((item, index) => {
                 const isSelected = value === item.dateString;
                 const isToday = todayStr === item.dateString;
+                const isBeforeMin = minDate ? item.dateString < minDate : false;
+                const isAfterMax = maxDate ? item.dateString > maxDate : false;
+                const isDisabledDay = isBeforeMin || isAfterMax;
 
                 return (
                   <button
                     type="button"
                     key={`${item.dateString}-${index}`}
-                    onClick={() => handleSelectDay(item.dateString)}
-                    className={`h-7 w-7 mx-auto rounded-lg text-xs font-mono font-medium flex items-center justify-center transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-emerald-600 text-white font-bold shadow-xs'
+                    disabled={isDisabledDay}
+                    onClick={() => !isDisabledDay && handleSelectDay(item.dateString)}
+                    className={`h-7 w-7 mx-auto rounded-lg text-xs font-mono font-medium flex items-center justify-center transition-all ${
+                      isDisabledDay
+                        ? 'text-slate-200 cursor-not-allowed opacity-30'
+                        : isSelected
+                        ? 'bg-emerald-600 text-white font-bold shadow-xs cursor-pointer'
                         : isToday
-                        ? 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-200'
+                        ? 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 cursor-pointer'
                         : item.isCurrentMonth
-                        ? 'text-slate-800 hover:bg-slate-100'
-                        : 'text-slate-300 hover:bg-slate-50'
+                        ? 'text-slate-800 hover:bg-slate-100 cursor-pointer'
+                        : 'text-slate-300 hover:bg-slate-50 cursor-pointer'
                     }`}
                   >
                     {item.day}

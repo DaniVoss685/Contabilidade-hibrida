@@ -295,6 +295,7 @@ export function mapAppPayrollToDb(app: PayrollHistoryEntry, tenantId: string): a
 export function mapDbPatientToApp(db: any): Patient {
   return {
     id: db.id,
+    tenantId: db.tenant_id,
     orgId: db.org_id,
     name: db.name,
     cpf: db.cpf || '',
@@ -595,6 +596,7 @@ export function mapAppClinicalInputToDb(app: ClinicalInput, tenantId: string): a
 export function mapDbAppointmentToApp(db: any): Appointment {
   return {
     id: db.id,
+    tenantId: db.tenant_id,
     orgId: db.org_id,
     patientId: db.patient_id,
     patientName: db.patient_name,
@@ -620,10 +622,11 @@ export function mapDbAppointmentToApp(db: any): Appointment {
 }
 
 export function mapAppAppointmentToDb(app: Appointment, tenantId: string): any {
+  const effectiveTenant = app.tenantId || tenantId;
   return {
     id: app.id,
-    tenant_id: tenantId,
-    org_id: app.orgId || `org_${tenantId}`,
+    tenant_id: effectiveTenant,
+    org_id: app.orgId || `org_${effectiveTenant}`,
     patient_id: app.patientId,
     patient_name: app.patientName,
     patient_phone: app.patientPhone || '',

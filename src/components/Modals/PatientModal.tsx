@@ -1,9 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { User, X, Loader2, Phone, Mail, AlertCircle, Edit3 } from 'lucide-react';
+import { User, X, Loader2, Phone, Mail, AlertCircle, Edit3, Calendar } from 'lucide-react';
 import { Patient } from '../../types';
 import { db } from '../../lib/db';
-import { formatCpf, isValidCpf, isValidEmail, maskPhoneInput, isValidPhone, maskCpfInput } from '../../lib/masks';
+import {
+  formatCpf,
+  isValidCpf,
+  isValidEmail,
+  maskPhoneInput,
+  isValidPhone,
+  maskCpfInput,
+  isValidCivilDate,
+  isFutureCivilDate,
+  getTodayCivilDate,
+} from '../../lib/masks';
 import { ConfirmDialog, useToast } from '../UI';
+import { DatePicker } from '../UI/DatePicker';
+import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 
 export interface PatientModalProps {
   isOpen: boolean;
@@ -15,6 +27,7 @@ export interface PatientModalProps {
     name?: string;
     cpf?: string;
     phone?: string;
+    birthDate?: string;
     email?: string;
   } | null;
 }
@@ -31,6 +44,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
   const [name, setName] = useState('');
   const [cpf, setCpf] = useState('');
   const [phone, setPhone] = useState('');
+  const [birthDate, setBirthDate] = useState('');
   const [email, setEmail] = useState('');
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -47,11 +61,13 @@ export const PatientModal: React.FC<PatientModalProps> = ({
         setName(patient.name || '');
         setCpf(patient.cpf ? formatCpf(patient.cpf) : '');
         setPhone(patient.phone ? maskPhoneInput(patient.phone) : '');
+        setBirthDate(patient.birthDate || '');
         setEmail(patient.email || '');
       } else {
         setName(initialData?.name || '');
         setCpf(initialData?.cpf ? formatCpf(initialData.cpf) : '');
         setPhone(initialData?.phone ? maskPhoneInput(initialData.phone) : '');
+        setBirthDate(initialData?.birthDate || '');
         setEmail(initialData?.email || '');
       }
       setErrors({});
@@ -93,7 +109,17 @@ export const PatientModal: React.FC<PatientModalProps> = ({
       newErrors.phone = 'Informe o WhatsApp ou telefone do paciente.';
     }
 
-    // 4. E-mail (Opcional, mas se preenchido deve ser válido)
+    // 4. Data de Nascimento (Obrigatório, formato civil YYYY-MM-DD, válida e não futura)
+    const cleanBirthDate = birthDate.trim();
+    if (!cleanBirthDate) {
+      newErrors.birthDate = 'Informe a data de nascimento do paciente.';
+    } else if (!isValidCivilDate(cleanBirthDate)) {
+      newErrors.birthDate = 'Informe uma data de nascimento válida.';
+    } else if (isFutureCivilDate(cleanBirthDate)) {
+      newErrors.birthDate = 'A data de nascimento não pode ser futura.';
+    }
+
+    // 5. E-mail (Opcional, mas se preenchido deve ser válido)
     if (email.trim() && !isValidEmail(email)) {
       newErrors.email = 'E-mail em formato inválido.';
     }
@@ -118,6 +144,14 @@ export const PatientModal: React.FC<PatientModalProps> = ({
     }
   };
 
+  const handleBirthDateChange = (val: string) => {
+    setBirthDate(val);
+    setIsDirty(true);
+    if (errors.birthDate) {
+      setErrors((prev) => ({ ...prev, birthDate: '' }));
+    }
+  };
+
   const handleCloseAttempt = () => {
     if (isDirty) {
       setShowConfirmDiscard(true);
@@ -137,7 +171,23 @@ export const PatientModal: React.FC<PatientModalProps> = ({
       const cleanName = name.trim().replace(/\s+/g, ' ');
       const cleanCpf = cpf.replace(/\D/g, '');
       const cleanPhone = phone.trim();
+      const cleanBirthDate = birthDate.trim();
       const cleanEmail = email.trim() || undefined;
+
+      // Verificação preventiva de conflito de número no WhatsApp para esta clínica
+      const activeTenant = db.getActiveTenantId() || '';
+      if (cleanPhone && activeTenant) {
+        const conflictCheck = await DentalWhatsAppService.syncPatientToContact(
+          { id: isEdit && patient ? patient.id : 'temp_check_id', name: cleanName, phone: cleanPhone, tenantId: activeTenant },
+          activeTenant,
+          { dryRun: true }
+        );
+        if (!conflictCheck.success && conflictCheck.code === 'CONTACT_PHONE_CONFLICT') {
+          setErrors({ phone: conflictCheck.error || 'Número de telefone já vinculado a outro paciente nesta clínica.', form: conflictCheck.error });
+          setIsSubmitting(false);
+          return;
+        }
+      }
 
       if (isEdit && patient) {
         // UPDATE REAL no PostgreSQL (df_patients)
@@ -145,6 +195,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
           name: cleanName,
           cpf: cleanCpf,
           phone: cleanPhone,
+          birthDate: cleanBirthDate,
           email: cleanEmail,
         });
 
@@ -158,6 +209,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
           name: cleanName,
           cpf: cleanCpf,
           phone: cleanPhone,
+          birthDate: cleanBirthDate,
           email: cleanEmail,
         };
 
@@ -171,6 +223,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
           name: cleanName,
           cpf: cleanCpf,
           phone: cleanPhone,
+          birthDate: cleanBirthDate,
           email: cleanEmail,
         });
 
@@ -267,32 +320,48 @@ export const PatientModal: React.FC<PatientModalProps> = ({
               )}
             </div>
 
-            {/* CPF */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                CPF <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                placeholder="000.000.000-00"
-                maxLength={14}
-                value={cpf}
-                onChange={(e) => handleCpfChange(e.target.value)}
-                className={`w-full text-xs rounded-xl border p-2.5 bg-white font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none transition-all ${
-                  errors.cpf
-                    ? 'border-rose-500 ring-2 ring-rose-500/20'
-                    : 'border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20'
-                }`}
-              />
-              {errors.cpf && (
-                <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3 flex-shrink-0" />
-                  {errors.cpf}
-                </p>
-              )}
-              <p className="text-[10.5px] text-slate-400 mt-1">
-                Necessário para cruzamento no Carnê-Leão e NFS-e.
-              </p>
+            {/* Grid: CPF & Data de Nascimento */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  CPF <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="000.000.000-00"
+                  maxLength={14}
+                  value={cpf}
+                  onChange={(e) => handleCpfChange(e.target.value)}
+                  className={`w-full text-xs rounded-xl border p-2.5 bg-white font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none transition-all ${
+                    errors.cpf
+                      ? 'border-rose-500 ring-2 ring-rose-500/20'
+                      : 'border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20'
+                  }`}
+                />
+                {errors.cpf && (
+                  <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                    {errors.cpf}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <DatePicker
+                  label="Data de Nascimento"
+                  required
+                  value={birthDate}
+                  onChange={handleBirthDateChange}
+                  placeholder="DD/MM/AAAA"
+                  maxDate={getTodayCivilDate()}
+                />
+                {errors.birthDate && (
+                  <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                    {errors.birthDate}
+                  </p>
+                )}
+              </div>
             </div>
 
             {/* WhatsApp / Telefone & E-mail */}

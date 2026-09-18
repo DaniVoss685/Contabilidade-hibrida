@@ -4434,6 +4434,26 @@ export class DentalFinanceDB {
     return false;
   }
 
+  public syncAppointmentFromRemote(app: Appointment): void {
+    const idx = this.appointments.findIndex((a) => a.id === app.id);
+    if (idx >= 0) {
+      this.appointments[idx] = { ...this.appointments[idx], ...app };
+    } else {
+      this.appointments = [app, ...this.appointments];
+    }
+    saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, this.activeTenantId);
+    this.notify();
+  }
+
+  public deleteAppointmentFromRemote(id: string): void {
+    const prevLen = this.appointments.length;
+    this.appointments = this.appointments.filter((a) => a.id !== id);
+    if (this.appointments.length !== prevLen) {
+      saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, this.activeTenantId);
+      this.notify();
+    }
+  }
+
   public resetAppointmentsToDemo() {
     this.appointments = DEMO_APPOINTMENTS;
     saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments);

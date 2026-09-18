@@ -300,4 +300,123 @@ export function isValidPhone(phone: string | undefined | null): boolean {
   return true;
 }
 
+/**
+ * Retorna a data civil de hoje no formato YYYY-MM-DD
+ */
+export function getTodayCivilDate(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Valida se uma string é uma data civil válida no formato YYYY-MM-DD
+ */
+export function isValidCivilDate(dateStr: string | undefined | null): boolean {
+  if (!dateStr || typeof dateStr !== 'string') return false;
+  const parts = dateStr.trim().split('-');
+  if (parts.length !== 3) return false;
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return false;
+  if (year < 1900 || year > 2100) return false;
+  if (month < 1 || month > 12) return false;
+
+  const daysInMonth = new Date(year, month, 0).getDate();
+  if (day < 1 || day > daysInMonth) return false;
+
+  return true;
+}
+
+/**
+ * Verifica se a data civil informada (YYYY-MM-DD) é estritamente futura em relação a hoje
+ */
+export function isFutureCivilDate(dateStr: string | undefined | null): boolean {
+  if (!dateStr || !isValidCivilDate(dateStr)) return false;
+  const today = getTodayCivilDate();
+  return dateStr.trim() > today;
+}
+
+/**
+ * Calcula a idade em anos completos a partir da data de nascimento civil (YYYY-MM-DD)
+ * Nunca sofre deslocamento de timezone e calcula de forma puramente dinâmica
+ */
+export function calculateAge(birthDateStr: string | undefined | null): number | null {
+  if (!birthDateStr || !isValidCivilDate(birthDateStr)) return null;
+  const parts = birthDateStr.split('-');
+  const birthYear = parseInt(parts[0], 10);
+  const birthMonth = parseInt(parts[1], 10);
+  const birthDay = parseInt(parts[2], 10);
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  const currentDay = now.getDate();
+
+  let age = currentYear - birthYear;
+  if (currentMonth < birthMonth || (currentMonth === birthMonth && currentDay < birthDay)) {
+    age--;
+  }
+  return age >= 0 ? age : 0;
+}
+
+/**
+ * Calcula o próximo aniversário e os dias restantes até a data
+ */
+export function calculateNextBirthday(birthDateStr: string | undefined | null): {
+  formattedDate: string;
+  daysUntil: number;
+  isUpcoming: boolean;
+} | null {
+  if (!birthDateStr || !isValidCivilDate(birthDateStr)) return null;
+  const parts = birthDateStr.split('-');
+  const birthMonth = parseInt(parts[1], 10);
+  const birthDay = parseInt(parts[2], 10);
+
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const today = new Date(currentYear, now.getMonth(), now.getDate());
+
+  let nextBday = new Date(currentYear, birthMonth - 1, birthDay);
+  if (nextBday < today) {
+    nextBday = new Date(currentYear + 1, birthMonth - 1, birthDay);
+  }
+
+  const diffTime = nextBday.getTime() - today.getTime();
+  const daysUntil = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+  const dd = String(birthDay).padStart(2, '0');
+  const mm = String(birthMonth).padStart(2, '0');
+  const yyyy = nextBday.getFullYear();
+
+  return {
+    formattedDate: `${dd}/${mm}/${yyyy}`,
+    daysUntil,
+    isUpcoming: daysUntil >= 0 && daysUntil <= 7,
+  };
+}
+
+/**
+ * Diferença em dias civis inteiros entre dateA e dateB (dateA - dateB)
+ * Ex: se dateA = 2026-09-18 e dateB = 2026-09-15 -> retorna 3
+ */
+export function calculateCivilDaysDiff(dateAStr: string, dateBStr: string): number {
+  if (!dateAStr || !dateBStr) return 0;
+  const cleanA = dateAStr.split('T')[0];
+  const cleanB = dateBStr.split('T')[0];
+  const partsA = cleanA.split('-').map(Number);
+  const partsB = cleanB.split('-').map(Number);
+  if (partsA.length !== 3 || partsB.length !== 3) return 0;
+
+  const dtA = new Date(partsA[0], partsA[1] - 1, partsA[2]);
+  const dtB = new Date(partsB[0], partsB[1] - 1, partsB[2]);
+  const diffTime = dtA.getTime() - dtB.getTime();
+  return Math.round(diffTime / (1000 * 60 * 60 * 24));
+}
+
+
 

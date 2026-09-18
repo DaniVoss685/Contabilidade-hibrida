@@ -26,7 +26,7 @@ import { NewSaleModal } from './components/Modals/NewSaleModal';
 import { NewExpenseModal } from './components/Modals/NewExpenseModal';
 import { SettlePaymentModal } from './components/Modals/SettlePaymentModal';
 import { AccountReceivableItem, DentalTenantOption } from './types';
-import { SupabaseService, supabase } from './lib/supabaseClient';
+import { SupabaseService, supabase, mapDbAppointmentToApp } from './lib/supabaseClient';
 import { ToastProvider, useToast } from './components/UI/ToastContext';
 import { WhatsAppMainView } from './components/WhatsApp/WhatsAppMainView';
 import { ToastContainer } from './components/UI/Toast';
@@ -236,6 +236,11 @@ function AppContent() {
   // Contador de mensagens WhatsApp não lidas em tempo real
   const [whatsappUnreadCount, setWhatsappUnreadCount] = useState<number>(0);
 
+  // Navegação cruzada entre Agenda, Pacientes e WhatsApp
+  const [initialWhatsAppPatientId, setInitialWhatsAppPatientId] = useState<string | undefined>(undefined);
+  const [initialAgendaDate, setInitialAgendaDate] = useState<string | undefined>(undefined);
+  const [initialAgendaPatientId, setInitialAgendaPatientId] = useState<string | undefined>(undefined);
+
   useEffect(() => {
     if (!activeTenantId) return;
 
@@ -258,7 +263,7 @@ function AppContent() {
     fetchWhatsappUnread();
 
     const channel = supabase
-      .channel(`app_wa_unread_${activeTenantId}`)
+      .channel(`app_realtime_${activeTenantId}`)
       .on(
         'postgres_changes',
         {
@@ -269,6 +274,25 @@ function AppContent() {
         },
         () => {
           fetchWhatsappUnread();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'df_appointments',
+          filter: `tenant_id=eq.${activeTenantId}`,
+        },
+        (payload: any) => {
+          if (payload.eventType === 'DELETE') {
+            if (payload.old?.id) {
+              db.deleteAppointmentFromRemote(payload.old.id);
+            }
+          } else if (payload.new) {
+            const appt = mapDbAppointmentToApp(payload.new);
+            db.syncAppointmentFromRemote(appt);
+          }
         }
       )
       .subscribe();
@@ -807,6 +831,12 @@ function AppContent() {
               tenantId={activeTenantId}
               currentUserId={currentSession?.user?.id}
               currentUserName={currentSession?.user?.name}
+              initialPatientId={initialWhatsAppPatientId}
+              onNavigateToAgenda={(date, patientId) => {
+                if (date) setInitialAgendaDate(date);
+                if (patientId) setInitialAgendaPatientId(patientId);
+                setCurrentTab('agenda');
+              }}
             />
           )}
 
@@ -915,6 +945,10 @@ function AppContent() {
               sales={filteredSales}
               maskCpf={maskCpf}
               onOpenNewSaleForPatient={handleOpenNewSaleForPatient}
+              onNavigateToWhatsApp={(patientId) => {
+                setInitialWhatsAppPatientId(patientId);
+                setCurrentTab('whatsapp');
+              }}
               initialOpenNewModal={pendingAction === 'new_patient'}
               onClearAction={() => setPendingAction(null)}
               initialSelectedPatientId={selectedPatientForViewId}
@@ -923,8 +957,15 @@ function AppContent() {
 
           {currentTab === 'agenda' && (
             <AppointmentsView
+              initialDate={initialAgendaDate}
+              initialPatientId={initialAgendaPatientId}
+              activeTenantId={activeTenantId}
               onLaunchSale={(appointment) => {
                 handleOpenNewSaleForPatient(appointment.patientId);
+              }}
+              onNavigateToWhatsApp={(patientId) => {
+                setInitialWhatsAppPatientId(patientId);
+                setCurrentTab('whatsapp');
               }}
             />
           )}

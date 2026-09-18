@@ -263,6 +263,7 @@ export interface MonthlyFiscalHistoryEntry {
 // 3. Patient & Payer
 export interface Patient {
   id: string;
+  tenantId?: string;
   orgId: string;
   name: string;
   cpf: string;
@@ -710,6 +711,7 @@ export type AppointmentOrigin =
 
 export interface Appointment {
   id: string;
+  tenantId?: string;
   orgId: string;
   patientId: string;
   patientName: string;

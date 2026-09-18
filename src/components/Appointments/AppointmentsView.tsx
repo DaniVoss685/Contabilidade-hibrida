@@ -26,6 +26,10 @@ import { CustomSelect, SelectOption } from '../UI';
 
 interface AppointmentsViewProps {
   onLaunchSale?: (appointment: Appointment) => void;
+  onNavigateToWhatsApp?: (patientId: string, phone?: string) => void;
+  initialDate?: string;
+  initialPatientId?: string;
+  activeTenantId?: string;
 }
 
 type CalendarViewMode = 'DAY' | 'WEEK' | 'MONTH';
@@ -147,12 +151,31 @@ function isSlotInLunchBreak(slot: string, start?: string, end?: string): boolean
   return slotStartMin < breakEndMin && slotEndMin > breakStartMin;
 }
 
-export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale }) => {
+export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
+  onLaunchSale,
+  onNavigateToWhatsApp,
+  initialDate,
+  initialPatientId,
+  activeTenantId,
+}) => {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [preferences, setPreferences] = useState(() => db.getPreferences());
   const [viewMode, setViewMode] = useState<CalendarViewMode>('WEEK');
   // Dynamic current date from the actual system environment
-  const [currentDate, setCurrentDate] = useState<Date>(() => new Date());
+  const [currentDate, setCurrentDate] = useState<Date>(() => {
+    if (initialDate) {
+      const p = new Date(initialDate + 'T12:00:00');
+      if (!isNaN(p.getTime())) return p;
+    }
+    return new Date();
+  });
+
+  useEffect(() => {
+    if (initialDate) {
+      const p = new Date(initialDate + 'T12:00:00');
+      if (!isNaN(p.getTime())) setCurrentDate(p);
+    }
+  }, [initialDate]);
 
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
@@ -168,6 +191,11 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
   // Details modal
   const [modalAppointment, setModalAppointment] = useState<Appointment | null>(null);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+
+  const effectiveModalAppointment = useMemo(() => {
+    if (!modalAppointment) return null;
+    return appointments.find((a) => a.id === modalAppointment.id) || modalAppointment;
+  }, [modalAppointment, appointments]);
 
   // Load from DB & subscribe
   useEffect(() => {
@@ -1191,6 +1219,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
         rescheduleFromAppointment={rescheduleFromAppointment}
         defaultDate={selectedSlotDate}
         defaultStartTime={selectedSlotTime}
+        activeTenantId={activeTenantId}
         onSaved={() => {
           setAppointments(db.getAppointments());
           setRescheduleFromAppointment(null);
@@ -1201,7 +1230,8 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
       <AppointmentDetailsModal
         isOpen={isDetailsModalOpen}
         onClose={() => setIsDetailsModalOpen(false)}
-        appointment={modalAppointment}
+        appointment={effectiveModalAppointment}
+        activeTenantId={activeTenantId}
         onEdit={(apt) => {
           setAppointmentToEdit(apt);
           setRescheduleFromAppointment(null);
@@ -1226,6 +1256,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({ onLaunchSale
             setModalAppointment(updated || null);
           }
         }}
+        onOpenWhatsAppChat={onNavigateToWhatsApp}
       />
     </div>
   );

@@ -1,0 +1,229 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
+
+interface AudioPlayerProps {
+  src: string;
+  isMine?: boolean;
+  isFromMe?: boolean;
+  initialDuration?: number;
+}
+
+const formatTime = (seconds: number) => {
+  if (isNaN(seconds) || !isFinite(seconds) || seconds < 0) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+
+export const AudioPlayer: React.FC<AudioPlayerProps> = ({
+  src,
+  isMine = false,
+  isFromMe,
+  initialDuration = 0,
+}) => {
+  const isSent = Boolean(isFromMe ?? isMine);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState<number>(initialDuration);
+  const [playbackRate, setPlaybackRate] = useState<number>(1);
+  const [isMuted, setIsMuted] = useState(false);
+
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (initialDuration > 0) {
+      setDuration(initialDuration);
+    }
+
+    const checkAndSetDuration = () => {
+      if (audio.duration && isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      } else if (audio.duration === Infinity || isNaN(audio.duration)) {
+        // Workaround Chromium: força decodificação do header do arquivo webm/ogg para calcular duration
+        const originalTime = audio.currentTime;
+        audio.currentTime = 1e101;
+        const onTimeSeek = () => {
+          audio.removeEventListener('timeupdate', onTimeSeek);
+          audio.currentTime = originalTime;
+          if (audio.duration && isFinite(audio.duration)) {
+            setDuration(audio.duration);
+          }
+        };
+        audio.addEventListener('timeupdate', onTimeSeek, { once: true });
+      }
+    };
+
+    const setAudioTime = () => {
+      setCurrentTime(audio.currentTime);
+    };
+
+    const handleEnded = () => {
+      setIsPlaying(false);
+      setCurrentTime(0);
+      if (audio) {
+        audio.currentTime = 0;
+      }
+    };
+
+    audio.addEventListener('loadedmetadata', checkAndSetDuration);
+    audio.addEventListener('durationchange', checkAndSetDuration);
+    audio.addEventListener('canplay', checkAndSetDuration);
+    audio.addEventListener('timeupdate', setAudioTime);
+    audio.addEventListener('ended', handleEnded);
+
+    // Se já estiver com metadados carregados
+    if (audio.readyState >= 1) {
+      checkAndSetDuration();
+    }
+
+    return () => {
+      audio.removeEventListener('loadedmetadata', checkAndSetDuration);
+      audio.removeEventListener('durationchange', checkAndSetDuration);
+      audio.removeEventListener('canplay', checkAndSetDuration);
+      audio.removeEventListener('timeupdate', setAudioTime);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, [src, initialDuration]);
+
+  const togglePlayPause = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (isPlaying) {
+      audio.pause();
+      setIsPlaying(false);
+    } else {
+      audio
+        .play()
+        .then(() => setIsPlaying(true))
+        .catch((err) => {
+          console.warn('Falha na reprodução de áudio:', err);
+          setIsPlaying(false);
+        });
+    }
+  };
+
+  const handleSpeedChange = () => {
+    const speeds = [1, 1.5, 2];
+    const nextIndex = (speeds.indexOf(playbackRate) + 1) % speeds.length;
+    const nextSpeed = speeds[nextIndex];
+    setPlaybackRate(nextSpeed);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = nextSpeed;
+    }
+  };
+
+  const toggleMute = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.muted = !isMuted;
+    setIsMuted(!isMuted);
+  };
+
+  const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const newTime = Number(e.target.value);
+    audio.currentTime = newTime;
+    setCurrentTime(newTime);
+  };
+
+  const progressPercent = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
+
+  return (
+    <div
+      className={`flex items-center gap-2.5 p-2 rounded-2xl w-full max-w-[280px] sm:max-w-[320px] transition-colors border shadow-sm select-none ${
+        isSent
+          ? 'bg-emerald-800/85 border-emerald-500/70 text-white'
+          : 'bg-slate-100 border-slate-300/80 text-slate-800'
+      }`}
+    >
+      <audio ref={audioRef} src={src} preload="metadata" />
+
+      {/* Botão Play / Pause com Alto Contraste */}
+      <button
+        type="button"
+        onClick={togglePlayPause}
+        className={`w-9 h-9 shrink-0 flex items-center justify-center rounded-full transition-all cursor-pointer shadow-md focus:outline-hidden ${
+          isSent
+            ? 'bg-white text-emerald-800 hover:bg-emerald-50 hover:scale-105 active:scale-95'
+            : 'bg-emerald-600 text-white hover:bg-emerald-500 hover:scale-105 active:scale-95'
+        }`}
+        title={isPlaying ? 'Pausar' : 'Reproduzir'}
+      >
+        {isPlaying ? (
+          <Pause className="w-4 h-4 fill-current" />
+        ) : (
+          <Play className="w-4 h-4 fill-current ml-0.5" />
+        )}
+      </button>
+
+      {/* Trilha de Progresso de Alto Contraste e Tempo */}
+      <div className="flex-1 min-w-[90px] flex flex-col justify-center gap-1.5">
+        <div
+          className={`relative h-2 w-full rounded-full overflow-hidden flex items-center group cursor-pointer transition-colors ${
+            isSent
+              ? 'bg-emerald-950/70 ring-1 ring-white/30'
+              : 'bg-slate-300 ring-1 ring-slate-400/30'
+          }`}
+        >
+          <input
+            type="range"
+            min={0}
+            max={duration > 0 ? duration : 100}
+            step="0.05"
+            value={currentTime}
+            onChange={handleProgressChange}
+            className="absolute z-20 w-full h-full opacity-0 cursor-pointer"
+          />
+          <div
+            className={`absolute left-0 top-0 h-full rounded-full transition-all duration-75 ease-linear ${
+              isSent ? 'bg-white shadow-xs' : 'bg-emerald-600 shadow-xs'
+            }`}
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+
+        <div
+          className={`flex items-center justify-between text-[11px] font-mono leading-none ${
+            isSent ? 'text-emerald-100 font-medium' : 'text-slate-600 font-medium'
+          }`}
+        >
+          <span>{formatTime(currentTime)}</span>
+          <span>{duration > 0 ? formatTime(duration) : '0:00'}</span>
+        </div>
+      </div>
+
+      {/* Botão de Velocidade (1x / 1.5x / 2x) */}
+      <button
+        type="button"
+        onClick={handleSpeedChange}
+        className={`px-1.5 py-0.5 text-[10px] font-bold rounded-md uppercase tracking-wider transition-colors cursor-pointer shrink-0 ${
+          isSent
+            ? 'bg-white/20 hover:bg-white/30 text-white'
+            : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
+        }`}
+        title="Alternar velocidade de reprodução"
+      >
+        {playbackRate}x
+      </button>
+
+      {/* Mute */}
+      <button
+        type="button"
+        onClick={toggleMute}
+        className={`p-1 shrink-0 rounded-lg transition-colors cursor-pointer ${
+          isSent
+            ? 'text-emerald-200 hover:text-white hover:bg-white/10'
+            : 'text-slate-400 hover:text-slate-600 hover:bg-slate-200/60'
+        }`}
+        title={isMuted ? 'Ativar som' : 'Silenciar'}
+      >
+        {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+      </button>
+    </div>
+  );
+};

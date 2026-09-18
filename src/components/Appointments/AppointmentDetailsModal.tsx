@@ -22,15 +22,21 @@ import { Appointment, AppointmentStatus } from '../../types';
 import { db } from '../../lib/db';
 import { useToast, ConfirmDialog } from '../UI';
 import { formatDateBr } from '../../lib/masks';
+import { isValidBrazilianPhone, formatPhoneDisplay } from '../../lib/phoneUtils';
+import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
+import { WhatsAppReminderLog } from '../../types/whatsapp';
 
 export interface AppointmentDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
   appointment: Appointment | null;
+  activeTenantId?: string;
   onEdit: (appointment: Appointment) => void;
   onReschedule?: (appointment: Appointment) => void;
   onLaunchSale?: (appointment: Appointment) => void;
   onStatusChanged?: () => void;
+  onOpenWhatsAppChat?: (patientId: string, phone?: string) => void;
+  onEditPatient?: (patientId: string) => void;
 }
 
 const STATUS_CONFIG: Record<
@@ -88,14 +94,90 @@ export const AppointmentDetailsModal: React.FC<AppointmentDetailsModalProps> = (
   isOpen,
   onClose,
   appointment,
+  activeTenantId,
   onEdit,
   onReschedule,
   onLaunchSale,
   onStatusChanged,
+  onOpenWhatsAppChat,
+  onEditPatient,
 }) => {
   const toast = useToast();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showMissedConfirm, setShowMissedConfirm] = useState(false);
+  const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const [remindersLog, setRemindersLog] = useState<WhatsAppReminderLog[]>([]);
+
+  // Resolver tenantId estritamente sanitizado (nunca prefixo 'org_')
+  const effectiveTenantId = React.useMemo(() => {
+    const raw =
+      activeTenantId ||
+      appointment?.tenantId ||
+      (appointment as any)?.orgId ||
+      db.getOrg()?.id ||
+      '';
+    return DentalWhatsAppService.sanitizeTenantId(raw);
+  }, [activeTenantId, appointment?.tenantId, (appointment as any)?.orgId]);
+
+  // Resolver dados atualizados do paciente em tempo real (fonte de verdade)
+  const currentPatient = React.useMemo(() => {
+    if (!appointment?.patientId) return null;
+    return db.getPatients().find((p) => p.id === appointment.patientId) || null;
+  }, [appointment?.patientId, isOpen]);
+
+  const effectivePhone = currentPatient?.phone || appointment?.patientPhone || '';
+  const hasValidPhone = Boolean(effectivePhone && isValidBrazilianPhone(effectivePhone));
+
+  React.useEffect(() => {
+    if (isOpen && appointment?.id && effectiveTenantId) {
+      DentalWhatsAppService.getAppointmentRemindersLog(appointment.id, effectiveTenantId)
+        .then((logs) => setRemindersLog(logs))
+        .catch(() => setRemindersLog([]));
+    }
+  }, [isOpen, appointment?.id, effectiveTenantId]);
+
+  const handleSendIntegratedWhatsApp = async (
+    type: 'confirmation' | 'reminder_24h',
+    forceResend: boolean = false
+  ) => {
+    if (!appointment) return;
+    setSendingWhatsApp(true);
+    try {
+      const appointmentWithLatestPhone: Appointment = {
+        ...appointment,
+        patientPhone: effectivePhone || appointment.patientPhone,
+        tenantId: effectiveTenantId,
+      };
+
+      const res = await DentalWhatsAppService.sendAppointmentTransactionalMessage({
+        appointment: appointmentWithLatestPhone,
+        reminderType: type,
+        tenantId: effectiveTenantId,
+        forceResend,
+      });
+
+      if (res.success) {
+        toast.success(
+          type === 'confirmation'
+            ? 'Confirmação enviada via WhatsApp com sucesso!'
+            : 'Lembrete de consulta enviado via WhatsApp!'
+        );
+        const updated = await DentalWhatsAppService.getAppointmentRemindersLog(appointment.id, effectiveTenantId);
+        setRemindersLog(updated);
+
+        // Se o telefone do agendamento estava desatualizado em relação ao paciente, sincroniza no banco
+        if (effectivePhone && appointment.patientPhone !== effectivePhone) {
+          DentalWhatsAppService.syncPatientPhoneInAppointments(appointment.patientId, effectiveTenantId, effectivePhone);
+        }
+      } else {
+        toast.error(res.error || 'Não foi possível enviar mensagem pelo WhatsApp.');
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Erro ao disparar WhatsApp.');
+    } finally {
+      setSendingWhatsApp(false);
+    }
+  };
 
   if (!isOpen || !appointment) return null;
 
@@ -351,32 +433,148 @@ export const AppointmentDetailsModal: React.FC<AppointmentDetailsModalProps> = (
               </div>
             </div>
 
-            {/* Patient Contact Strip & WhatsApp Shortcut */}
-            <div className="p-3.5 bg-white rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                  <Phone className="w-4 h-4" />
+            {/* Patient Contact Strip & WhatsApp Integrado */}
+            <div className="p-3.5 bg-white rounded-xl border border-slate-200 shadow-2xs space-y-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <Phone className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-slate-800">
+                      {effectivePhone ? formatPhoneDisplay(effectivePhone) : 'Telefone não cadastrado'}
+                    </p>
+                    <p className="text-[11px] text-slate-400">Canal oficial de comunicação</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-xs font-bold text-slate-800">
-                    {appointment.patientPhone || 'Telefone não cadastrado'}
-                  </p>
-                  <p className="text-[11px] text-slate-400">Canal principal de contato</p>
-                </div>
+
+                {/* Status de envio de lembrete / confirmação */}
+                {appointment.status === 'CONFIRMADA' ? (
+                  <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Confirmada pelo paciente</span>
+                  </div>
+                ) : remindersLog.some((l) => l.reminder_type === 'confirmation' && l.status === 'sent') ? (
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-200">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Confirmação enviada</span>
+                  </div>
+                ) : null}
               </div>
 
-              {appointment.patientPhone && (
-                <button
-                  type="button"
-                  onClick={handleOpenWhatsApp}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer"
-                  title="Enviar mensagem WhatsApp"
-                >
-                  <MessageCircle className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>WhatsApp</span>
-                  <ExternalLink className="w-3 h-3 text-emerald-400" />
-                </button>
+              {!hasValidPhone ? (
+                <div className="p-3 bg-amber-50/90 border border-amber-200 rounded-xl flex items-center justify-between gap-3 text-xs text-amber-800 mt-1">
+                  <div className="flex items-center gap-2">
+                    <AlertOctagon className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Este paciente não possui um número de WhatsApp válido.</span>
+                  </div>
+                  {onEditPatient && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onEditPatient(appointment.patientId);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-[11px] shrink-0 cursor-pointer shadow-2xs"
+                    >
+                      Editar Paciente
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-100">
+                  {/* Se já estiver confirmada: mostra selo e não botão principal de envio */}
+                  {appointment.status === 'CONFIRMADA' ? (
+                    <div className="flex-1 flex items-center gap-2 py-0.5">
+                      <span className="text-xs text-emerald-700 font-medium">
+                        ✓ Consulta confirmada pelo paciente
+                      </span>
+                    </div>
+                  ) : remindersLog.some((l) => l.reminder_type === 'confirmation' && l.status === 'sent') ? (
+                    /* Confirmação já enviada: botão de Reenviar com proteção explícita */
+                    <button
+                      type="button"
+                      disabled={sendingWhatsApp || ['CANCELADA', 'FALTOU'].includes(appointment.status)}
+                      onClick={() => handleSendIntegratedWhatsApp('confirmation', true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 transition-colors cursor-pointer"
+                      title="Reenviar confirmação de agendamento por WhatsApp"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5 text-slate-600" />
+                      <span>{sendingWhatsApp ? 'Reenviando...' : 'Reenviar Confirmação'}</span>
+                    </button>
+                  ) : (
+                    /* Confirmação ainda não enviada: Botão principal verde destacado */
+                    <button
+                      type="button"
+                      disabled={sendingWhatsApp || ['CANCELADA', 'FALTOU'].includes(appointment.status)}
+                      onClick={() => handleSendIntegratedWhatsApp('confirmation', false)}
+                      className="flex-1 min-w-[140px] flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 transition-colors cursor-pointer shadow-2xs"
+                      title="Enviar confirmação automática pelo WhatsApp conectado da clínica"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5" />
+                      <span>{sendingWhatsApp ? 'Enviando...' : 'Enviar Confirmação'}</span>
+                    </button>
+                  )}
+
+                  {/* Atalho para Abrir Chat Interno */}
+                  {onOpenWhatsAppChat && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenWhatsAppChat(appointment.patientId, effectivePhone || undefined);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 transition-colors cursor-pointer"
+                      title="Abrir o histórico de conversa com este paciente na Central de Atendimento"
+                    >
+                      <Share2 className="w-3.5 h-3.5 text-teal-600" />
+                      <span>Abrir no Chat</span>
+                    </button>
+                  )}
+
+                  {/* Fallback Externo wa.me */}
+                  <button
+                    type="button"
+                    onClick={handleOpenWhatsApp}
+                    className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                    title="Abrir link wa.me externo"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               )}
+
+              {/* Status discreto das automações (Confirmação, Lembrete 24h, Lembrete 2h) */}
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-[11px]">
+                <span className="text-slate-400 font-medium">WhatsApp:</span>
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
+                    remindersLog.some((l) => l.reminder_type === 'confirmation' && l.status === 'sent')
+                      ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                      : 'bg-slate-100 text-slate-500'
+                  }`}
+                >
+                  Confirmação: {remindersLog.some((l) => l.reminder_type === 'confirmation' && l.status === 'sent') ? 'Enviada' : 'Pendente'}
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
+                    remindersLog.some((l) => l.reminder_type === 'reminder_24h' && l.status === 'sent')
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      : 'bg-slate-100 text-slate-500'
+                  }`}
+                >
+                  Lembrete 24h: {remindersLog.some((l) => l.reminder_type === 'reminder_24h' && l.status === 'sent') ? 'Enviado' : 'Pendente'}
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
+                    remindersLog.some((l) => l.reminder_type === 'reminder_2h' && l.status === 'sent')
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      : 'bg-slate-100 text-slate-500'
+                  }`}
+                >
+                  Lembrete 2h: {remindersLog.some((l) => l.reminder_type === 'reminder_2h' && l.status === 'sent') ? 'Enviado' : 'Pendente'}
+                </span>
+              </div>
             </div>
 
             {/* Notes Section */}
