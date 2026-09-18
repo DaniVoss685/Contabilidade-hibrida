@@ -3,7 +3,7 @@ import { X, UserCheck, RefreshCw, User, Phone, CheckCircle2, AlertCircle, Search
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { WhatsAppContact } from '../../types/whatsapp';
 import { supabase } from '../../lib/supabaseClient';
-import { formatPhoneDisplay } from '../../lib/phoneUtils';
+import { formatPhoneDisplay, getContactDisplayName, getContactInitial } from '../../lib/phoneUtils';
 
 interface EditContactModalProps {
   isOpen: boolean;
@@ -138,9 +138,9 @@ export const EditContactModal: React.FC<EditContactModalProps> = ({
           <div className="flex items-center gap-4 p-3 bg-slate-50 border border-slate-200 rounded-xl">
             <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-lg overflow-hidden border border-slate-200 shrink-0">
               {contact.profile_pic_url ? (
-                <img src={contact.profile_pic_url} alt={contact.name} className="w-full h-full object-cover" />
+                <img src={contact.profile_pic_url} alt={getContactDisplayName(contact)} className="w-full h-full object-cover" />
               ) : (
-                <span>{contact.name.charAt(0).toUpperCase()}</span>
+                <span>{getContactInitial(contact)}</span>
               )}
             </div>
             <div className="flex-1">

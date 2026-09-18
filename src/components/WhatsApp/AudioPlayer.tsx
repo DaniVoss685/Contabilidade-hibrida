@@ -15,6 +15,25 @@ const formatTime = (seconds: number) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
+// Cache global em memória para durações já calculadas (chave = src)
+const durationCache = new Map<string, number>();
+
+// Singleton seguro de AudioContext para decodificação
+let sharedAudioContext: AudioContext | null = null;
+function getSharedAudioContext(): AudioContext | null {
+  try {
+    if (!sharedAudioContext && typeof window !== 'undefined') {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        sharedAudioContext = new AudioCtx();
+      }
+    }
+    return sharedAudioContext;
+  } catch (_e) {
+    return null;
+  }
+}
+
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   src,
   isMine = false,
@@ -24,7 +43,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const isSent = Boolean(isFromMe ?? isMine);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState<number>(initialDuration);
+  const [duration, setDuration] = useState<number>(() => {
+    if (initialDuration > 0) return initialDuration;
+    if (src && durationCache.has(src)) return durationCache.get(src)!;
+    return 0;
+  });
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [isMuted, setIsMuted] = useState(false);
 
@@ -34,35 +57,58 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     const audio = audioRef.current;
     if (!audio) return;
 
-    if (initialDuration > 0) {
+    let isSubscribed = true;
+
+    // Se já tiver no cache, aplicar imediatamente
+    if (durationCache.has(src)) {
+      setDuration(durationCache.get(src)!);
+    } else if (initialDuration > 0) {
       setDuration(initialDuration);
     }
 
+    const fetchAudioDuration = async (url: string) => {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) return;
+        const arrayBuffer = await response.arrayBuffer();
+        const ctx = getSharedAudioContext();
+        if (!ctx) return;
+
+        // decodeAudioData lê os cabeçalhos de todos os containers (OGG Opus, MP3, AAC, WebM)
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+        if (audioBuffer && audioBuffer.duration && isFinite(audioBuffer.duration)) {
+          durationCache.set(url, audioBuffer.duration);
+          if (isSubscribed) {
+            setDuration(audioBuffer.duration);
+          }
+        }
+      } catch (_err) {
+        // Silencioso em caso de erro de decode
+      }
+    };
+
     const checkAndSetDuration = () => {
       if (audio.duration && isFinite(audio.duration) && audio.duration > 0) {
-        setDuration(audio.duration);
-      } else if (audio.duration === Infinity || isNaN(audio.duration)) {
-        // Workaround Chromium: força decodificação do header do arquivo webm/ogg para calcular duration
-        const originalTime = audio.currentTime;
-        audio.currentTime = 1e101;
-        const onTimeSeek = () => {
-          audio.removeEventListener('timeupdate', onTimeSeek);
-          audio.currentTime = originalTime;
-          if (audio.duration && isFinite(audio.duration)) {
-            setDuration(audio.duration);
-          }
-        };
-        audio.addEventListener('timeupdate', onTimeSeek, { once: true });
+        if (isSubscribed) {
+          setDuration(audio.duration);
+          durationCache.set(src, audio.duration);
+        }
+      } else if (!durationCache.has(src)) {
+        fetchAudioDuration(src);
       }
     };
 
     const setAudioTime = () => {
-      setCurrentTime(audio.currentTime);
+      if (isSubscribed) {
+        setCurrentTime(audio.currentTime);
+      }
     };
 
     const handleEnded = () => {
-      setIsPlaying(false);
-      setCurrentTime(0);
+      if (isSubscribed) {
+        setIsPlaying(false);
+        setCurrentTime(0);
+      }
       if (audio) {
         audio.currentTime = 0;
       }
@@ -74,12 +120,17 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     audio.addEventListener('timeupdate', setAudioTime);
     audio.addEventListener('ended', handleEnded);
 
-    // Se já estiver com metadados carregados
+    // Carregar elemento
+    audio.load();
+
     if (audio.readyState >= 1) {
       checkAndSetDuration();
+    } else {
+      fetchAudioDuration(src);
     }
 
     return () => {
+      isSubscribed = false;
       audio.removeEventListener('loadedmetadata', checkAndSetDuration);
       audio.removeEventListener('durationchange', checkAndSetDuration);
       audio.removeEventListener('canplay', checkAndSetDuration);
@@ -91,6 +142,12 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const togglePlayPause = () => {
     const audio = audioRef.current;
     if (!audio) return;
+
+    // Despertar AudioContext se estiver suspenso
+    const ctx = getSharedAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
 
     if (isPlaying) {
       audio.pause();
@@ -141,7 +198,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           : 'bg-slate-100 border-slate-300/80 text-slate-800'
       }`}
     >
-      <audio ref={audioRef} src={src} preload="metadata" />
+      <audio ref={audioRef} src={src} preload="auto" />
 
       {/* Botão Play / Pause com Alto Contraste */}
       <button

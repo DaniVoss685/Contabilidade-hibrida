@@ -25,7 +25,9 @@ import { EditContactModal } from './EditContactModal';
 import { InstanceConfigModal } from './InstanceConfigModal';
 import { AppointmentModal } from '../Appointments/AppointmentModal';
 import { AppointmentDetailsModal } from '../Appointments/AppointmentDetailsModal';
-import { Appointment } from '../../types';
+import { PatientModal } from '../Modals/PatientModal';
+import { Appointment, Patient } from '../../types';
+import { normalizeBrazilianNumber } from '../../lib/phoneUtils';
 
 export interface RealtimeMessageEvent {
   eventType: 'INSERT' | 'UPDATE' | 'DELETE';
@@ -72,6 +74,46 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   const [scheduleRescheduleFrom, setScheduleRescheduleFrom] = useState<Appointment | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [detailsAppointment, setDetailsAppointment] = useState<Appointment | null>(null);
+
+  // Modal de Cadastro/Vínculo de Paciente
+  const [isPatientModalOpen, setIsPatientModalOpen] = useState(false);
+  const [patientModalInitialData, setPatientModalInitialData] = useState<{
+    name?: string;
+    phone?: string;
+  } | null>(null);
+
+  const handleOpenCreatePatient = (initial?: { name?: string; phone?: string }) => {
+    const ctc = selectedConversation?.contact;
+    setPatientModalInitialData(
+      initial || {
+        name: ctc?.name,
+        phone: ctc?.whatsapp_number,
+      }
+    );
+    setIsPatientModalOpen(true);
+  };
+
+  const handlePatientSaved = async (savedPatient: Patient) => {
+    // O trigger do banco de dados (fn_sync_df_patient_to_wa_contact) já vincula ou cria
+    // atomicamente o contato correto com base no telefone oficial do paciente.
+    // NUNCA forçar o vínculo do contato atualmente selecionado se ele possuir um número
+    // diferente do paciente salvo, evitando duplo vínculo em contatos distintos.
+    const currentCtc = selectedConversation?.contact;
+    if (currentCtc && tenantId && savedPatient.phone) {
+      const normCtc = normalizeBrazilianNumber(currentCtc.whatsapp_number);
+      const normPat = normalizeBrazilianNumber(savedPatient.phone);
+      if (normCtc && normPat && normCtc === normPat && !currentCtc.patient_id) {
+        await DentalWhatsAppService.linkPatientToContact(
+          currentCtc.id,
+          savedPatient.id,
+          tenantId
+        );
+      }
+    }
+    await loadConversations(false);
+    setIsPatientModalOpen(false);
+    setPatientModalInitialData(null);
+  };
 
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -348,7 +390,74 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
           table: 'df_wa_contacts',
           filter: `tenant_id=eq.${tenantId}`,
         },
-        () => {
+        (payload) => {
+          if (payload.eventType === 'UPDATE' && payload.new) {
+            const updatedCtc = payload.new as WhatsAppContact;
+            const newPatientId = updatedCtc.patient_id || null;
+
+            setConversations((prev) =>
+              prev.map((conv) => {
+                if (conv.contact_id === updatedCtc.id && conv.contact) {
+                  return {
+                    ...conv,
+                    contact: {
+                      ...conv.contact,
+                      name: updatedCtc.name,
+                      profile_pic_url: updatedCtc.profile_pic_url || conv.contact.profile_pic_url,
+                      patient_id: newPatientId,
+                      patient: newPatientId ? conv.contact.patient : null,
+                    },
+                  };
+                }
+                return conv;
+              })
+            );
+            setHistory((prev) =>
+              prev.map((conv) => {
+                if (conv.contact_id === updatedCtc.id && conv.contact) {
+                  return {
+                    ...conv,
+                    contact: {
+                      ...conv.contact,
+                      name: updatedCtc.name,
+                      profile_pic_url: updatedCtc.profile_pic_url || conv.contact.profile_pic_url,
+                      patient_id: newPatientId,
+                      patient: newPatientId ? conv.contact.patient : null,
+                    },
+                  };
+                }
+                return conv;
+              })
+            );
+            setContacts((prev) =>
+              prev.map((c) =>
+                c.id === updatedCtc.id
+                  ? {
+                      ...c,
+                      name: updatedCtc.name,
+                      profile_pic_url: updatedCtc.profile_pic_url || c.profile_pic_url,
+                      patient_id: newPatientId,
+                      patient: newPatientId ? c.patient : null,
+                    }
+                  : c
+              )
+            );
+            setSelectedConversation((prev) => {
+              if (prev && prev.contact_id === updatedCtc.id && prev.contact) {
+                return {
+                  ...prev,
+                  contact: {
+                    ...prev.contact,
+                    name: updatedCtc.name,
+                    profile_pic_url: updatedCtc.profile_pic_url || prev.contact.profile_pic_url,
+                    patient_id: newPatientId,
+                    patient: newPatientId ? prev.contact.patient : null,
+                  },
+                };
+              }
+              return prev;
+            });
+          }
           triggerDebouncedLoad(300);
         }
       )
@@ -557,6 +666,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
             {selectedConversation ? (
               <div className="flex-1 min-h-0 flex h-full overflow-hidden">
                 <WhatsAppChatArea
+                  key={`${tenantId}_${selectedConversation.id}`}
                   conversation={selectedConversation}
                   tenantId={tenantId}
                   currentUserId={currentUserId}
@@ -567,6 +677,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                   onConversationUpdated={() => loadConversations(false)}
                   onSelectConversation={(conv) => setSelectedConversation(conv)}
                   realtimeMessageEvent={activeChatRealtimeEvent}
+                  onOpenCreatePatient={handleOpenCreatePatient}
                 />
 
                 {/* Gaveta de Contexto do Atendimento */}
@@ -578,6 +689,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                   tenantId={tenantId}
                   currentUserId={currentUserId}
                   onOpenEditContact={() => setIsEditContactOpen(true)}
+                  onOpenPatientModal={handleOpenCreatePatient}
                   onNoteAdded={() => loadConversations(false)}
                   onNavigateToAgenda={onNavigateToAgenda}
                   onOpenScheduleModal={(patId) => {
@@ -703,6 +815,20 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
             );
             loadConversations(false);
           }}
+        />
+      )}
+
+      {/* MODAL CADASTRAR PACIENTE */}
+      {isPatientModalOpen && (
+        <PatientModal
+          isOpen={isPatientModalOpen}
+          onClose={() => {
+            setIsPatientModalOpen(false);
+            setPatientModalInitialData(null);
+          }}
+          mode="create"
+          initialData={patientModalInitialData}
+          onSave={handlePatientSaved}
         />
       )}
 

@@ -34,6 +34,8 @@ import {
   Bell,
   Calendar,
   Clock,
+  Plus,
+  Users,
 } from 'lucide-react';
 import {
   WhatsAppConversation,
@@ -48,7 +50,7 @@ import { Appointment } from '../../types';
 import { formatDateBr } from '../../lib/masks';
 import { supabase } from '../../lib/supabaseClient';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
-import { formatPhoneDisplay } from '../../lib/phoneUtils';
+import { formatPhoneDisplay, getContactDisplayName, getContactInitial, isWhatsAppGroup } from '../../lib/phoneUtils';
 import { TransferModal } from './TransferModal';
 import { FinalizeModal } from './FinalizeModal';
 import { MediaViewerModal } from './MediaViewerModal';
@@ -104,6 +106,7 @@ interface WhatsAppChatAreaProps {
   onConversationUpdated?: () => void;
   onSelectConversation?: (conv: WhatsAppConversation) => void;
   realtimeMessageEvent?: RealtimeMessageEvent | null;
+  onOpenCreatePatient?: () => void;
 }
 
 interface PendingAttachment {
@@ -126,6 +129,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   onConversationUpdated,
   onSelectConversation,
   realtimeMessageEvent,
+  onOpenCreatePatient,
 }) => {
   const [timelineItems, setTimelineItems] = useState<WhatsAppTimelineItem[]>([]);
   const [loadingTimeline, setLoadingTimeline] = useState(true);
@@ -245,6 +249,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   };
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef<boolean>(true);
   const isInitialLoadRef = useRef<boolean>(true);
@@ -302,9 +307,12 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   // Scroll EXATO no final matemático da conversa (sem tolerância, 100% visível)
   const forceExactScrollToBottom = () => {
     const el = messagesContainerRef.current;
-    if (!el) return;
-    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-    el.scrollTop = maxScroll;
+    if (bottomSentinelRef.current) {
+      bottomSentinelRef.current.scrollIntoView({ block: 'end', behavior: 'instant' as any });
+    }
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
     isNearBottomRef.current = true;
     setShowNewMessageButton(false);
     setUnreadIncomingCount(0);
@@ -312,27 +320,26 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     const el = messagesContainerRef.current;
-    if (el) {
-      if (behavior === 'auto') {
-        forceExactScrollToBottom();
-      } else {
-        const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
-        el.scrollTo({ top: maxScroll, behavior: 'smooth' });
-        isNearBottomRef.current = true;
-        setShowNewMessageButton(false);
-        setUnreadIncomingCount(0);
-      }
-    } else if (bottomSentinelRef.current) {
-      bottomSentinelRef.current.scrollIntoView({ behavior });
+    if (behavior === 'auto' || behavior === 'instant') {
+      forceExactScrollToBottom();
+      return;
     }
+    if (bottomSentinelRef.current) {
+      bottomSentinelRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    } else if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
+    isNearBottomRef.current = true;
+    setShowNewMessageButton(false);
+    setUnreadIncomingCount(0);
   };
 
   const handleScroll = () => {
     const el = messagesContainerRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    // Se estiver a menos de 40px, está rigorosamente no final
-    const isNear = distanceFromBottom <= 40;
+    // Se estiver a menos de 60px, está considerado no final
+    const isNear = distanceFromBottom <= 60;
     isNearBottomRef.current = isNear;
 
     if (isNear) {
@@ -461,28 +468,27 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
     }
   }, [loadingTimeline, conversation.id]);
 
-  // ResizeObserver: se imagem, sticker ou áudio terminar de carregar e expandir a altura,
-  // manter scrollTop = scrollHeight - clientHeight caso o operador não tenha subido o scroll
+  // ResizeObserver no messagesContentRef: monitora quando imagens, áudios e DOM expandem a altura
   useEffect(() => {
+    const contentEl = messagesContentRef.current;
     const container = messagesContainerRef.current;
-    if (!container) return;
+    if (!contentEl || !container) return;
 
-    let prevScrollHeight = container.scrollHeight;
+    let prevContentHeight = contentEl.scrollHeight;
 
     const ro = new ResizeObserver(() => {
-      const currentScrollHeight = container.scrollHeight;
-      if (currentScrollHeight !== prevScrollHeight) {
-        if (isNearBottomRef.current) {
-          const target = Math.max(0, currentScrollHeight - container.clientHeight);
-          container.scrollTop = target;
+      const currentHeight = contentEl.scrollHeight;
+      if (currentHeight !== prevContentHeight) {
+        if (isNearBottomRef.current || isInitialLoadRef.current) {
+          forceExactScrollToBottom();
         }
-        prevScrollHeight = currentScrollHeight;
+        prevContentHeight = currentHeight;
       }
     });
 
-    ro.observe(container);
+    ro.observe(contentEl);
     return () => ro.disconnect();
-  }, []);
+  }, [conversation.id]);
 
   // Handlers de Pesquisa na Conversa
   const handleCloseSearch = () => {
@@ -856,13 +862,16 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
         );
         setIsInternalNote(false);
       } else {
-        await DentalWhatsAppService.sendMessage({
+        const sendRes = await DentalWhatsAppService.sendMessage({
           conversationId: conversation.id,
           tenantId,
           senderId: currentUserId,
           content: contentToSend,
           replyToId: replyingTo?.id,
         });
+        if (!sendRes.success && sendRes.error) {
+          console.warn('Falha no envio WhatsApp:', sendRes.error);
+        }
         setReplyingTo(null);
       }
 
@@ -1094,8 +1103,54 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
     }
   };
 
+  const [retryingMsgId, setRetryingMsgId] = useState<string | null>(null);
+
+  const handleRetryMessage = async (msg: WhatsAppMessage) => {
+    if (retryingMsgId === msg.id) return;
+    setRetryingMsgId(msg.id);
+    try {
+      const res = await DentalWhatsAppService.retryFailedMessage({
+        messageId: msg.id,
+        tenantId,
+        conversationId: conversation.id,
+      });
+      if (res.success) {
+        await loadTimeline();
+        onConversationUpdated?.();
+      } else {
+        alert(`Não foi possível reenviar a mensagem: ${res.error || 'Erro desconhecido'}`);
+      }
+    } catch (e: any) {
+      alert(`Falha ao reenviar: ${e.message || 'Erro de conexão'}`);
+    } finally {
+      setRetryingMsgId(null);
+    }
+  };
+
   // Renderizador de Status de Entrega
-  const renderDeliveryStatus = (status: number) => {
+  const renderDeliveryStatus = (status: number, msg?: WhatsAppMessage) => {
+    if (status === -1) {
+      const isRetrying = msg && retryingMsgId === msg.id;
+      return (
+        <span className="flex items-center gap-1 text-rose-300 font-semibold" title="Falha no envio da mensagem">
+          <AlertCircle className="w-3.5 h-3.5 text-rose-300" />
+          {msg && (
+            <button
+              type="button"
+              disabled={isRetrying}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleRetryMessage(msg);
+              }}
+              className="hover:underline cursor-pointer text-[9px] bg-rose-900/70 hover:bg-rose-900 text-rose-100 px-1.5 py-0.5 rounded border border-rose-400/40"
+              title="Clique para tentar reenviar esta mensagem pelo WhatsApp"
+            >
+              {isRetrying ? 'Reenviando...' : 'Reenviar'}
+            </button>
+          )}
+        </span>
+      );
+    }
     if (status === 1) return <Check className="w-3.5 h-3.5 text-slate-400" title="Pendente" />;
     if (status === 2) return <Check className="w-3.5 h-3.5 text-slate-400" title="Enviado ao servidor" />;
     if (status === 3) return <CheckCheck className="w-3.5 h-3.5 text-slate-400" title="Entregue" />;
@@ -1166,9 +1221,9 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
           <div className="relative">
             <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm overflow-hidden border border-slate-200 shadow-2xs">
               {contactPhoto ? (
-                <img src={contactPhoto} alt={contact?.name} className="w-full h-full object-cover" />
+                <img src={contactPhoto} alt={getContactDisplayName(contact)} className="w-full h-full object-cover" />
               ) : (
-                <span>{contact?.name?.charAt(0).toUpperCase() || 'C'}</span>
+                <span>{getContactInitial(contact)}</span>
               )}
             </div>
             <div
@@ -1185,7 +1240,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-bold text-slate-800 truncate max-w-[200px] sm:max-w-xs">
-                {contact?.name}
+                {getContactDisplayName(contact)}
               </h3>
               <button
                 type="button"
@@ -1196,10 +1251,44 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${syncingPic ? 'animate-spin text-emerald-600' : ''}`} />
               </button>
-              {contact?.patient && (
+              {isWhatsAppGroup(contact?.whatsapp_number) ? (
+                <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 text-[10px] font-bold flex items-center gap-1">
+                  <Users className="w-3 h-3 text-purple-700" />
+                  Grupo
+                </span>
+              ) : contact?.patient || contact?.patient_id ? (
                 <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
                   Paciente
                 </span>
+              ) : (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3" />
+                    Não cadastrado
+                  </span>
+                  {onOpenCreatePatient && (
+                    <button
+                      type="button"
+                      onClick={onOpenCreatePatient}
+                      className="px-2 py-0.5 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+                      title="Cadastrar este contato como paciente"
+                    >
+                      <Plus className="w-2.5 h-2.5" />
+                      Cadastrar
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!showContext && onToggleContext) onToggleContext();
+                    }}
+                    className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+                    title="Vincular a um paciente existente (abre painel lateral)"
+                  >
+                    <UserCheck className="w-2.5 h-2.5" />
+                    Vincular
+                  </button>
+                </div>
               )}
               {!isAttendanceActive && (
                 <span className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-medium hidden sm:inline">
@@ -1218,9 +1307,16 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                 </button>
               )}
             </div>
-            <p className="text-xs text-slate-500 font-mono">
-              {formatPhoneDisplay(contact?.whatsapp_number || '')}
-            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-xs text-slate-500 font-mono">
+                {formatPhoneDisplay(contact?.whatsapp_number || '')}
+              </p>
+              {conversation.assigned_user?.name && (
+                <span className="text-[11px] text-slate-400 font-sans">
+                  • Atendente: <strong className="text-slate-600 font-medium">{conversation.assigned_user.name}</strong>
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1377,8 +1473,9 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto p-4 sm:p-6 pb-6 sm:pb-8 space-y-3 relative"
+        className="flex-1 overflow-y-auto p-4 sm:p-6 pb-2 relative"
       >
+        <div ref={messagesContentRef} className="space-y-3 min-h-full flex flex-col justify-end">
         {loadingTimeline ? (
           <div className="flex items-center justify-center h-full text-xs text-slate-400">
             Carregando mensagens...
@@ -1549,7 +1646,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                           title="Clique para ir até a mensagem citada"
                         >
                           <p className="font-semibold text-[10px]">
-                            {msg.reply_to_message.from_me ? 'Você' : contact?.name}
+                            {msg.reply_to_message.from_me ? 'Você' : getContactDisplayName(contact)}
                           </p>
                           <p className="truncate">{msg.reply_to_message.content || 'Mídia'}</p>
                         </div>
@@ -1605,7 +1702,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                       {msg.msg_type === 'audio' && (
                         <div className="my-1 w-72 max-w-full">
                           {mediaUrl ? (
-                            <AudioPlayer src={mediaUrl} isFromMe={isMine} />
+                            <AudioPlayer key={mediaUrl || msg.id} src={mediaUrl} isFromMe={isMine} />
                           ) : (
                             <div className="flex items-center gap-2 text-slate-400 py-1">
                               <Mic className="w-4 h-4 animate-pulse text-emerald-500" />
@@ -1764,7 +1861,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                               minute: '2-digit',
                             })}
                           </span>
-                          {isMine && renderDeliveryStatus(msg.delivery_status)}
+                          {isMine && renderDeliveryStatus(msg.delivery_status, msg)}
                         </div>
                       )}
 
@@ -1896,7 +1993,8 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
             );
           })
         )}
-        <div ref={bottomSentinelRef} className="h-2 w-full shrink-0" />
+          <div ref={bottomSentinelRef} className="h-6 sm:h-8 w-full shrink-0" aria-hidden="true" />
+        </div>
       </div>
 
       {/* Botão Flutuante '↓ Nova mensagem' quando o usuário está lendo histórico */}
@@ -1924,7 +2022,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
           <div className="flex items-center gap-2 overflow-hidden">
             <Reply className="w-4 h-4 text-emerald-600 shrink-0" />
             <div className="truncate">
-              <span className="font-bold">Respondendo a {replyingTo.from_me ? 'você' : contact?.name}: </span>
+              <span className="font-bold">Respondendo a {replyingTo.from_me ? 'você' : getContactDisplayName(contact)}: </span>
               <span className="text-slate-600 truncate">{replyingTo.content || 'Mídia'}</span>
             </div>
           </div>

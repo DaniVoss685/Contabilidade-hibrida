@@ -10,6 +10,7 @@ import {
   QrCode,
   Sparkles,
   MessageSquareText,
+  Users,
 } from 'lucide-react';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { formatPhoneDisplay } from '../../lib/phoneUtils';
@@ -40,6 +41,8 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
 
   const [loading, setLoading] = useState<boolean>(true);
   const [actionLoading, setActionLoading] = useState<boolean>(false);
+  const [syncLoading, setSyncLoading] = useState<boolean>(false);
+  const [syncFeedback, setSyncFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
@@ -202,6 +205,39 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
     }
   };
 
+  // Sincronizar nomes e fotos da agenda do WhatsApp
+  const handleSyncContacts = async () => {
+    setSyncLoading(true);
+    setSyncFeedback(null);
+
+    try {
+      const res = await DentalWhatsAppService.syncContactsNames(cleanTenantId);
+      if (!res.success) {
+        throw new Error(res.error || 'Falha ao sincronizar agenda');
+      }
+
+      const updated = res.updatedCount || 0;
+      if (updated > 0) {
+        setSyncFeedback({
+          type: 'success',
+          message: `${updated} contato(s) atualizados com nomes e fotos da agenda do WhatsApp!`,
+        });
+      } else {
+        setSyncFeedback({
+          type: 'success',
+          message: 'Todos os contatos da clínica já estão sincronizados com nomes identificados.',
+        });
+      }
+    } catch (err: any) {
+      setSyncFeedback({
+        type: 'error',
+        message: err.message || 'Erro ao sincronizar contatos.',
+      });
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -360,6 +396,44 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Perfil:</span>
                       <span className="font-semibold text-slate-700">{profileName}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Sincronização de Agenda com a Evolution API */}
+                <div className="p-3.5 bg-emerald-50/70 rounded-2xl border border-emerald-100 text-left space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-emerald-900 font-bold text-xs">
+                      <Users className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>Agenda do WhatsApp</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSyncContacts}
+                      disabled={syncLoading || actionLoading}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-xs disabled:opacity-50 shrink-0"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${syncLoading ? 'animate-spin' : ''}`} />
+                      <span>{syncLoading ? 'Sincronizando...' : 'Sincronizar Nomes'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Importa os nomes e fotos salvos na agenda do telefone para identificar números que aparecem sem nome.
+                  </p>
+                  {syncFeedback && (
+                    <div
+                      className={`p-2.5 rounded-xl text-xs flex items-start gap-2 animate-in fade-in duration-200 ${
+                        syncFeedback.type === 'success'
+                          ? 'bg-emerald-100/90 text-emerald-900'
+                          : 'bg-rose-100 text-rose-800'
+                      }`}
+                    >
+                      {syncFeedback.type === 'success' ? (
+                        <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-700 mt-0.5" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+                      )}
+                      <span className="leading-tight font-medium">{syncFeedback.message}</span>
                     </div>
                   )}
                 </div>

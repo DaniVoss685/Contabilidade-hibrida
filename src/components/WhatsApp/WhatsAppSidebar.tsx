@@ -15,7 +15,7 @@ import {
   Archive,
 } from 'lucide-react';
 import { WhatsAppConversation, WhatsAppContact } from '../../types/whatsapp';
-import { formatPhoneDisplay } from '../../lib/phoneUtils';
+import { formatPhoneDisplay, getContactDisplayName, getContactInitial, isWhatsAppGroup } from '../../lib/phoneUtils';
 
 function formatMessageTime(dateStr?: string | null): string {
   if (!dateStr) return '';
@@ -116,10 +116,10 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
   if (search.trim()) {
     const term = search.toLowerCase();
     listToDisplay = listToDisplay.filter((c) => {
-      const nameMatch = c.contact?.name.toLowerCase().includes(term);
+      const displayName = getContactDisplayName(c.contact).toLowerCase();
       const phoneMatch = c.contact?.whatsapp_number.includes(term);
       const msgMatch = c.last_message_content?.toLowerCase().includes(term);
-      return nameMatch || phoneMatch || msgMatch;
+      return displayName.includes(term) || phoneMatch || msgMatch;
     });
   }
 
@@ -133,7 +133,8 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
   const filteredContacts = contacts.filter((ctc) => {
     if (!search.trim()) return true;
     const term = search.toLowerCase();
-    return ctc.name.toLowerCase().includes(term) || ctc.whatsapp_number.includes(term);
+    const displayName = getContactDisplayName(ctc).toLowerCase();
+    return displayName.includes(term) || ctc.whatsapp_number.includes(term);
   });
 
   const getStatusBadge = (status: string) => {
@@ -275,17 +276,25 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm overflow-hidden border border-slate-200 shrink-0">
                     {ctc.profile_pic_url ? (
-                      <img src={ctc.profile_pic_url} alt={ctc.name} className="w-full h-full object-cover" />
+                      <img src={ctc.profile_pic_url} alt={getContactDisplayName(ctc)} className="w-full h-full object-cover" />
                     ) : (
-                      <span>{ctc.name.charAt(0).toUpperCase()}</span>
+                      <span>{getContactInitial(ctc)}</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <p className="text-xs font-semibold text-slate-800 truncate">{ctc.name}</p>
-                      {ctc.patient && (
+                      <p className="text-xs font-semibold text-slate-800 truncate">{getContactDisplayName(ctc)}</p>
+                      {isWhatsAppGroup(ctc.whatsapp_number) ? (
+                        <span className="px-1.5 py-0.2 rounded-full bg-purple-100 text-purple-800 text-[9px] font-bold shrink-0">
+                          Grupo
+                        </span>
+                      ) : ctc.patient || ctc.patient_id ? (
                         <span className="px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 text-[9px] font-bold shrink-0">
                           Paciente
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 text-[9px] font-bold shrink-0">
+                          Não cadastrado
                         </span>
                       )}
                     </div>
@@ -331,9 +340,9 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
                 <div className="relative shrink-0 mt-0.5">
                   <div className="w-11 h-11 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm overflow-hidden border border-slate-200 shadow-2xs">
                     {ctc?.profile_pic_url ? (
-                      <img src={ctc.profile_pic_url} alt={ctc.name} className="w-full h-full object-cover" />
+                      <img src={ctc.profile_pic_url} alt={getContactDisplayName(ctc)} className="w-full h-full object-cover" />
                     ) : (
-                      <span>{ctc?.name?.charAt(0).toUpperCase() || 'C'}</span>
+                      <span>{getContactInitial(ctc)}</span>
                     )}
                   </div>
                   <div
@@ -350,7 +359,7 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
                 {/* Info & Snippet */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between mb-0.5">
-                    <h4 className="text-xs font-bold text-slate-800 truncate">{ctc?.name}</h4>
+                    <h4 className="text-xs font-bold text-slate-800 truncate">{getContactDisplayName(ctc)}</h4>
                     <span className="text-[10px] text-slate-400 whitespace-nowrap ml-2 font-mono">
                       {formatMessageTime(conv.last_message_at || conv.created_at)}
                     </span>
@@ -373,6 +382,15 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
                   {/* Status & Attendant */}
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {getStatusBadge(conv.status)}
+                    {isWhatsAppGroup(ctc?.whatsapp_number) ? (
+                      <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200/60">
+                        Grupo
+                      </span>
+                    ) : !ctc?.patient && !ctc?.patient_id ? (
+                      <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200/60">
+                        Não cadastrado
+                      </span>
+                    ) : null}
                     {conv.assigned_user?.name && (
                       <span className="text-[10px] text-slate-400 truncate">
                         • {conv.assigned_user.name}

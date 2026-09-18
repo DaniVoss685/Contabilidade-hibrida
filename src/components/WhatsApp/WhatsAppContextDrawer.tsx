@@ -20,10 +20,11 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
+  Users,
 } from 'lucide-react';
 import { WhatsAppConversation, WhatsAppTimelineItem } from '../../types/whatsapp';
 import { Appointment, Patient } from '../../types';
-import { formatPhoneDisplay } from '../../lib/phoneUtils';
+import { formatPhoneDisplay, getContactDisplayName, getContactInitial, isWhatsAppGroup, normalizeBrazilianNumber } from '../../lib/phoneUtils';
 import { formatDateBr } from '../../lib/masks';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { supabase } from '../../lib/supabaseClient';
@@ -38,6 +39,7 @@ interface WhatsAppContextDrawerProps {
   tenantId: string;
   currentUserId?: string;
   onOpenEditContact: () => void;
+  onOpenPatientModal?: () => void;
   onNoteAdded: () => void;
   onNavigateToAgenda?: (date?: string, patientId?: string) => void;
   onOpenScheduleModal?: (patientId?: string) => void;
@@ -54,6 +56,7 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
   tenantId,
   currentUserId,
   onOpenEditContact,
+  onOpenPatientModal,
   onNoteAdded,
   onNavigateToAgenda,
   onOpenScheduleModal,
@@ -137,18 +140,58 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
     }
   };
 
-  // Vínculo rápido de paciente
-  const handleLinkPatient = async (patientId: string) => {
-    if (!contact?.id || !patientId || !tenantId) return;
+  // Vínculo rápido de paciente com verificação estrita de divergência de telefone e proteção 1:1
+  const handleLinkPatient = async (targetPatient: Patient) => {
+    if (!contact?.id || !targetPatient?.id || !tenantId) return;
+
+    // Verificar se o telefone do paciente diverge do WhatsApp (normalização canônica)
+    const normContact = normalizeBrazilianNumber(contact.whatsapp_number);
+    const normPatient = normalizeBrazilianNumber(targetPatient.phone || '');
+
+    if (normPatient && normContact && normPatient !== normContact) {
+      const confirmChange = window.confirm(
+        `Atenção: O paciente "${targetPatient.name}" tem o telefone cadastrado "${targetPatient.phone}", diferente deste WhatsApp (${formatPhoneDisplay(
+          contact.whatsapp_number
+        )}).\n\nDeseja vincular este número de WhatsApp ao paciente mesmo assim?`
+      );
+      if (!confirmChange) return;
+    }
+
     setIsLinking(true);
     try {
-      const res = await DentalWhatsAppService.linkPatientToContact(contact.id, patientId, tenantId);
+      let res = await DentalWhatsAppService.linkPatientToContact(contact.id, targetPatient.id, tenantId);
+
+      // Se o paciente já está vinculado a outro contato do mesmo tenant, solicitar transferência explícita
+      if (!res.success && res.alreadyLinkedToOther) {
+        const confirmTransfer = window.confirm(
+          `Atenção: O paciente "${targetPatient.name}" já está vinculado ao contato "${res.existingContactName}" (${formatPhoneDisplay(
+            res.existingContactPhone || ''
+          )}).\n\nDeseja transferir o vínculo clínico para este contato (${formatPhoneDisplay(contact.whatsapp_number)})?`
+        );
+        if (!confirmTransfer) {
+          setIsLinking(false);
+          return;
+        }
+
+        // Executar transferência atômica
+        res = await DentalWhatsAppService.linkPatientToContact(contact.id, targetPatient.id, tenantId, {
+          forceTransfer: true,
+        });
+      }
+
       if (res.success) {
         toast.success('Contato vinculado ao paciente com sucesso!');
         setShowLinkSearch(false);
         setPatientSearchTerm('');
         if (contact) {
-          contact.patient_id = patientId;
+          contact.patient_id = targetPatient.id;
+          contact.patient = {
+            id: targetPatient.id,
+            name: targetPatient.name,
+            cpf: targetPatient.cpf,
+            phone: targetPatient.phone,
+            email: targetPatient.email,
+          };
         }
         await loadAgenda();
         if (onTimelineRefresh) onTimelineRefresh();
@@ -370,14 +413,14 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
                 {contact?.profile_pic_url ? (
                   <img
                     src={contact.profile_pic_url}
-                    alt={contact.name}
+                    alt={getContactDisplayName(contact)}
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <span>{contact?.name.charAt(0).toUpperCase() || 'C'}</span>
+                  <span>{getContactInitial(contact)}</span>
                 )}
               </div>
-              <h4 className="text-base font-bold text-slate-900">{contact?.name}</h4>
+              <h4 className="text-base font-bold text-slate-900">{getContactDisplayName(contact)}</h4>
               <p className="text-xs text-slate-500 font-mono mt-0.5">
                 {formatPhoneDisplay(contact?.whatsapp_number || '')}
               </p>
@@ -390,127 +433,154 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
               </button>
             </div>
 
-            {/* Paciente Vinculado */}
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                  Paciente Clínico
-                </span>
+            {/* Seção Paciente Clínico / Informações de Grupo */}
+            {isWhatsAppGroup(contact?.whatsapp_number) ? (
+              <div className="p-4 rounded-xl bg-purple-50/80 border border-purple-200">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-purple-800 flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-purple-600" />
+                    Grupo do WhatsApp
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 text-[10px] font-bold">
+                    Coletivo
+                  </span>
+                </div>
+                <p className="text-xs text-purple-900 leading-relaxed font-medium">
+                  Esta conversa é um grupo coletivo de WhatsApp. Grupos não são associados a cadastros de pacientes individuais nem a agendamentos odontológicos.
+                </p>
+              </div>
+            ) : (
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Paciente Clínico
+                  </span>
+                  {patient || contact?.patient_id ? (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                      ✓ Vinculado
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
+                      Não vinculado
+                    </span>
+                  )}
+                </div>
+
                 {patient || contact?.patient_id ? (
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
-                    ✓ Vinculado
-                  </span>
+                  <div className="space-y-2 text-xs text-slate-700">
+                    <div>
+                      <p className="font-semibold text-slate-900">{patient?.name || 'Paciente cadastrado'}</p>
+                      {patient?.cpf && <p className="text-slate-500">CPF: {patient.cpf}</p>}
+                      {patient?.phone && <p className="text-slate-500">Tel: {patient.phone}</p>}
+                      {patient?.email && <p className="text-slate-500">Email: {patient.email}</p>}
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowLinkSearch(true)}
+                        className="text-[11px] font-semibold text-slate-600 hover:text-slate-900 underline cursor-pointer"
+                      >
+                        Alterar vínculo
+                      </button>
+                      <span className="text-slate-300">•</span>
+                      <button
+                        type="button"
+                        onClick={handleUnlinkPatient}
+                        className="text-[11px] font-semibold text-rose-600 hover:text-rose-700 underline cursor-pointer"
+                      >
+                        Desvincular
+                      </button>
+                    </div>
+                  </div>
                 ) : (
-                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
-                    Não vinculado
-                  </span>
+                  <div>
+                    <p className="text-xs text-slate-500 mb-2.5">
+                      Nenhum paciente do sistema vinculado a este número.
+                    </p>
+                    {!showLinkSearch ? (
+                      <div className="flex flex-col gap-2">
+                        {onOpenPatientModal && (
+                          <button
+                            type="button"
+                            onClick={onOpenPatientModal}
+                            className="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Cadastrar como Paciente</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowLinkSearch(true)}
+                          className="w-full py-2 px-3 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-medium rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <UserCheck className="w-3.5 h-3.5" />
+                          <span>Vincular a Paciente Existente</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-slate-700">Buscar paciente:</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowLinkSearch(false);
+                              setPatientSearchTerm('');
+                            }}
+                            className="text-[10px] text-slate-400 hover:text-slate-600"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
+                          <input
+                            type="text"
+                            placeholder="Nome, CPF ou telefone..."
+                            value={patientSearchTerm}
+                            onChange={(e) => setPatientSearchTerm(e.target.value)}
+                            className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          />
+                        </div>
+                        <div className="max-h-36 overflow-y-auto space-y-1 pt-1">
+                          {db
+                            .getPatients()
+                            .filter(
+                              (p) =>
+                                !patientSearchTerm ||
+                                p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) ||
+                                (p.cpf && p.cpf.includes(patientSearchTerm)) ||
+                                (p.phone && p.phone.includes(patientSearchTerm))
+                            )
+                            .slice(0, 5)
+                            .map((p) => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                disabled={isLinking}
+                                onClick={() => handleLinkPatient(p)}
+                                className="w-full text-left p-2 rounded-lg hover:bg-white border border-transparent hover:border-slate-200 text-xs transition-colors cursor-pointer flex items-center justify-between"
+                              >
+                                <div>
+                                  <p className="font-semibold text-slate-800">{p.name}</p>
+                                  <p className="text-[10px] text-slate-400">
+                                    {p.phone || 'Sem tel'} {p.cpf ? `• ${p.cpf}` : ''}
+                                  </p>
+                                </div>
+                                <span className="text-[10px] text-emerald-600 font-bold">Vincular</span>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-
-              {patient || contact?.patient_id ? (
-                <div className="space-y-2 text-xs text-slate-700">
-                  <div>
-                    <p className="font-semibold text-slate-900">{patient?.name || 'Paciente cadastrado'}</p>
-                    {patient?.cpf && <p className="text-slate-500">CPF: {patient.cpf}</p>}
-                    {patient?.phone && <p className="text-slate-500">Tel: {patient.phone}</p>}
-                    {patient?.email && <p className="text-slate-500">Email: {patient.email}</p>}
-                  </div>
-                  <div className="flex items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setShowLinkSearch(true)}
-                      className="text-[11px] font-semibold text-slate-600 hover:text-slate-900 underline cursor-pointer"
-                    >
-                      Alterar vínculo
-                    </button>
-                    <span className="text-slate-300">•</span>
-                    <button
-                      type="button"
-                      onClick={handleUnlinkPatient}
-                      className="text-[11px] font-semibold text-rose-600 hover:text-rose-700 underline cursor-pointer"
-                    >
-                      Desvincular
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <p className="text-xs text-slate-500 mb-2.5">
-                    Nenhum paciente do sistema vinculado a este número.
-                  </p>
-                  {!showLinkSearch ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowLinkSearch(true)}
-                      className="w-full py-1.5 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                    >
-                      <UserCheck className="w-3.5 h-3.5" />
-                      <span>Vincular a Paciente</span>
-                    </button>
-                  ) : null}
-                </div>
-              )}
-
-              {/* Busca rápida de paciente */}
-              {showLinkSearch && (
-                <div className="mt-3 pt-3 border-t border-slate-200 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold text-slate-700">
-                      Selecionar paciente:
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowLinkSearch(false)}
-                      className="text-[11px] text-slate-400 hover:text-slate-600 cursor-pointer"
-                    >
-                      Fechar
-                    </button>
-                  </div>
-                  <div className="relative">
-                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-                    <input
-                      type="text"
-                      placeholder="Pesquisar por nome ou CPF..."
-                      value={patientSearchTerm}
-                      onChange={(e) => setPatientSearchTerm(e.target.value)}
-                      className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    />
-                  </div>
-                  <div className="max-h-36 overflow-y-auto space-y-1 pt-1">
-                    {db
-                      .getPatients()
-                      .filter(
-                        (p) =>
-                          !patientSearchTerm ||
-                          p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) ||
-                          (p.cpf && p.cpf.includes(patientSearchTerm)) ||
-                          (p.phone && p.phone.includes(patientSearchTerm))
-                      )
-                      .slice(0, 5)
-                      .map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          disabled={isLinking}
-                          onClick={() => handleLinkPatient(p.id)}
-                          className="w-full text-left p-2 rounded-lg hover:bg-white border border-transparent hover:border-slate-200 text-xs transition-colors cursor-pointer flex items-center justify-between"
-                        >
-                          <div>
-                            <p className="font-semibold text-slate-800">{p.name}</p>
-                            <p className="text-[10px] text-slate-400">
-                              {p.phone || 'Sem tel'} {p.cpf ? `• ${p.cpf}` : ''}
-                            </p>
-                          </div>
-                          <span className="text-[10px] text-emerald-600 font-bold">Vincular</span>
-                        </button>
-                      ))}
-                  </div>
-                </div>
-              )}
-            </div>
+            )}
 
             {/* 📅 CONTEXTO DA AGENDA ODONTOLÓGICA */}
-            {(patient || contact?.patient_id) && (
+            {patient || contact?.patient_id ? (
               <div className="p-4 rounded-xl bg-gradient-to-br from-emerald-50/50 to-teal-50/40 border border-emerald-200/80 shadow-2xs space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950">
@@ -697,6 +767,36 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
                     )}
                   </div>
                 )}
+              </div>
+            ) : (
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-center space-y-2">
+                <div className="w-9 h-9 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+                  <Calendar className="w-4 h-4" />
+                </div>
+                <h5 className="text-xs font-bold text-slate-800">Agendamento de Consultas</h5>
+                <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
+                  Para agendar consultas e visualizar o histórico clínico deste contato, cadastre-o ou vincule-o a um paciente.
+                </p>
+                <div className="flex items-center justify-center gap-2 pt-1">
+                  {onOpenPatientModal && (
+                    <button
+                      type="button"
+                      onClick={onOpenPatientModal}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Cadastrar Paciente
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowLinkSearch(true)}
+                    className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                  >
+                    <UserCheck className="w-3.5 h-3.5 text-slate-500" />
+                    Vincular
+                  </button>
+                </div>
               </div>
             )}
 

@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { WhatsAppConversation, WhatsAppChatStatus } from '../../types/whatsapp';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
-import { formatPhoneDisplay } from '../../lib/phoneUtils';
+import { formatPhoneDisplay, getContactDisplayName, getContactInitial } from '../../lib/phoneUtils';
 
 interface WhatsAppKanbanProps {
   conversations: WhatsAppConversation[];
@@ -131,7 +131,8 @@ export const WhatsAppKanban: React.FC<WhatsAppKanbanProps> = ({
 
       if (searchTerm.trim()) {
         const term = searchTerm.toLowerCase();
-        const nameMatch = conv.contact?.name.toLowerCase().includes(term);
+        const displayName = getContactDisplayName(conv.contact).toLowerCase();
+        const nameMatch = displayName.includes(term);
         const phoneMatch = conv.contact?.whatsapp_number.includes(term);
         const msgMatch = conv.last_message_content?.toLowerCase().includes(term);
         if (!nameMatch && !phoneMatch && !msgMatch) return false;
@@ -251,16 +252,16 @@ export const WhatsAppKanban: React.FC<WhatsAppKanbanProps> = ({
                               {ctc?.profile_pic_url ? (
                                 <img
                                   src={ctc.profile_pic_url}
-                                  alt={ctc.name}
+                                  alt={getContactDisplayName(ctc)}
                                   className="w-full h-full object-cover"
                                 />
                               ) : (
-                                <span>{ctc?.name?.charAt(0).toUpperCase() || 'C'}</span>
+                                <span>{getContactInitial(ctc)}</span>
                               )}
                             </div>
                             <div className="truncate">
                               <h4 className="text-xs font-bold text-slate-800 truncate">
-                                {ctc?.name}
+                                {getContactDisplayName(ctc)}
                               </h4>
                               <p className="text-[10px] text-slate-400 font-mono">
                                 {formatPhoneDisplay(ctc?.whatsapp_number || '')}

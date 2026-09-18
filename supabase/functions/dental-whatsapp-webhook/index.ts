@@ -46,6 +46,48 @@ function normalizeBrazilianNumber(number: string): string {
 }
 
 /**
+ * Helper para identificar se um nome cadastrado é na verdade apenas um
+ * placeholder baseado no número de telefone (seja numérico puro ou formatado).
+ */
+function isPhoneLikeContactName(name?: string | null, whatsappNumber?: string | null): boolean {
+  if (!name || !name.trim()) return true;
+  const cleanName = name.trim();
+  const digitsOnlyName = cleanName.replace(/\D/g, '');
+
+  const hasLetters = /\p{L}/u.test(cleanName);
+  if (!hasLetters && digitsOnlyName.length >= 8) {
+    return true;
+  }
+
+  if (whatsappNumber) {
+    const digitsOnlyTarget = whatsappNumber.replace(/\D/g, '');
+    if (digitsOnlyName === digitsOnlyTarget) return true;
+    if (digitsOnlyName.length >= 8 && digitsOnlyTarget.length >= 8) {
+      if (digitsOnlyName.endsWith(digitsOnlyTarget.slice(-8)) || digitsOnlyTarget.endsWith(digitsOnlyName.slice(-8))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Identifica se um identificador ou número representa um Grupo do WhatsApp.
+ */
+function isWhatsAppGroup(jidOrNumber?: string | null): boolean {
+  if (!jidOrNumber) return false;
+  const str = jidOrNumber.trim();
+  if (str.includes('@g.us')) return true;
+  const digits = str.replace(/\D/g, '');
+  if (digits.startsWith('120363') && digits.length >= 16) return true;
+  if (str.includes('-') && digits.length >= 18) return true;
+  if (digits.length >= 20) return true;
+  return false;
+}
+
+
+/**
  * Mapeia extensão com base no MIME Type
  */
 function getExtensionFromMime(mimeType?: string): string {
@@ -275,6 +317,7 @@ Deno.serve(async (req) => {
         const remoteJid = data.key?.remoteJid || data.remoteJid || '';
         const remoteJidAlt = data.key?.remoteJidAlt || '';
         const whatsappNumber = normalizeBrazilianNumber(remoteJid.split('@')[0].split(':')[0]);
+        const isGroup = remoteJid.includes('@g.us') || isWhatsAppGroup(whatsappNumber);
         const lidFromMessage = remoteJidAlt.includes('@lid')
           ? remoteJidAlt
           : remoteJid.includes('@lid')
@@ -286,7 +329,14 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        const clientName = data.pushName || whatsappNumber;
+        // Se for GRUPO, NUNCA usar o pushName do participante como nome do grupo.
+        // Se a mensagem for FROM_ME (outbound), data.pushName é o nome do próprio aparelho/remetente.
+        // NUNCA usar o pushName do remetente como nome do contato de destino!
+        const clientName = isGroup
+          ? 'Grupo do WhatsApp'
+          : (!isFromMe && data.pushName && data.pushName.trim()
+              ? data.pushName.trim()
+              : whatsappNumber);
         const evolutionMsgId = data.key?.id;
 
         if (!evolutionMsgId) {
@@ -389,13 +439,52 @@ Deno.serve(async (req) => {
 
         if (existingContact) {
           contactId = existingContact.id;
+          const updates: Record<string, any> = {};
           if (lidFromMessage) {
+            updates.lid = lidFromMessage;
+          }
+          // Se for contato INDIVIDUAL, mensagem INBOUND e não tiver paciente vinculado,
+          // e o nome atual for placeholder de telefone, atualizar com o pushName real do cliente.
+          // Para GRUPOS, o pushName pertence ao participante que postou e NUNCA deve sobrescrever o nome do grupo!
+          if (!isGroup && !isFromMe && data.pushName && data.pushName.trim() && !existingContact.patient_id) {
+            const candidatePushName = data.pushName.trim();
+            if (isPhoneLikeContactName(existingContact.name, whatsappNumber) && !isPhoneLikeContactName(candidatePushName, whatsappNumber)) {
+              updates.name = candidatePushName;
+            }
+          }
+          if (Object.keys(updates).length > 0) {
+            updates.updated_at = new Date().toISOString();
             await supabase
               .from('df_wa_contacts')
-              .update({ lid: lidFromMessage, updated_at: new Date().toISOString() })
+              .update(updates)
               .eq('id', contactId);
           }
         } else {
+          // Tentar vincular a paciente existente por telefone antes de criar contato (SOMENTE PARA INDIVÍDUOS, NUNCA GRUPOS)
+          let matchedPatient: any = null;
+          if (!isGroup) {
+            const { data: pRow } = await supabase
+              .from('df_patients')
+              .select('id, name')
+              .eq('tenant_id', tenantId)
+              .or(`phone.eq.${whatsappNumber},phone.ilike.%${whatsappNumber.slice(-8)}%`)
+              .maybeSingle();
+            matchedPatient = pRow;
+          }
+
+          let fallbackPhoneFormatted = isGroup ? 'Grupo do WhatsApp' : whatsappNumber;
+          if (!isGroup && whatsappNumber.length >= 10) {
+            const digits = whatsappNumber.startsWith('55') ? whatsappNumber.substring(2) : whatsappNumber;
+            if (digits.length === 11) {
+              fallbackPhoneFormatted = `(${digits.substring(0, 2)}) ${digits.substring(2, 7)}-${digits.substring(7)}`;
+            } else if (digits.length === 10) {
+              fallbackPhoneFormatted = `(${digits.substring(0, 2)}) ${digits.substring(2, 6)}-${digits.substring(6)}`;
+            }
+          }
+
+          const initialName = matchedPatient?.name || (clientName !== whatsappNumber ? clientName : fallbackPhoneFormatted);
+          const initialPatientId = matchedPatient?.id || null;
+
           // Criar novo contato
           const newContactId = `ctc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
           const { data: createdContact, error: ctcErr } = await supabase
@@ -403,8 +492,9 @@ Deno.serve(async (req) => {
             .insert({
               id: newContactId,
               tenant_id: tenantId,
-              name: clientName,
+              name: initialName,
               whatsapp_number: whatsappNumber,
+              patient_id: initialPatientId,
               lid: lidFromMessage,
               profile_pic_status: 'pending',
               created_at: new Date().toISOString(),
@@ -494,8 +584,8 @@ Deno.serve(async (req) => {
           }
         }
 
-        // Prioridade 2: Sem reply, mas resposta claramente afirmativa com contexto seguro
-        if (!matchedAppointmentId && responseClassification === 'AFFIRMATIVE' && !isFromMe) {
+        // Prioridade 2: Sem reply, mas resposta claramente afirmativa com contexto seguro (SOMENTE INDIVÍDUOS, NUNCA GRUPOS)
+        if (!isGroup && !matchedAppointmentId && responseClassification === 'AFFIRMATIVE' && !isFromMe) {
           let patId = existingContact?.patient_id;
           if (!patId) {
             const { data: cRow } = await supabase

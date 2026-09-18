@@ -19,7 +19,7 @@ import {
   WhatsAppReminderLog,
   WhatsAppReminderSettings,
 } from '../types/whatsapp';
-import { normalizeBrazilianNumber, isValidBrazilianPhone, formatPhoneDisplay } from '../lib/phoneUtils';
+import { normalizeBrazilianNumber, isValidBrazilianPhone, formatPhoneDisplay, isWhatsAppGroup } from '../lib/phoneUtils';
 import { formatDateBr } from '../lib/masks';
 import { renderAppointmentTemplate } from '../lib/appointmentDateUtils';
 import { db } from '../lib/db';
@@ -147,6 +147,41 @@ export const DentalWhatsAppService = {
       return { success: false, error: err.message || 'Falha ao desconectar' };
     }
   },
+
+  /**
+   * Sincroniza e enriquece nomes e fotos de contatos a partir da agenda do aparelho conectado na Evolution API.
+   * Não altera nomes vindos de cadastro de pacientes nem nomes definidos manualmente.
+   */
+  async syncContactsNames(
+    tenantId: string
+  ): Promise<{
+    success: boolean;
+    updatedCount?: number;
+    alreadyCorrectCount?: number;
+    notFoundCount?: number;
+    totalProcessed?: number;
+    error?: string;
+  }> {
+    if (!tenantId) return { success: false, error: 'tenantId ausente' };
+
+    try {
+      const { data, error } = await supabase.functions.invoke('dental-whatsapp-api', {
+        body: {
+          action: 'sync_contacts_names',
+          tenant_id: tenantId,
+        },
+      });
+
+      if (error) {
+        const safeMsg = await extractEdgeFunctionError(error);
+        return { success: false, error: safeMsg };
+      }
+      return data || { success: true, updatedCount: 0 };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Falha ao sincronizar agenda de contatos' };
+    }
+  },
+
 
   /**
    * Obtém a configuração global da Evolution API (área de consultoria / admin).
@@ -655,6 +690,7 @@ export const DentalWhatsAppService = {
     });
 
     // Envio server-side seguro via Edge Function dental-whatsapp-api (a api_key nunca chega ao frontend)
+    let sendError: string | null = null;
     try {
       const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke('dental-whatsapp-api', {
         body: {
@@ -670,10 +706,12 @@ export const DentalWhatsAppService = {
       if (!edgeErr && edgeRes?.success) {
         evolutionMsgId = edgeRes.messageId;
       } else {
-        console.warn('[DentalWhatsAppService] Aviso: Envio Evolution server-side retornou erro:', edgeErr?.message || edgeRes?.error);
+        sendError = edgeErr?.message || edgeRes?.error || 'Falha ao despachar mensagem pelo WhatsApp';
+        console.error('[DentalWhatsAppService] Erro no envio Evolution server-side:', sendError);
       }
     } catch (e: any) {
-      console.warn('[DentalWhatsAppService] Falha ao invocar Edge Function dental-whatsapp-api:', e.message);
+      sendError = e?.message || 'Falha de conexão com a Edge Function';
+      console.error('[DentalWhatsAppService] Falha ao invocar Edge Function dental-whatsapp-api:', sendError);
     }
 
     // Persistir mensagem no banco
@@ -688,7 +726,7 @@ export const DentalWhatsAppService = {
       content: content.trim(),
       msg_type: 'text',
       is_read: true,
-      delivery_status: evolutionMsgId ? 2 : 1, // 2: SERVER_ACK se enviado com sucesso
+      delivery_status: evolutionMsgId ? 2 : -1, // 2: Enviado ao servidor; -1: Falha no envio
       reply_to_id: replyToId || null,
       remote_jid: `${recipientNumber}@s.whatsapp.net`,
       created_at: new Date().toISOString(),
@@ -697,6 +735,10 @@ export const DentalWhatsAppService = {
 
     if (insErr) {
       return { success: false, error: insErr.message };
+    }
+
+    if (sendError) {
+      return { success: false, messageId: dbMsgId, error: sendError };
     }
 
     return { success: true, messageId: dbMsgId };
@@ -752,6 +794,7 @@ export const DentalWhatsAppService = {
     let evolutionMsgId: string | undefined;
 
     // Disparo server-side seguro de mídia via Edge Function dental-whatsapp-api
+    let sendError: string | null = null;
     try {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
@@ -787,10 +830,12 @@ export const DentalWhatsAppService = {
       if (!edgeErr && edgeRes?.success) {
         evolutionMsgId = edgeRes.messageId;
       } else {
-        console.warn('[DentalWhatsAppService] Aviso: Envio de mídia Evolution server-side:', edgeErr?.message || edgeRes?.error);
+        sendError = edgeErr?.message || edgeRes?.error || 'Falha ao despachar mídia pelo WhatsApp';
+        console.error('[DentalWhatsAppService] Erro no envio de mídia Evolution server-side:', sendError);
       }
-    } catch (evoErr) {
-      console.warn('[DentalWhatsAppService] Falha ao enviar mídia via Edge Function:', evoErr);
+    } catch (evoErr: any) {
+      sendError = evoErr?.message || 'Falha de conexão com a Edge Function';
+      console.error('[DentalWhatsAppService] Falha ao enviar mídia via Edge Function:', sendError);
     }
 
     // Persistir mensagem
@@ -807,7 +852,7 @@ export const DentalWhatsAppService = {
       media_file_name: file.name,
       media_mime_type: file.type,
       is_read: true,
-      delivery_status: evolutionMsgId ? 2 : 1,
+      delivery_status: evolutionMsgId ? 2 : -1, // 2: Enviado; -1: Falha
       reply_to_id: replyToId || null,
       remote_jid: `${recipientNumber}@s.whatsapp.net`,
       created_at: new Date().toISOString(),
@@ -816,6 +861,10 @@ export const DentalWhatsAppService = {
 
     if (insErr) {
       return { success: false, error: insErr.message };
+    }
+
+    if (sendError) {
+      return { success: false, messageId: dbMsgId, error: sendError };
     }
 
     return { success: true, messageId: dbMsgId };
@@ -861,6 +910,7 @@ export const DentalWhatsAppService = {
     }
 
     let evolutionMsgId: string | undefined;
+    let sendError: string | null = null;
 
     // Disparo server-side seguro de áudio via Edge Function dental-whatsapp-api
     try {
@@ -887,10 +937,12 @@ export const DentalWhatsAppService = {
       if (!edgeErr && edgeRes?.success) {
         evolutionMsgId = edgeRes.messageId;
       } else {
-        console.warn('[DentalWhatsAppService] Aviso: Envio de áudio Evolution server-side:', edgeErr?.message || edgeRes?.error);
+        sendError = edgeErr?.message || edgeRes?.error || 'Falha ao despachar áudio pelo WhatsApp';
+        console.error('[DentalWhatsAppService] Erro no envio de áudio Evolution server-side:', sendError);
       }
-    } catch (err) {
-      console.warn('[DentalWhatsAppService] Falha no envio de áudio via Edge Function:', err);
+    } catch (err: any) {
+      sendError = err?.message || 'Falha de conexão com a Edge Function';
+      console.error('[DentalWhatsAppService] Falha no envio de áudio via Edge Function:', sendError);
     }
 
     // Persistir mensagem de áudio
@@ -907,7 +959,7 @@ export const DentalWhatsAppService = {
       media_file_name: 'audio.ogg',
       media_mime_type: audioBlob.type || 'audio/ogg',
       is_read: true,
-      delivery_status: evolutionMsgId ? 2 : 1,
+      delivery_status: evolutionMsgId ? 2 : -1, // 2: Enviado; -1: Falha
       reply_to_id: replyToId || null,
       remote_jid: `${recipientNumber}@s.whatsapp.net`,
       created_at: new Date().toISOString(),
@@ -918,7 +970,114 @@ export const DentalWhatsAppService = {
       return { success: false, error: insErr.message };
     }
 
+    if (sendError) {
+      return { success: false, messageId: dbMsgId, error: sendError };
+    }
+
     return { success: true, messageId: dbMsgId };
+  },
+
+  /**
+   * Reenvia uma mensagem que falhou no envio anterior (delivery_status === -1)
+   */
+  async retryFailedMessage(params: {
+    messageId: string;
+    tenantId: string;
+    conversationId: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    const { messageId, tenantId, conversationId } = params;
+
+    const { data: msg, error: loadErr } = await supabase
+      .from('df_wa_messages')
+      .select('*')
+      .eq('id', messageId)
+      .eq('tenant_id', tenantId)
+      .single();
+
+    if (loadErr || !msg) {
+      return { success: false, error: 'Mensagem não encontrada.' };
+    }
+
+    if (!msg.from_me) {
+      return { success: false, error: 'Apenas mensagens enviadas pela clínica podem ser reenviadas.' };
+    }
+
+    const recipientNumber = msg.remote_jid ? msg.remote_jid.replace(/@.*$/, '') : null;
+    if (!recipientNumber) {
+      return { success: false, error: 'Número do destinatário não encontrado.' };
+    }
+
+    let evolutionMsgId: string | undefined;
+
+    if (msg.msg_type === 'text') {
+      const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke('dental-whatsapp-api', {
+        body: {
+          action: 'send_text',
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          recipient_number: recipientNumber,
+          text: msg.content,
+        },
+      });
+
+      if (edgeErr || !edgeRes?.success) {
+        const errMsg = edgeErr?.message || edgeRes?.error || 'Erro ao reenviar pelo WhatsApp';
+        return { success: false, error: errMsg };
+      }
+      evolutionMsgId = edgeRes.messageId;
+    } else if (msg.media_storage_path) {
+      // Baixar arquivo do storage privado e reenviar
+      const { data: fileData, error: dlErr } = await supabase.storage
+        .from(DENTAL_STORAGE_BUCKET)
+        .download(msg.media_storage_path);
+
+      if (dlErr || !fileData) {
+        return { success: false, error: `Falha ao carregar mídia para reenvio: ${dlErr?.message}` };
+      }
+
+      const buffer = await fileData.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const b64 = btoa(binary);
+
+      const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke('dental-whatsapp-api', {
+        body: {
+          action: 'send_media',
+          tenant_id: tenantId,
+          conversation_id: conversationId,
+          recipient_number: recipientNumber,
+          media_type: msg.msg_type,
+          base64: b64,
+          mime_type: msg.media_mime_type || fileData.type || 'application/octet-stream',
+          file_name: msg.media_file_name || 'arquivo',
+          caption: msg.content || '',
+        },
+      });
+
+      if (edgeErr || !edgeRes?.success) {
+        const errMsg = edgeErr?.message || edgeRes?.error || 'Erro ao reenviar mídia pelo WhatsApp';
+        return { success: false, error: errMsg };
+      }
+      evolutionMsgId = edgeRes.messageId;
+    } else {
+      return { success: false, error: 'Tipo de mensagem não suportado para reenvio.' };
+    }
+
+    // Atualizar registro no banco para delivery_status = 2 (Enviado) e registrar evolution_msg_id
+    await supabase
+      .from('df_wa_messages')
+      .update({
+        delivery_status: 2,
+        evolution_msg_id: evolutionMsgId || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', messageId)
+      .eq('tenant_id', tenantId);
+
+    return { success: true };
   },
 
   /**
@@ -2013,25 +2172,91 @@ export const DentalWhatsAppService = {
 
   /**
    * Vincula um contato do WhatsApp a um paciente clínico.
+   * Garante a regra de 1 paciente ↔ 1 contato WhatsApp por tenant.
+   * Bloqueia vinculação de grupos.
+   * Se o paciente já estiver vinculado a outro contato e forceTransfer não for informado,
+   * recusa e reporta os dados do contato conflitante.
    */
   async linkPatientToContact(
     contactId: string,
     patientId: string,
-    tenantId: string
-  ): Promise<{ success: boolean; error?: string }> {
+    tenantId: string,
+    options?: { forceTransfer?: boolean }
+  ): Promise<{
+    success: boolean;
+    error?: string;
+    alreadyLinkedToOther?: boolean;
+    existingContactName?: string;
+    existingContactPhone?: string;
+  }> {
     if (!contactId || !patientId || !tenantId) {
       return { success: false, error: 'Dados insuficientes para vinculação.' };
     }
 
-    const { error } = await supabase
+    // 1. Obter contato alvo para validações
+    const { data: targetContact, error: targetErr } = await supabase
+      .from('df_wa_contacts')
+      .select('id, name, whatsapp_number')
+      .eq('id', contactId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+
+    if (targetErr || !targetContact) {
+      return { success: false, error: 'Contato não encontrado nesta clínica.' };
+    }
+
+    // 2. Bloquear vinculação se for grupo de WhatsApp
+    if (isWhatsAppGroup(targetContact.whatsapp_number)) {
+      return { success: false, error: 'Grupos do WhatsApp não podem ser vinculados a pacientes clínicos.' };
+    }
+
+    // 3. Verificar se este paciente já está vinculado a outro contato no mesmo tenant
+    const { data: existingLinked, error: checkErr } = await supabase
+      .from('df_wa_contacts')
+      .select('id, name, whatsapp_number')
+      .eq('tenant_id', tenantId)
+      .eq('patient_id', patientId)
+      .neq('id', contactId)
+      .maybeSingle();
+
+    if (checkErr) {
+      return { success: false, error: checkErr.message };
+    }
+
+    if (existingLinked) {
+      if (!options?.forceTransfer) {
+        return {
+          success: false,
+          alreadyLinkedToOther: true,
+          existingContactName: existingLinked.name,
+          existingContactPhone: existingLinked.whatsapp_number,
+          error: `Este paciente já está vinculado ao contato "${existingLinked.name}" (${formatPhoneDisplay(existingLinked.whatsapp_number)}).`,
+        };
+      }
+
+      // Se forceTransfer for true: desvincula o contato anterior atomicamente
+      const { error: unlinkErr } = await supabase
+        .from('df_wa_contacts')
+        .update({ patient_id: null, updated_at: new Date().toISOString() })
+        .eq('id', existingLinked.id)
+        .eq('tenant_id', tenantId);
+
+      if (unlinkErr) {
+        return { success: false, error: `Erro ao desvincular contato anterior: ${unlinkErr.message}` };
+      }
+    }
+
+    // 4. Vincula o contato alvo ao paciente
+    const { error: linkErr } = await supabase
       .from('df_wa_contacts')
       .update({ patient_id: patientId, updated_at: new Date().toISOString() })
       .eq('id', contactId)
       .eq('tenant_id', tenantId);
 
-    if (error) {
-      return { success: false, error: error.message };
+    if (linkErr) {
+      return { success: false, error: linkErr.message };
     }
+
     return { success: true };
   },
 
@@ -2112,7 +2337,7 @@ export const DentalWhatsAppService = {
         return { success: true, code: 'OK', action: 'updated', contactId: contactByPatient.id };
       }
 
-      // O telefone mudou: verificar se o novo número já é de OUTRO contato no mesmo tenant (conflito)
+      // O telefone mudou: verificar se o novo número já é de OUTRO paciente no mesmo tenant
       const { data: conflictContact } = await supabase
         .from('df_wa_contacts')
         .select('id, name, patient_id')
@@ -2120,29 +2345,54 @@ export const DentalWhatsAppService = {
         .eq('whatsapp_number', normalizedPhone)
         .maybeSingle();
 
-      if (conflictContact && conflictContact.id !== contactByPatient.id) {
+      if (conflictContact && conflictContact.patient_id && conflictContact.patient_id !== patient.id) {
         return {
           success: false,
           code: 'CONTACT_PHONE_CONFLICT',
-          error: `O número ${formatPhoneDisplay(normalizedPhone)} já está vinculado a outro contato (${conflictContact.name}) nesta clínica.`,
+          error: `O número ${formatPhoneDisplay(normalizedPhone)} já está vinculado a outro paciente (${conflictContact.name}) nesta clínica.`,
         };
       }
 
       if (options?.dryRun) {
-        return { success: true, code: 'OK', action: 'updated', contactId: contactByPatient.id };
+        return { success: true, code: 'OK', action: 'updated', contactId: conflictContact?.id || contactByPatient.id };
       }
 
-      // Atualiza o contato vinculado preservando contact_id, mensagens e histórico
+      // Desvincula o contato antigo preservando seu histórico intacto
       await supabase
         .from('df_wa_contacts')
-        .update({
-          whatsapp_number: normalizedPhone,
-          name: patient.name || contactByPatient.name,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', contactByPatient.id);
+        .update({ patient_id: null, updated_at: new Date().toISOString() })
+        .eq('id', contactByPatient.id)
+        .eq('tenant_id', tenantId);
 
-      return { success: true, code: 'OK', action: 'updated', contactId: contactByPatient.id };
+      if (conflictContact) {
+        // Vincula o contato existente com o novo número
+        await supabase
+          .from('df_wa_contacts')
+          .update({
+            patient_id: patient.id,
+            name: patient.name || conflictContact.name,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', conflictContact.id);
+        return { success: true, code: 'OK', action: 'linked', contactId: conflictContact.id };
+      } else {
+        // Cria novo contato para o novo número
+        const newContactId = `ctc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        await supabase
+          .from('df_wa_contacts')
+          .insert({
+            id: newContactId,
+            tenant_id: tenantId,
+            patient_id: patient.id,
+            name: patient.name,
+            whatsapp_number: normalizedPhone,
+            custom_fields: {},
+            profile_pic_status: 'pending',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        return { success: true, code: 'OK', action: 'created', contactId: newContactId };
+      }
     }
 
     // 2. Caso B: Verificar se existe contato com o mesmo telefone no tenant
