@@ -809,7 +809,7 @@ export const SupabaseService = {
         console.warn('[SupabaseService] Erro ao carregar clientes para suporte:', error.message);
         return [];
       }
-      return (data || []).map((t: any) => ({
+      const rawList = (data || []).map((t: any) => ({
         tenant_id: t.tenant_id,
         clinic_name: t.clinic_name || t.trade_name || 'Clínica',
         trade_name: t.trade_name,
@@ -818,6 +818,14 @@ export const SupabaseService = {
         total_users: Number(t.total_users || 0),
         created_at: t.created_at,
       }));
+
+      // Camada defensiva: garantir unicidade estrita por tenant_id
+      const seenTenants = new Set<string>();
+      return rawList.filter((t: DentalTenantOption) => {
+        if (!t.tenant_id || seenTenants.has(t.tenant_id)) return false;
+        seenTenants.add(t.tenant_id);
+        return true;
+      });
     } catch (err) {
       console.error('[SupabaseService] Falha ao invocar get_all_dental_tenants:', err);
       return [];
@@ -841,25 +849,16 @@ export const SupabaseService = {
 
       if (!data) return null;
 
-      // Normalizar campos numéricos
-      const parsedData: ConsultingPortfolioData = {
-        portfolio_summary: {
-          competency: data.portfolio_summary?.competency || competency || '',
-          total_active_clinics: Number(data.portfolio_summary?.total_active_clinics || 0),
-          total_portfolio_revenue: Number(data.portfolio_summary?.total_portfolio_revenue || 0),
-          total_portfolio_expenses: Number(data.portfolio_summary?.total_portfolio_expenses || 0),
-          total_portfolio_open_receivables: Number(data.portfolio_summary?.total_portfolio_open_receivables || 0),
-          total_portfolio_open_payables: Number(data.portfolio_summary?.total_portfolio_open_payables || 0),
-          total_portfolio_overdue: Number(data.portfolio_summary?.total_portfolio_overdue || 0),
-          healthy_count: Number(data.portfolio_summary?.healthy_count || 0),
-          warning_count: Number(data.portfolio_summary?.warning_count || 0),
-          critical_count: Number(data.portfolio_summary?.critical_count || 0),
-          annex_iii_count: Number(data.portfolio_summary?.annex_iii_count || 0),
-          annex_v_count: Number(data.portfolio_summary?.annex_v_count || 0),
-          estimated_total_das: Number(data.portfolio_summary?.estimated_total_das || 0),
-          pending_closing_count: Number(data.portfolio_summary?.pending_closing_count || 0),
-        },
-        clients: (data.clients || []).map((c: any) => ({
+      // Camada defensiva: deduplicação de clientes por tenant_id
+      const seenClients = new Set<string>();
+      const rawClients = Array.isArray(data.clients) ? data.clients : [];
+      const uniqueClients = rawClients
+        .filter((c: any) => {
+          if (!c?.tenant_id || seenClients.has(c.tenant_id)) return false;
+          seenClients.add(c.tenant_id);
+          return true;
+        })
+        .map((c: any) => ({
           tenant_id: c.tenant_id,
           clinic_name: c.clinic_name || 'Clínica',
           trade_name: c.trade_name || c.clinic_name || 'Clínica',
@@ -883,15 +882,46 @@ export const SupabaseService = {
           contaju_sync_status: c.contaju_sync_status || 'PENDING',
           health_status: c.health_status || 'HEALTHY',
           health_reasons: Array.isArray(c.health_reasons) ? c.health_reasons : [],
-        })),
-        priority_alerts: (data.priority_alerts || []).map((a: any) => ({
+        }));
+
+      // Deduplicação defensiva de alertas por tenant_id + type + message
+      const seenAlerts = new Set<string>();
+      const rawAlerts = Array.isArray(data.priority_alerts) ? data.priority_alerts : [];
+      const uniqueAlerts = rawAlerts
+        .filter((a: any) => {
+          const key = `${a?.tenant_id}_${a?.type}_${a?.message}`;
+          if (seenAlerts.has(key)) return false;
+          seenAlerts.add(key);
+          return true;
+        })
+        .map((a: any) => ({
           tenant_id: a.tenant_id,
           clinic_name: a.clinic_name,
           severity: a.severity || 'INFO',
           type: a.type || 'FATOR_R',
           message: a.message,
           action_label: a.action_label,
-        })),
+        }));
+
+      const parsedData: ConsultingPortfolioData = {
+        portfolio_summary: {
+          competency: data.portfolio_summary?.competency || competency || '',
+          total_active_clinics: Number(data.portfolio_summary?.total_active_clinics || 0),
+          total_portfolio_revenue: Number(data.portfolio_summary?.total_portfolio_revenue || 0),
+          total_portfolio_expenses: Number(data.portfolio_summary?.total_portfolio_expenses || 0),
+          total_portfolio_open_receivables: Number(data.portfolio_summary?.total_portfolio_open_receivables || 0),
+          total_portfolio_open_payables: Number(data.portfolio_summary?.total_portfolio_open_payables || 0),
+          total_portfolio_overdue: Number(data.portfolio_summary?.total_portfolio_overdue || 0),
+          healthy_count: Number(data.portfolio_summary?.healthy_count || 0),
+          warning_count: Number(data.portfolio_summary?.warning_count || 0),
+          critical_count: Number(data.portfolio_summary?.critical_count || 0),
+          annex_iii_count: Number(data.portfolio_summary?.annex_iii_count || 0),
+          annex_v_count: Number(data.portfolio_summary?.annex_v_count || 0),
+          estimated_total_das: Number(data.portfolio_summary?.estimated_total_das || 0),
+          pending_closing_count: Number(data.portfolio_summary?.pending_closing_count || 0),
+        },
+        clients: uniqueClients,
+        priority_alerts: uniqueAlerts,
       };
 
       return parsedData;

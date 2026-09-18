@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   ShieldCheck,
   Building2,
@@ -57,7 +57,17 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
     };
   }, [isOpen]);
 
-  const filteredClinics = availableClinics.filter((clinic) => {
+  // Camada defensiva: garantir que a coleção de clínicas seja estritamente única por tenant_id
+  const uniqueClinics = useMemo(() => {
+    const seen = new Set<string>();
+    return availableClinics.filter((clinic) => {
+      if (!clinic?.tenant_id || seen.has(clinic.tenant_id)) return false;
+      seen.add(clinic.tenant_id);
+      return true;
+    });
+  }, [availableClinics]);
+
+  const filteredClinics = uniqueClinics.filter((clinic) => {
     const query = searchTerm.toLowerCase().trim();
     if (!query) return true;
     const matchClinic = (clinic.clinic_name || '').toLowerCase().includes(query);
@@ -139,7 +149,7 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-bold text-slate-800 tracking-tight">Trocar Clínica</span>
                     <span className="text-[10px] font-semibold text-slate-500 bg-slate-200/60 px-1.5 py-0.5 rounded-md">
-                      {availableClinics.length} autorizada{availableClinics.length === 1 ? '' : 's'}
+                      {uniqueClinics.length} autorizada{uniqueClinics.length === 1 ? '' : 's'}
                     </span>
                   </div>
 

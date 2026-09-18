@@ -26,8 +26,9 @@ import { NewSaleModal } from './components/Modals/NewSaleModal';
 import { NewExpenseModal } from './components/Modals/NewExpenseModal';
 import { SettlePaymentModal } from './components/Modals/SettlePaymentModal';
 import { AccountReceivableItem, DentalTenantOption } from './types';
-import { SupabaseService } from './lib/supabaseClient';
+import { SupabaseService, supabase } from './lib/supabaseClient';
 import { ToastProvider, useToast } from './components/UI/ToastContext';
+import { WhatsAppMainView } from './components/WhatsApp/WhatsAppMainView';
 import { ToastContainer } from './components/UI/Toast';
 import { GlobalPatientSearchModal } from './components/Navigation/GlobalPatientSearchModal';
 import { getEffectivePayableStatus, getEffectiveReceivableStatus } from './lib/statusHelper';
@@ -110,7 +111,14 @@ function AppContent() {
                 !t.clinic_name.toLowerCase().includes('demo') &&
                 !t.clinic_name.toLowerCase().includes('teste')
             );
-            setAvailableClinics(filtered);
+            // Deduplicação defensiva por tenant_id
+            const seen = new Set<string>();
+            const unique = filtered.filter((t) => {
+              if (!t.tenant_id || seen.has(t.tenant_id)) return false;
+              seen.add(t.tenant_id);
+              return true;
+            });
+            setAvailableClinics(unique);
           }
         })
         .catch((err) => {
@@ -218,6 +226,57 @@ function AppContent() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [maskCpf, setMaskCpf] = useState(false); // CPF always displayed completely as required
+
+  // Tenant ativo (suporte ou próprio)
+  const activeTenantId =
+    currentSession?.supportSession?.targetTenantId ||
+    currentSession?.tenantId ||
+    '';
+
+  // Contador de mensagens WhatsApp não lidas em tempo real
+  const [whatsappUnreadCount, setWhatsappUnreadCount] = useState<number>(0);
+
+  useEffect(() => {
+    if (!activeTenantId) return;
+
+    const fetchWhatsappUnread = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('df_wa_conversations')
+          .select('unread_count')
+          .eq('tenant_id', activeTenantId);
+
+        if (!error && data) {
+          const total = data.reduce((acc, row) => acc + (row.unread_count || 0), 0);
+          setWhatsappUnreadCount(total);
+        }
+      } catch (e) {
+        console.warn('Erro ao calcular unread do WhatsApp:', e);
+      }
+    };
+
+    fetchWhatsappUnread();
+
+    const channel = supabase
+      .channel(`app_wa_unread_${activeTenantId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'df_wa_conversations',
+          filter: `tenant_id=eq.${activeTenantId}`,
+        },
+        () => {
+          fetchWhatsappUnread();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [activeTenantId, tick]);
 
   // Global Period Filter State - Mês civil atual dinâmico por padrão
   const [selectedYear, setSelectedYear] = useState<number>(() => {
@@ -628,8 +687,12 @@ function AppContent() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased">
-      <div className="flex-1 flex min-w-0">
+    <div
+      className={`bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased ${
+        currentTab === 'whatsapp' ? 'h-screen max-h-screen overflow-hidden' : 'min-h-screen'
+      }`}
+    >
+      <div className={`flex-1 flex min-w-0 ${currentTab === 'whatsapp' ? 'h-full overflow-hidden' : ''}`}>
         {/* Sidebar Navigation */}
         <Sidebar
           currentTab={currentTab}
@@ -637,6 +700,7 @@ function AppContent() {
           pendingReceitaSaudeCount={pendingReceitaSaudeCount}
           overdueReceivablesCount={overdueReceivablesCount}
           overdueExpensesCount={overdueExpensesCount}
+          whatsappUnreadCount={whatsappUnreadCount}
           isOpenMobile={mobileMenuOpen}
           onCloseMobile={() => setMobileMenuOpen(false)}
           onLogout={handleLogout}
@@ -647,11 +711,13 @@ function AppContent() {
         {/* Main Content Area */}
         <div
           className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${
+            currentTab === 'whatsapp' ? 'h-full min-h-0 overflow-hidden' : ''
+          } ${
             isSidebarCollapsed ? 'lg:pl-[112px]' : 'lg:pl-[280px]'
           }`}
         >
           {/* Top Bar Container (Modo Consultoria / Suporte + Header) */}
-          <div className="sticky top-0 z-30 flex flex-col">
+          <div className="sticky top-0 z-30 flex flex-col shrink-0">
             {isPrimaryAccount && (
               <ConsultingBar
                 activeClinicName={activeClinicDisplayName}
@@ -714,20 +780,36 @@ function AppContent() {
           </div>
         ) : (
           <>
-            {/* Global Period Filter Bar - Always active across all tabs */}
-            <PeriodFilterBar
-              selectedYear={selectedYear}
-              selectedMonth={selectedMonth}
-              onChangePeriod={handleChangePeriod}
-              periodSalesValue={periodSalesValue}
-              periodSalesCount={filteredSales.length}
-              periodExpensesValue={periodExpensesValue}
-              periodExpensesCount={filteredExpenses.length}
-              periodReceivablesValue={periodReceivablesValue}
-            />
+            {/* Global Period Filter Bar */}
+            {currentTab !== 'whatsapp' && (
+              <PeriodFilterBar
+                selectedYear={selectedYear}
+                selectedMonth={selectedMonth}
+                onChangePeriod={handleChangePeriod}
+                periodSalesValue={periodSalesValue}
+                periodSalesCount={filteredSales.length}
+                periodExpensesValue={periodExpensesValue}
+                periodExpensesCount={filteredExpenses.length}
+                periodReceivablesValue={periodReceivablesValue}
+              />
+            )}
 
             {/* View Switcher */}
-            <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+            <main
+              className={`flex-1 min-h-0 ${
+                currentTab === 'whatsapp'
+                  ? 'p-2 sm:p-3 max-w-[1600px] w-full mx-auto flex flex-col overflow-hidden h-full'
+                  : 'p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto'
+              }`}
+            >
+          {currentTab === 'whatsapp' && (
+            <WhatsAppMainView
+              tenantId={activeTenantId}
+              currentUserId={currentSession?.user?.id}
+              currentUserName={currentSession?.user?.name}
+            />
+          )}
+
           {currentTab === 'dashboard' && (
             <DashboardView
               sales={sales}

@@ -21,10 +21,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Repeat,
+  MessageSquare,
 } from 'lucide-react';
 
 export type NavTab =
   | 'dashboard'
+  | 'whatsapp'
   | 'sales'
   | 'procedures'
   | 'supplies'
@@ -47,6 +49,7 @@ interface SidebarProps {
   pendingReceitaSaudeCount: number;
   overdueReceivablesCount: number;
   overdueExpensesCount: number;
+  whatsappUnreadCount?: number;
   isOpenMobile: boolean;
   onCloseMobile: () => void;
   onLogout?: () => void;
@@ -60,6 +63,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   pendingReceitaSaudeCount,
   overdueReceivablesCount,
   overdueExpensesCount,
+  whatsappUnreadCount = 0,
   isOpenMobile,
   onCloseMobile,
   onLogout,
@@ -156,8 +160,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       ],
     },
     {
-      title: 'PACIENTES & AGENDA',
+      title: 'PACIENTES & ATENDIMENTO',
       items: [
+        {
+          id: 'whatsapp',
+          label: 'WhatsApp',
+          icon: MessageSquare,
+          badge: whatsappUnreadCount > 0 ? whatsappUnreadCount : undefined,
+          badgeColor: 'bg-emerald-600 text-white font-bold',
+        },
         { id: 'patients', label: 'Pacientes', icon: Users },
         { id: 'agenda', label: 'Agenda', icon: Calendar },
       ],

@@ -57,18 +57,28 @@ export const ConsultingHeader: React.FC<ConsultingHeaderProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Camada defensiva: garantir que a lista de clientes autorizados seja estritamente única por tenant_id
+  const uniqueClients = React.useMemo(() => {
+    const seen = new Set<string>();
+    return (clients || []).filter((client) => {
+      if (!client?.tenant_id || seen.has(client.tenant_id)) return false;
+      seen.add(client.tenant_id);
+      return true;
+    });
+  }, [clients]);
+
   // Filtragem de clientes para a busca
   const filteredClients = React.useMemo(() => {
     if (!searchTerm.trim()) return [];
     const term = searchTerm.toLowerCase();
-    return clients.filter(
+    return uniqueClients.filter(
       (c) =>
         c.clinic_name.toLowerCase().includes(term) ||
         (c.trade_name && c.trade_name.toLowerCase().includes(term)) ||
         (c.cnpj && c.cnpj.includes(term)) ||
         c.owner_name.toLowerCase().includes(term)
     );
-  }, [clients, searchTerm]);
+  }, [uniqueClients, searchTerm]);
 
   return (
     <header className="bg-white/95 backdrop-blur-md border-b border-slate-200/90 px-4 sm:px-6 lg:px-8 py-3 sticky top-0 z-30 shadow-2xs">
@@ -112,10 +122,10 @@ export const ConsultingHeader: React.FC<ConsultingHeaderProps> = ({
             {isClinicDropdownOpen && (
               <div className="absolute right-0 mt-1.5 w-72 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 p-2 text-xs">
                 <div className="px-2.5 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                  Clínicas Autorizadas ({clients.length})
+                  Clínicas Autorizadas ({uniqueClients.length})
                 </div>
                 <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 mt-1">
-                  {clients.map((client) => (
+                  {uniqueClients.map((client) => (
                     <div
                       key={client.tenant_id}
                       className="p-2 hover:bg-emerald-50/70 rounded-xl transition-colors flex items-center justify-between gap-2 group"
