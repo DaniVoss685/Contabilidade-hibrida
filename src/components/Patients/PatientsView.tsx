@@ -42,7 +42,7 @@ import {
 import { db } from '../../lib/db';
 import { useToast } from '../UI';
 import { PatientModal } from '../Modals/PatientModal';
-import { PatientProcedureDrawer } from './PatientProcedureDrawer';
+import { PatientProcedureModal } from './PatientProcedureModal';
 
 interface PatientsViewProps {
   patients: Patient[];
@@ -82,9 +82,9 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
   const [isModalOpen, setIsModalOpen] = useState<boolean>(initialOpenNewModal);
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
 
-  // Drawer de Detalhes do Atendimento
-  const [selectedItemForDrawer, setSelectedItemForDrawer] = useState<EnhancedSaleHistoryItem | null>(null);
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  // Modal Central de Detalhes do Atendimento
+  const [selectedItemForDetails, setSelectedItemForDetails] = useState<EnhancedSaleHistoryItem | null>(null);
+  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
 
   React.useEffect(() => {
     if (initialOpenNewModal) {
@@ -111,19 +111,25 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
     });
   }, [patients, searchTerm]);
 
-  const activePatient = patients.find((p) => p.id === selectedPatientId) || patients[0];
+  // Paciente Ativo
+  const activePatient = useMemo(() => {
+    if (!selectedPatientId && filteredPatients.length > 0) {
+      return filteredPatients[0];
+    }
+    return patients.find((p) => p.id === selectedPatientId) || filteredPatients[0] || null;
+  }, [patients, filteredPatients, selectedPatientId]);
 
-  // Financial history for active patient
+  // Vendas do Paciente Ativo
   const patientSales = useMemo(() => {
     if (!activePatient) return [];
-    return sales.filter((s) => s.patientId === activePatient.id || s.patientName === activePatient.name);
+    return sales.filter((s) => s.patientId === activePatient.id);
   }, [sales, activePatient]);
 
   // Idade e Aniversário dinâmicos
   const patientAge = useMemo(() => calculateAge(activePatient?.birthDate), [activePatient?.birthDate]);
   const nextBirthday = useMemo(() => calculateNextBirthday(activePatient?.birthDate), [activePatient?.birthDate]);
 
-  // Resumo Financeiro e Comportamento de Pagamento (Métricas 100% Objetivas)
+  // Resumo Financeiro do Paciente (4 Cards Consolidados)
   const financialSummary = useMemo(() => {
     return calculatePatientFinancialSummary(patientSales);
   }, [patientSales]);
@@ -157,9 +163,9 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
     }
   }, [enhancedHistoryItems, historyFilter]);
 
-  const handleOpenDrawer = (item: EnhancedSaleHistoryItem) => {
-    setSelectedItemForDrawer(item);
-    setIsDrawerOpen(true);
+  const handleOpenDetailsModal = (item: EnhancedSaleHistoryItem) => {
+    setSelectedItemForDetails(item);
+    setIsDetailsModalOpen(true);
   };
 
   return (
@@ -570,40 +576,40 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                     Nenhum procedimento encontrado com o filtro selecionado.
                   </div>
                 ) : (
-                  <div className="border border-slate-200/80 rounded-2xl overflow-hidden shadow-2xs">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-50/80 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200/80">
+                  <div className="border border-slate-200/80 rounded-2xl overflow-x-auto shadow-2xs bg-white scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
+                    <table className="w-full min-w-[1120px] text-left text-xs border-collapse">
+                      <thead className="bg-slate-50/80 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200/80 sticky top-0 z-10">
                         <tr>
-                          <th className="p-3">Data</th>
-                          <th className="p-3">Procedimento</th>
-                          <th className="p-3">Origem</th>
-                          <th className="p-3">Valor</th>
-                          <th className="p-3">Forma de Pagamento</th>
-                          <th className="p-3">Situação</th>
-                          <th className="p-3">Pontualidade</th>
-                          <th className="p-3 text-right">Ação</th>
+                          <th className="p-3.5 w-[105px] min-w-[105px]">Data</th>
+                          <th className="p-3.5 w-[240px] min-w-[200px]">Procedimento</th>
+                          <th className="p-3.5 w-[90px] min-w-[90px]">Origem</th>
+                          <th className="p-3.5 w-[120px] min-w-[110px]">Valor</th>
+                          <th className="p-3.5 w-[150px] min-w-[140px]">Forma de Pagamento</th>
+                          <th className="p-3.5 w-[120px] min-w-[110px]">Situação</th>
+                          <th className="p-3.5 w-[170px] min-w-[160px]">Pontualidade</th>
+                          <th className="p-3.5 w-[120px] min-w-[110px] text-right">Ação</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {filteredHistoryItems.map((item) => (
                           <tr
                             key={item.sale.id}
-                            onClick={() => handleOpenDrawer(item)}
+                            onClick={() => handleOpenDetailsModal(item)}
                             className="hover:bg-emerald-50/40 transition-colors cursor-pointer group"
                             title="Clique para ver os detalhes completos deste atendimento"
                           >
-                            <td className="p-3 font-mono text-slate-600 text-xs whitespace-nowrap">
+                            <td className="p-3.5 font-mono text-slate-600 text-xs whitespace-nowrap">
                               {formatDateBr(item.serviceDate)}
                             </td>
-                            <td className="p-3">
-                              <span className="font-bold text-slate-900 block group-hover:text-emerald-700 transition-colors">
+                            <td className="p-3.5">
+                              <span className="font-bold text-slate-900 block group-hover:text-emerald-700 transition-colors line-clamp-2">
                                 {item.procedureName}
                               </span>
-                              <span className="text-[10.5px] text-slate-400 font-mono">
+                              <span className="text-[10.5px] text-slate-400 font-mono block truncate">
                                 {item.nfseOrReceiptSummary}
                               </span>
                             </td>
-                            <td className="p-3">
+                            <td className="p-3.5 whitespace-nowrap">
                               {item.taxOrigin === 'CPF' ? (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
                                   CPF
@@ -614,20 +620,20 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                                 </span>
                               )}
                             </td>
-                            <td className="p-3 font-mono tabular-nums text-xs whitespace-nowrap">
-                              <div className="font-bold text-slate-900">
+                            <td className="p-3.5 font-mono tabular-nums text-xs whitespace-nowrap">
+                              <div className="font-bold text-slate-900 whitespace-nowrap">
                                 {formatCurrency(item.totalValue)}
                               </div>
                               {item.installmentsCount > 1 && (
-                                <span className="text-[10px] text-slate-400 block">
+                                <span className="text-[10px] text-slate-400 block whitespace-nowrap">
                                   {item.installmentsCount} parcelas
                                 </span>
                               )}
                             </td>
-                            <td className="p-3 text-slate-700 text-xs">
+                            <td className="p-3.5 text-slate-700 text-xs whitespace-nowrap">
                               {item.effectivePaymentMethod}
                             </td>
-                            <td className="p-3">
+                            <td className="p-3.5 whitespace-nowrap">
                               <span
                                 className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold whitespace-nowrap ${
                                   item.aggregatedStatus === 'PAGO'
@@ -642,9 +648,9 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                                 {item.statusBadgeLabel}
                               </span>
                             </td>
-                            <td className="p-3 text-xs whitespace-nowrap">
+                            <td className="p-3.5 text-xs whitespace-nowrap">
                               <span
-                                className={`font-medium ${
+                                className={`font-medium whitespace-nowrap ${
                                   item.timelinessVariant === 'success'
                                     ? 'text-emerald-700'
                                     : item.timelinessVariant === 'danger'
@@ -657,7 +663,7 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                                 {item.timelinessLabel}
                               </span>
                             </td>
-                            <td className="p-3 text-right">
+                            <td className="p-3.5 text-right whitespace-nowrap">
                               <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 group-hover:text-emerald-800 underline-offset-2 group-hover:underline">
                                 Ver detalhes
                                 <ChevronRight className="w-3.5 h-3.5" />
@@ -679,14 +685,14 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
         </div>
       </div>
 
-      {/* Drawer de Detalhes do Atendimento */}
-      <PatientProcedureDrawer
-        isOpen={isDrawerOpen}
+      {/* Modal Central de Detalhes do Atendimento */}
+      <PatientProcedureModal
+        isOpen={isDetailsModalOpen}
         onClose={() => {
-          setIsDrawerOpen(false);
-          setSelectedItemForDrawer(null);
+          setIsDetailsModalOpen(false);
+          setSelectedItemForDetails(null);
         }}
-        item={selectedItemForDrawer}
+        item={selectedItemForDetails}
         patientName={activePatient?.name || ''}
         patientCpf={activePatient?.cpf || ''}
         maskCpf={maskCpf}
