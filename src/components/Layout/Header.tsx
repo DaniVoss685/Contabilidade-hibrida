@@ -11,11 +11,15 @@ import {
 } from 'lucide-react';
 import { Professional, Organization } from '../../types';
 import { formatCpf, formatCnpj } from '../../lib/masks';
+import { NotificationBellDropdown } from '../Notifications/NotificationBellDropdown';
 
 interface HeaderProps {
   organization: Organization;
   professional: Professional;
   clinicDisplayName?: string;
+  tenantId?: string;
+  currentUserId?: string;
+  onOpenConversation?: (conversationId: string, contactId?: string, targetTenantId?: string) => void;
   onOpenMobileMenu: () => void;
   onOpenNewSale: () => void;
   onOpenNewExpense: () => void;
@@ -33,6 +37,9 @@ export const Header: React.FC<HeaderProps> = ({
   organization,
   professional,
   clinicDisplayName,
+  tenantId,
+  currentUserId,
+  onOpenConversation,
   onOpenMobileMenu,
   onOpenNewSale,
   onOpenNewExpense,
@@ -142,11 +149,22 @@ export const Header: React.FC<HeaderProps> = ({
             <span>Nova Receita</span>
           </button>
 
+          {/* Notification Bell Dropdown */}
+          {tenantId && onOpenConversation && (
+            <div className="ml-0.5 sm:ml-1">
+              <NotificationBellDropdown
+                tenantId={tenantId}
+                userId={currentUserId}
+                onOpenConversation={onOpenConversation}
+              />
+            </div>
+          )}
+
           {/* Logout Action */}
           {onLogout && (
             <button
               onClick={onLogout}
-              className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer ml-1"
+              className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer ml-0.5"
               title="Encerrar Sessão / Sair"
             >
               <LogOut className="w-4 h-4" />

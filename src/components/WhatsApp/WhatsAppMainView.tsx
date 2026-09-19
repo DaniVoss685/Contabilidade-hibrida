@@ -41,6 +41,9 @@ interface WhatsAppMainViewProps {
   currentUserName?: string;
   onNavigateToAgenda?: (date?: string, patientId?: string) => void;
   initialPatientId?: string;
+  initialConversationId?: string;
+  initialContactId?: string;
+  onConsumedInitialConversation?: () => void;
 }
 
 export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
@@ -49,6 +52,9 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   currentUserName,
   onNavigateToAgenda,
   initialPatientId,
+  initialConversationId,
+  initialContactId,
+  onConsumedInitialConversation,
 }) => {
   const [conversations, setConversations] = useState<WhatsAppConversation[]>([]);
   const [history, setHistory] = useState<WhatsAppConversation[]>([]);
@@ -56,6 +62,9 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   const [selectedConversation, setSelectedConversation] = useState<WhatsAppConversation | null>(null);
   const selectedConversationRef = useRef<WhatsAppConversation | null>(null);
   selectedConversationRef.current = selectedConversation;
+
+  // Ref para registrar IDs de navegação já consumidos e evitar auto-switch involuntário
+  const consumedInitialConvRef = useRef<string | null>(null);
 
   const [activeChatRealtimeEvent, setActiveChatRealtimeEvent] = useState<RealtimeMessageEvent | null>(null);
   const [activeTab, setActiveTab] = useState<WhatsAppTab>('em_atendimento');
@@ -163,6 +172,96 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
     };
   }, [tenantId]);
 
+  // Seleção automática ao navegar via Notificação, Agenda, Pacientes ou URL
+  // Proteção: executado apenas quando há uma intenção explícita e NÃO re-executado quando chegam novas mensagens
+  useEffect(() => {
+    if (loading) return;
+
+    const allConvs = [...conversations, ...history];
+
+    // 1. Por ID de conversa explícito (intent de clique de notificação ou atalho)
+    if (initialConversationId && consumedInitialConvRef.current !== initialConversationId) {
+      const match = allConvs.find((c) => c.id === initialConversationId);
+      if (match) {
+        consumedInitialConvRef.current = initialConversationId;
+        setSelectedConversation(match);
+        if (match.status === 'na_fila') setActiveTab('na_fila');
+        else if (match.status === 'finalizado') setActiveTab('finalizados');
+        else setActiveTab('em_atendimento');
+        onConsumedInitialConversation?.();
+        return;
+      }
+    }
+
+    // 2. Por ID de contato explícito
+    if (initialContactId && consumedInitialConvRef.current !== `ctc_${initialContactId}`) {
+      const match = allConvs.find((c) => c.contact_id === initialContactId);
+      if (match) {
+        consumedInitialConvRef.current = `ctc_${initialContactId}`;
+        setSelectedConversation(match);
+        if (match.status === 'na_fila') setActiveTab('na_fila');
+        else if (match.status === 'finalizado') setActiveTab('finalizados');
+        else setActiveTab('em_atendimento');
+        onConsumedInitialConversation?.();
+        return;
+      }
+    }
+
+    // 3. Por ID de paciente clínico
+    if (initialPatientId && consumedInitialConvRef.current !== `pat_${initialPatientId}`) {
+      const targetContact = contacts.find((c) => c.patient_id === initialPatientId);
+      if (targetContact) {
+        const match = allConvs.find((c) => c.contact_id === targetContact.id);
+        if (match) {
+          consumedInitialConvRef.current = `pat_${initialPatientId}`;
+          setSelectedConversation(match);
+          if (match.status === 'na_fila') setActiveTab('na_fila');
+          else if (match.status === 'finalizado') setActiveTab('finalizados');
+          else setActiveTab('em_atendimento');
+          onConsumedInitialConversation?.();
+          return;
+        }
+      }
+    }
+
+    // 4. Fallback por URL query parameters (caso acesse direto pela URL via link externo)
+    if (typeof window !== 'undefined' && !selectedConversationRef.current) {
+      const params = new URLSearchParams(window.location.search);
+      const urlConvId = params.get('conversationId') || params.get('conversation_id');
+      const urlCtcId = params.get('contactId') || params.get('contact_id');
+
+      if (urlConvId && consumedInitialConvRef.current !== `url_${urlConvId}`) {
+        const match = allConvs.find((c) => c.id === urlConvId);
+        if (match) {
+          consumedInitialConvRef.current = `url_${urlConvId}`;
+          setSelectedConversation(match);
+          if (match.status === 'na_fila') setActiveTab('na_fila');
+          else if (match.status === 'finalizado') setActiveTab('finalizados');
+          else setActiveTab('em_atendimento');
+          try {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } catch {}
+          return;
+        }
+      }
+
+      if (urlCtcId && consumedInitialConvRef.current !== `url_ctc_${urlCtcId}`) {
+        const match = allConvs.find((c) => c.contact_id === urlCtcId);
+        if (match) {
+          consumedInitialConvRef.current = `url_ctc_${urlCtcId}`;
+          setSelectedConversation(match);
+          if (match.status === 'na_fila') setActiveTab('na_fila');
+          else if (match.status === 'finalizado') setActiveTab('finalizados');
+          else setActiveTab('em_atendimento');
+          try {
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } catch {}
+          return;
+        }
+      }
+    }
+  }, [initialConversationId, initialContactId, initialPatientId, loading]);
+
   // Canal Único Realtime por Tenant (Sem duplicação de listeners e com atualização instantânea)
   useEffect(() => {
     if (!tenantId) return;
@@ -233,11 +332,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
           });
 
           const currentSel = selectedConversationRef.current;
-          const isCurrentSelectedTarget =
-            currentSel?.id === newMsg.conversation_id ||
-            (currentSel?.contact_id &&
-              (newMsg.contact_id === currentSel.contact_id ||
-                conversations.find((c) => c.id === newMsg.conversation_id)?.contact_id === currentSel.contact_id));
+          const isCurrentSelectedTarget = Boolean(currentSel && currentSel.id === newMsg.conversation_id);
 
           // Atualizar selectedConversation e repassar mensagem imediatamente para o chat aberto se for a conversa/contato ativo
           if (isCurrentSelectedTarget) {
@@ -629,6 +724,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
             tenantId={tenantId}
             currentUserId={currentUserId}
             onSelectConversation={(conv) => {
+              consumedInitialConvRef.current = conv.id;
               setSelectedConversation(conv);
               setViewMode('chat');
             }}
@@ -650,6 +746,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                 contacts={contacts}
                 selectedConversationId={selectedConversation?.id}
                 onSelectConversation={(conv) => {
+                  consumedInitialConvRef.current = conv.id;
                   setSelectedConversation(conv);
                 }}
                 onSelectContact={handleSelectContact}

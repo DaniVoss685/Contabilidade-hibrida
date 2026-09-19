@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import webpush from "npm:web-push@3.6.7";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -125,6 +126,31 @@ Deno.serve(async (req) => {
       token === "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZia291dXZ1cGR5ZmZpendvaXRpIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NTI5MjY0NSwiZXhwIjoyMDcwODY4NjQ1fQ.aB-tTaBKyC_wFAPOeBga8mqEiyxCeCoNuEtUwHdZxPk"
     );
 
+    // PARSER DO CORPO DA REQUISIÇÃO
+    const body = await req.json().catch(() => ({}));
+    const { action, tenant_id } = body;
+
+    // AÇÃO: OBTER CHAVE PÚBLICA VAPID (CHAVE PÚBLICA É SEGURA PARA CLIENT-SIDE)
+    if (action === "get_vapid_public_key") {
+      const { data: vapidRow, error: vapidErr } = await adminSupabase
+        .from("df_vapid_secrets")
+        .select("public_key")
+        .eq("id", "default")
+        .maybeSingle();
+
+      if (vapidErr || !vapidRow) {
+        return new Response(
+          JSON.stringify({ error: "Chaves VAPID não configuradas no servidor." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, publicKey: vapidRow.public_key }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     let authUserId: string | null = null;
     let userProfiles: any[] = [];
     let isPlatformAdmin = false;
@@ -160,9 +186,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 2. PARSER DO CORPO DA REQUISIÇÃO
-    const body = await req.json().catch(() => ({}));
-    const { action, tenant_id } = body;
     const platformAdminProfile =
       userProfiles.find((u) => u.is_primary || ["SUPER_ADMIN", "PLATFORM_ADMIN"].includes(u.role)) ||
       userProfiles[0] ||
@@ -170,7 +193,7 @@ Deno.serve(async (req) => {
     const tenantId = tenant_id || userProfiles[0]?.clinic_id;
 
     // =========================================================================
-    // AÇÕES GLOBAIS DA PLATAFORMA (Exclusivas para Administradores / Consultoria)
+    // AÇÕES GLOBAIS DA PLATAFORMA / UTILITÁRIAS
     // =========================================================================
 
     // AÇÃO: SALVAR CONFIGURAÇÃO GLOBAL
@@ -366,6 +389,7 @@ Deno.serve(async (req) => {
     // Classificação estrita de ações:
     const PROVISIONING_ACTIONS = ["create_instance", "connect_instance", "get_status", "disconnect"];
     const OPERATIONAL_ACTIONS = ["send_text", "send_media", "send_reaction", "fetch_profile_pic", "sync_profile_pic", "sync_contacts_names"];
+    const NOTIFICATION_ACTIONS = ["save_push_subscription", "remove_push_subscription", "send_push_notification"];
 
     if (PROVISIONING_ACTIONS.includes(action)) {
       // Provisionamento técnico: permitido para membro da clínica OU administrador da plataforma
@@ -386,11 +410,188 @@ Deno.serve(async (req) => {
           { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
+    } else if (NOTIFICATION_ACTIONS.includes(action)) {
+      // Notificações e Web Push: permitido para membros ativos da clínica OU administradores da plataforma
+      if (!isClinicMember && !isPlatformAdmin) {
+        return new Response(
+          JSON.stringify({ error: "Acesso negado às notificações desta clínica." }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     } else {
       // Ação desconhecida
       return new Response(
         JSON.stringify({ error: `Ação não reconhecida: ${action}` }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // =========================================================================
+    // EXECUÇÃO DAS AÇÕES DE NOTIFICAÇÕES E WEB PUSH (Não dependem de instância WhatsApp)
+    // =========================================================================
+
+    // AÇÃO: SALVAR SUBSCRIPTION DE WEB PUSH
+    if (action === "save_push_subscription") {
+      const { subscription, user_id, user_agent, device_label } = body;
+      if (!subscription || !subscription.endpoint || !subscription.keys?.p256dh || !subscription.keys?.auth) {
+        return new Response(
+          JSON.stringify({ error: "Dados de subscription incompletos." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const effectiveUserId = user_id || authUserId || null;
+      const subId = `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+      const { data: savedSub, error: subErr } = await adminSupabase
+        .from("df_push_subscriptions")
+        .upsert(
+          {
+            id: subId,
+            tenant_id: tenantId,
+            user_id: effectiveUserId,
+            endpoint: subscription.endpoint,
+            p256dh: subscription.keys.p256dh,
+            auth: subscription.keys.auth,
+            user_agent: user_agent || null,
+            device_label: device_label || null,
+            is_active: true,
+            last_used_at: new Date().toISOString(),
+          },
+          { onConflict: "tenant_id,endpoint" }
+        )
+        .select()
+        .single();
+
+      if (subErr) {
+        console.error("[Dental WhatsApp API] Erro ao salvar push subscription:", subErr);
+        return new Response(
+          JSON.stringify({ error: `Erro ao salvar subscription: ${subErr.message}` }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, subscription: savedSub }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // AÇÃO: REMOVER SUBSCRIPTION DE WEB PUSH
+    if (action === "remove_push_subscription") {
+      const { endpoint } = body;
+      if (!endpoint) {
+        return new Response(
+          JSON.stringify({ error: "Endpoint obrigatório para desativação." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      await adminSupabase
+        .from("df_push_subscriptions")
+        .update({ is_active: false, last_used_at: new Date().toISOString() })
+        .eq("tenant_id", tenantId)
+        .eq("endpoint", endpoint);
+
+      return new Response(
+        JSON.stringify({ success: true }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // AÇÃO: DISPARAR PUSH NOTIFICATION (Assíncrono ou sob demanda)
+    if (action === "send_push_notification") {
+      const { title, body: notifBody, icon, badge, data: notifData, tag, user_id } = body;
+
+      const { data: vapidRow, error: vapidErr } = await adminSupabase
+        .from("df_vapid_secrets")
+        .select("public_key, private_key, subject")
+        .eq("id", "default")
+        .maybeSingle();
+
+      if (vapidErr || !vapidRow) {
+        return new Response(
+          JSON.stringify({ error: "Segredos VAPID não configurados." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      webpush.setVapidDetails(
+        vapidRow.subject || "mailto:suporte@dentalfinance.com.br",
+        vapidRow.public_key,
+        vapidRow.private_key
+      );
+
+      // Buscar subscriptions ativas
+      let subQuery = adminSupabase
+        .from("df_push_subscriptions")
+        .select("id, endpoint, p256dh, auth, user_id")
+        .eq("tenant_id", tenantId)
+        .eq("is_active", true);
+
+      if (user_id) {
+        subQuery = subQuery.or(`user_id.eq.${user_id},user_id.is.null`);
+      }
+
+      const { data: subs, error: queryErr } = await subQuery;
+
+      if (queryErr) {
+        console.error("[Dental WhatsApp API] Erro ao consultar subscriptions:", queryErr);
+        return new Response(
+          JSON.stringify({ error: queryErr.message }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      let sentCount = 0;
+      let expiredCount = 0;
+      const pushPayload = JSON.stringify({
+        title: title || "Dental Finance",
+        body: notifBody || "Nova mensagem recebida",
+        icon: icon || "/icon-192.png",
+        badge: badge || "/favicon-32x32.png",
+        data: notifData || {},
+        tag: tag || `wa_${tenantId}_${notifData?.conversationId || ""}`,
+      });
+
+      if (subs && subs.length > 0) {
+        await Promise.allSettled(
+          subs.map(async (sub) => {
+            try {
+              await webpush.sendNotification(
+                {
+                  endpoint: sub.endpoint,
+                  keys: {
+                    p256dh: sub.p256dh,
+                    auth: sub.auth,
+                  },
+                },
+                pushPayload
+              );
+              sentCount++;
+            } catch (pErr: any) {
+              if (pErr.statusCode === 404 || pErr.statusCode === 410) {
+                expiredCount++;
+                await adminSupabase
+                  .from("df_push_subscriptions")
+                  .update({ is_active: false, last_used_at: new Date().toISOString() })
+                  .eq("id", sub.id);
+              } else {
+                console.warn(`[Dental WhatsApp API] Falha push para sub ${sub.id}:`, pErr.message);
+              }
+            }
+          })
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          sentCount,
+          expiredCount,
+          totalEligible: (subs || []).length,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 

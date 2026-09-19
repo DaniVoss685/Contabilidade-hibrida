@@ -30,6 +30,7 @@ import { SupabaseService, supabase, mapDbAppointmentToApp } from './lib/supabase
 import { ToastProvider, useToast } from './components/UI/ToastContext';
 import { WhatsAppMainView } from './components/WhatsApp/WhatsAppMainView';
 import { ToastContainer } from './components/UI/Toast';
+import { GlobalNotificationHub } from './components/Notifications/GlobalNotificationHub';
 import { GlobalPatientSearchModal } from './components/Navigation/GlobalPatientSearchModal';
 import { getEffectivePayableStatus, getEffectiveReceivableStatus } from './lib/statusHelper';
 import { Patient, ConsultingPortfolioData, ConsultingClientSummary, ConsultingNavTab } from './types';
@@ -237,10 +238,25 @@ function AppContent() {
   // Contador de mensagens WhatsApp não lidas em tempo real
   const [whatsappUnreadCount, setWhatsappUnreadCount] = useState<number>(0);
 
-  // Navegação cruzada entre Agenda, Pacientes e WhatsApp
+  // Navegação cruzada entre Notificações, Agenda, Pacientes e WhatsApp
+  const [initialWhatsAppConversationId, setInitialWhatsAppConversationId] = useState<string | undefined>(undefined);
+  const [initialWhatsAppContactId, setInitialWhatsAppContactId] = useState<string | undefined>(undefined);
   const [initialWhatsAppPatientId, setInitialWhatsAppPatientId] = useState<string | undefined>(undefined);
   const [initialAgendaDate, setInitialAgendaDate] = useState<string | undefined>(undefined);
   const [initialAgendaPatientId, setInitialAgendaPatientId] = useState<string | undefined>(undefined);
+
+  const handleOpenConversationFromNotification = async (
+    conversationId: string,
+    contactId?: string,
+    targetTenantId?: string
+  ) => {
+    if (targetTenantId && targetTenantId !== activeTenantId && isPrimaryAccount) {
+      await handleSelectClinic(targetTenantId);
+    }
+    setInitialWhatsAppConversationId(conversationId);
+    if (contactId) setInitialWhatsAppContactId(contactId);
+    setCurrentTab('whatsapp');
+  };
 
   // Redirecionamento defensivo se o perfil do usuário não tiver permissão para a aba atual
   useEffect(() => {
@@ -722,6 +738,13 @@ function AppContent() {
           }}
         />
 
+        {/* Global WhatsApp Realtime Notification Hub */}
+        <GlobalNotificationHub
+          tenantId={activeTenantId}
+          userId={currentSession?.user?.id}
+          onOpenConversation={handleOpenConversationFromNotification}
+        />
+
         <ToastContainer />
       </div>
     );
@@ -805,6 +828,9 @@ function AppContent() {
               organization={organization}
               professional={professional}
               clinicDisplayName={activeClinicDisplayName}
+              tenantId={activeTenantId}
+              currentUserId={currentSession?.user?.id}
+              onOpenConversation={handleOpenConversationFromNotification}
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
               onOpenNewSale={() => setIsNewSaleOpen(true)}
               onOpenNewExpense={() => setIsNewExpenseOpen(true)}
@@ -851,6 +877,13 @@ function AppContent() {
               currentUserId={currentSession?.user?.id}
               currentUserName={currentSession?.user?.name}
               initialPatientId={initialWhatsAppPatientId}
+              initialConversationId={initialWhatsAppConversationId}
+              initialContactId={initialWhatsAppContactId}
+              onConsumedInitialConversation={() => {
+                setInitialWhatsAppConversationId(undefined);
+                setInitialWhatsAppContactId(undefined);
+                setInitialWhatsAppPatientId(undefined);
+              }}
               onNavigateToAgenda={(date, patientId) => {
                 if (date) setInitialAgendaDate(date);
                 if (patientId) setInitialAgendaPatientId(patientId);
@@ -1099,6 +1132,13 @@ function AppContent() {
         sales={sales}
         onSelectPatient={handleSelectPatientFromSearch}
         clinicDisplayName={activeClinicDisplayName}
+      />
+
+      {/* Global WhatsApp Realtime Notification Hub */}
+      <GlobalNotificationHub
+        tenantId={activeTenantId}
+        userId={currentSession?.user?.id}
+        onOpenConversation={handleOpenConversationFromNotification}
       />
 
       {/* Global Toaster Mount */}

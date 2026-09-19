@@ -133,7 +133,29 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
 }) => {
   const [timelineItems, setTimelineItems] = useState<WhatsAppTimelineItem[]>([]);
   const [loadingTimeline, setLoadingTimeline] = useState(true);
-  const [text, setText] = useState('');
+
+  // Persistência segura de rascunho de texto por conversa (protege 100% contra perda de digitação)
+  const draftStorageKey = `df_wa_draft_${tenantId}_${conversation.id}`;
+  const [text, setText] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return sessionStorage.getItem(`df_wa_draft_${tenantId}_${conversation.id}`) || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const handleTextChange = (newVal: string) => {
+    setText(newVal);
+    try {
+      if (newVal.trim()) {
+        sessionStorage.setItem(draftStorageKey, newVal);
+      } else {
+        sessionStorage.removeItem(draftStorageKey);
+      }
+    } catch {}
+  };
+
   const [sending, setSending] = useState(false);
   const [replyingTo, setReplyingTo] = useState<WhatsAppMessage | null>(null);
 
@@ -850,6 +872,9 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
 
     const contentToSend = text.trim();
     setText('');
+    try {
+      sessionStorage.removeItem(draftStorageKey);
+    } catch {}
     setSending(true);
 
     try {
@@ -961,6 +986,9 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
 
       clearAttachmentQueue();
       setText('');
+      try {
+        sessionStorage.removeItem(draftStorageKey);
+      } catch {}
       setReplyingTo(null);
       await loadTimeline();
       scrollToBottom('smooth');
@@ -2230,7 +2258,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                 ref={textareaRef}
                 rows={1}
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => handleTextChange(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();

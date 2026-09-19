@@ -700,7 +700,7 @@ Deno.serve(async (req) => {
         let conversationId: string | null = null;
         const { data: activeConv } = await supabase
           .from('df_wa_conversations')
-          .select('id, status')
+          .select('id, status, assigned_to')
           .eq('tenant_id', tenantId)
           .eq('contact_id', contactId)
           .not('status', 'in', '("finalizado","arquivado")')
@@ -823,6 +823,113 @@ Deno.serve(async (req) => {
 
         if (saveErr) {
           console.error('[Dental Webhook] Erro ao salvar mensagem:', saveErr);
+        }
+
+        // 6.5 NOTIFICAÇÃO GLOBAL IN-APP & WEB PUSH (Para mensagens recebidas que não sejam automação da agenda)
+        if (!isFromMe && !isConfirmedAction) {
+          const finalMsgDbId = savedMsg?.id || messageId;
+          const notifId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          const targetUserId = activeConv?.assigned_to || null;
+
+          // Formatar preview amigável do conteúdo
+          let notificationPreview = content ? content.slice(0, 120) : '';
+          if (msgType === 'audio') {
+            notificationPreview = '🎤 Mensagem de voz';
+          } else if (msgType === 'image') {
+            notificationPreview = content ? `📷 Foto: ${content.slice(0, 100)}` : '📷 Foto recebida';
+          } else if (msgType === 'document') {
+            notificationPreview = `📄 Documento: ${mediaData?.name || 'arquivo recebido'}`;
+          } else if (msgType === 'video') {
+            notificationPreview = content ? `🎥 Vídeo: ${content.slice(0, 100)}` : '🎥 Vídeo recebido';
+          } else if (msgType === 'sticker') {
+            notificationPreview = '🖼️ Figurinha';
+          } else if (msgType === 'contact') {
+            notificationPreview = '👤 Contato compartilhado';
+          }
+          if (!notificationPreview) {
+            notificationPreview = 'Nova mensagem recebida';
+          }
+
+          // Formatar nome amigável do contato
+          const contactDisplayName =
+            (existingContact?.name && !isPhoneLikeContactName(existingContact.name, whatsappNumber))
+              ? existingContact.name
+              : (clientName && !isPhoneLikeContactName(clientName, whatsappNumber))
+              ? clientName
+              : (whatsappNumber.length >= 10
+                  ? `(${whatsappNumber.slice(2, 4)}) ${whatsappNumber.slice(4)}`
+                  : whatsappNumber);
+
+          const notifTitle = isGroup ? `[Grupo] ${contactDisplayName}` : contactDisplayName;
+
+          // Inserir notificação persistente em df_notifications (idempotente por message_id)
+          try {
+            await supabase
+              .from('df_notifications')
+              .upsert(
+                {
+                  id: notifId,
+                  tenant_id: tenantId,
+                  user_id: targetUserId,
+                  type: 'whatsapp_message',
+                  title: notifTitle,
+                  body: notificationPreview,
+                  entity_type: 'whatsapp_conversation',
+                  entity_id: conversationId || contactId,
+                  is_read: false,
+                  metadata: {
+                    message_id: finalMsgDbId,
+                    evolution_msg_id: evolutionMsgId,
+                    conversation_id: conversationId,
+                    contact_id: contactId,
+                    whatsapp_number: whatsappNumber,
+                    sender_name: contactDisplayName,
+                    avatar_url: existingContact?.profile_pic_url || null,
+                    is_group: isGroup,
+                    msg_type: msgType,
+                  },
+                  created_at: new Date().toISOString(),
+                },
+                {
+                  onConflict: 'id',
+                  ignoreDuplicates: true,
+                }
+              );
+          } catch (notifErr: any) {
+            console.warn('[Dental Webhook] Aviso ao persistir notificação:', notifErr.message);
+          }
+
+          // Disparo assíncrono de Web Push para os dispositivos registrados
+          try {
+            fetch(`${supabaseUrl}/functions/v1/dental-whatsapp-api`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${supabaseServiceKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                action: 'send_push_notification',
+                tenant_id: tenantId,
+                user_id: targetUserId,
+                title: notifTitle,
+                body: notificationPreview,
+                icon: existingContact?.profile_pic_url || '/icon-192.png',
+                badge: '/favicon-32x32.png',
+                tag: `wa_${tenantId}_${conversationId || whatsappNumber}`,
+                data: {
+                  url: `/whatsapp?conversationId=${conversationId || ''}&contactId=${contactId}&tenantId=${tenantId}`,
+                  conversationId: conversationId,
+                  contactId: contactId,
+                  tenantId: tenantId,
+                  messageId: finalMsgDbId,
+                },
+              }),
+            }).catch((pErr: any) => {
+              console.warn('[Dental Webhook] Falha silenciosa no envio do push:', pErr.message);
+            });
+          } catch (pushEx) {
+            // Não interrompe o processamento do webhook
+          }
         }
 
         // 7. DOWNLOAD E ARMAZENAMENTO DA MÍDIA (NO BUCKET dental-private)
