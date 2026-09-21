@@ -25,24 +25,8 @@ import {
 } from 'lucide-react';
 import { canAccessTab } from '../../lib/permissions';
 
-export type NavTab =
-  | 'dashboard'
-  | 'whatsapp'
-  | 'sales'
-  | 'procedures'
-  | 'supplies'
-  | 'receivables'
-  | 'expenses'
-  | 'recurrent_expenses'
-  | 'financial'
-  | 'bank_accounts'
-  | 'patients'
-  | 'agenda'
-  | 'chart_of_accounts'
-  | 'taxes'
-  | 'fiscal_simulator'
-  | 'reports'
-  | 'settings';
+import type { NavTab } from '../../types';
+export type { NavTab };
 
 interface SidebarProps {
   currentTab: NavTab;
@@ -58,6 +42,7 @@ interface SidebarProps {
   onToggleCollapse?: (collapsed: boolean) => void;
   userRole?: string;
   userIsPrimary?: boolean;
+  userPermissions?: string[] | Record<string, boolean> | null;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -74,6 +59,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   userRole,
   userIsPrimary,
+  userPermissions,
 }) => {
   interface NavSection {
     title: string;
@@ -203,7 +189,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     .map((section) => ({
       ...section,
       items: section.items.filter((item) =>
-        canAccessTab(userRole || 'OWNER', item.id, undefined, userIsPrimary)
+        canAccessTab(userRole || 'OWNER', item.id, userPermissions, userIsPrimary)
       ),
     }))
     .filter((section) => section.items.length > 0);

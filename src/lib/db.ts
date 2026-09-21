@@ -516,6 +516,7 @@ export class DentalFinanceDB {
   private hydratePromise: Promise<void> | null = null;
   private hasHydratedWithAuth: boolean = false;
   private isPasswordRecoveryMode: boolean = false;
+  private userProfileRealtimeChannel: any = null;
 
   public getIsHydrating(): boolean {
     return this.isHydrating;
@@ -591,6 +592,10 @@ export class DentalFinanceDB {
 
     // Inicializar sincronização reativa com Supabase Auth
     this.setupSupabaseAuthListener();
+
+    if (this.currentSession?.user?.id && !this.currentSession.isDemo) {
+      this.setupUserProfileRealtime(this.currentSession.user.id);
+    }
   }
 
   private setupSupabaseAuthListener(): void {
@@ -656,6 +661,13 @@ export class DentalFinanceDB {
       const userProfile = await SupabaseService.fetchUserProfileByAuthId(session.user.id, session.user.email);
       if (!userProfile) return;
 
+      // Se o usuário foi desativado pela administração da clínica, encerrar sessão imediatamente
+      if (userProfile.isActive === false) {
+        console.warn('[Supabase Auth] Usuário desativado pela administração. Encerrando sessão.');
+        await this.logout();
+        return;
+      }
+
       const tenantId = userProfile.clinicId;
       let clinic = this.registeredClinics.find((c) => c.id === tenantId);
       if (!clinic) {
@@ -711,10 +723,12 @@ export class DentalFinanceDB {
         user: {
           id: userProfile.id,
           orgId: `org_${tenantId}`,
-          name: userProfile.name || session.user.email?.split('@')[0] || 'Dentista',
+          name: userProfile.name || 'Atendente',
+          whatsappDisplayName: userProfile.whatsappDisplayName || null,
           email: userProfile.email || session.user.email || '',
           role: userProfile.role,
           isPrimary: userProfile.isPrimary ?? false,
+          permissions: userProfile.permissions || null,
         },
         clinic: effectiveClinic,
         tenantId: effectiveTenantId,
@@ -726,6 +740,7 @@ export class DentalFinanceDB {
 
       this.currentSession = authSession;
       saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, authSession);
+      this.setupUserProfileRealtime(userProfile.id);
 
       if (this.activeTenantId !== effectiveTenantId) {
         this.loadTenant(effectiveTenantId, effectiveTenantId === 'tenant_demo');
@@ -1280,10 +1295,12 @@ export class DentalFinanceDB {
         user: {
           id: userProfile.id,
           orgId: `org_${tenantId}`,
-          name: userProfile.name || cleanId.split('@')[0],
+          name: userProfile.name || 'Atendente',
+          whatsappDisplayName: userProfile.whatsappDisplayName || null,
           email: userProfile.email || cleanId,
           role: userProfile.role,
           isPrimary: userProfile.isPrimary ?? false,
+          permissions: userProfile.permissions || null,
         },
         clinic: sessionClinic,
         tenantId,
@@ -1294,6 +1311,7 @@ export class DentalFinanceDB {
 
       this.currentSession = session;
       saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, session);
+      this.setupUserProfileRealtime(userProfile.id);
       this.loadTenant(tenantId, false);
       this.hasHydratedWithAuth = true;
       this.isAuthReady = true;
@@ -1323,8 +1341,11 @@ export class DentalFinanceDB {
         id: demoUser.id,
         orgId: 'org_mendes_01',
         name: demoUser.name,
+        whatsappDisplayName: demoUser.whatsappDisplayName || null,
         email: demoUser.email,
         role: demoUser.role,
+        isPrimary: demoUser.isPrimary ?? true,
+        permissions: demoUser.permissions || null,
       },
       clinic: { ...demoClinic },
       tenantId: 'tenant_demo',
@@ -1344,6 +1365,13 @@ export class DentalFinanceDB {
 
   // Logout Oficial com Supabase Auth
   public async logout(): Promise<void> {
+    if (this.userProfileRealtimeChannel) {
+      try {
+        supabase.removeChannel(this.userProfileRealtimeChannel);
+      } catch (e) {}
+      this.userProfileRealtimeChannel = null;
+    }
+
     if (this.currentSession) {
       this.log('LOGOUT', 'AUTH', this.currentSession.user.id, `Logout efetuado por ${this.currentSession.user.email}.`);
     }
@@ -1364,6 +1392,96 @@ export class DentalFinanceDB {
       // ignore
     }
     this.notify();
+  }
+
+  /**
+   * Recarrega o perfil canônico do usuário conectado diretamente da tabela df_users.
+   * Atualiza permissões, role, whatsapp_display_name, nome e estado ativo em tempo real
+   * sem deslogar e sem exigir novo login nem F5.
+   */
+  public async refreshCurrentUserProfile(): Promise<StoredUserAccount | null> {
+    try {
+      if (!this.currentSession || this.currentSession.isDemo) {
+        return null;
+      }
+
+      const authUserId = this.currentSession.authUserId;
+      const userEmail = this.currentSession.user?.email;
+      if (!authUserId && !userEmail) return null;
+
+      const userProfile = await SupabaseService.fetchUserProfileByAuthId(authUserId || '', userEmail);
+      if (!userProfile) return null;
+
+      // Se o usuário foi desativado pelo administrador
+      if (userProfile.isActive === false) {
+        console.warn('[Realtime] Usuário desativado pela administração da clínica. Desconectando sessão imediatamente.');
+        await this.logout();
+        return null;
+      }
+
+      // Atualiza os dados da sessão com as informações canônicas do banco
+      const updatedUser = {
+        ...this.currentSession.user,
+        name: userProfile.name || this.currentSession.user.name,
+        whatsappDisplayName: userProfile.whatsappDisplayName || null,
+        role: userProfile.role,
+        isPrimary: userProfile.isPrimary ?? false,
+        permissions: userProfile.permissions || null,
+      };
+
+      this.currentSession = {
+        ...this.currentSession,
+        user: updatedUser,
+      };
+
+      saveItem(GLOBAL_STORAGE_KEYS.AUTH_SESSION, this.currentSession);
+      this.notify();
+      return userProfile;
+    } catch (err) {
+      console.error('[Database] Erro ao atualizar perfil do usuário atual:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Registra listener Realtime do Supabase para escutar alterações na linha do próprio usuário em df_users.
+   * Dispara refreshCurrentUserProfile() reativamente quando houver UPDATE no banco.
+   */
+  public setupUserProfileRealtime(userDbId: string): void {
+    if (!userDbId || userDbId.startsWith('usr_carlos_')) return;
+
+    // Desinscreve canal anterior se houver
+    if (this.userProfileRealtimeChannel) {
+      try {
+        supabase.removeChannel(this.userProfileRealtimeChannel);
+      } catch (e) {}
+      this.userProfileRealtimeChannel = null;
+    }
+
+    try {
+      this.userProfileRealtimeChannel = supabase
+        .channel(`df_user_profile_sync_${userDbId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'df_users',
+            filter: `id=eq.${userDbId}`,
+          },
+          async (payload) => {
+            console.log('[Realtime] df_users alterado no servidor. Atualizando perfil...', payload);
+            await this.refreshCurrentUserProfile();
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            console.log(`[Realtime] Conectado para sincronização do usuário ${userDbId}`);
+          }
+        });
+    } catch (e) {
+      console.warn('[Realtime] Falha ao registrar listener do usuário:', e);
+    }
   }
 
   // Create Access Account (Supabase Auth Oficial)
@@ -1466,7 +1584,7 @@ export class DentalFinanceDB {
           user: {
             id: userId,
             orgId: `org_${tenantId}`,
-            name: normalizedEmail.split('@')[0],
+            name: 'Atendente',
             email: normalizedEmail,
             role,
           },
@@ -1522,7 +1640,7 @@ export class DentalFinanceDB {
         id: userId,
         email: normalizedEmail,
         authUserId,
-        name: normalizedEmail.split('@')[0],
+        name: 'Atendente',
         role,
         clinicId: tenantId,
         createdAt: new Date().toISOString(),
@@ -1691,7 +1809,7 @@ export class DentalFinanceDB {
       email: normalizedEmail,
       passwordHash,
       salt,
-      name: (params.professionalName || normalizedEmail.split('@')[0]).trim(),
+      name: (params.professionalName || 'Profissional').trim(),
       role: 'OWNER',
       clinicId: tenantId,
       createdAt: new Date().toISOString(),

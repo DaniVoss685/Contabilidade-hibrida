@@ -209,6 +209,14 @@ function AppContent() {
   >(undefined);
 
   const handleNavigateTab = (tab: NavTab, action?: string) => {
+    const role = currentSession?.user?.role || 'OWNER';
+    const userPermissions = currentSession?.user?.permissions;
+    const isPrimary = currentSession?.user?.isPrimary;
+    if (!canAccessTab(role, tab, userPermissions, isPrimary)) {
+      toast.error('Acesso restrito: seu perfil não possui autorização para acessar esta seção.');
+      return;
+    }
+
     setCurrentTab(tab);
     if (action) {
       if (action === 'new_sale') {
@@ -261,18 +269,36 @@ function AppContent() {
   // Redirecionamento defensivo se o perfil do usuário não tiver permissão para a aba atual
   useEffect(() => {
     const role = currentSession?.user?.role;
-    if (role && !canAccessTab(role, currentTab, undefined, currentSession?.user?.isPrimary)) {
-      if (canAccessTab(role, 'whatsapp', undefined, currentSession?.user?.isPrimary)) {
-        setCurrentTab('whatsapp');
-      } else if (canAccessTab(role, 'agenda', undefined, currentSession?.user?.isPrimary)) {
-        setCurrentTab('agenda');
-      } else if (canAccessTab(role, 'patients', undefined, currentSession?.user?.isPrimary)) {
-        setCurrentTab('patients');
-      } else if (canAccessTab(role, 'settings', undefined, currentSession?.user?.isPrimary)) {
-        setCurrentTab('settings');
+    if (!role) return;
+    const userPermissions = currentSession?.user?.permissions;
+    const isPrimary = currentSession?.user?.isPrimary;
+
+    if (!canAccessTab(role, currentTab, userPermissions, isPrimary)) {
+      const candidateTabs: NavTab[] = [
+        'dashboard',
+        'whatsapp',
+        'agenda',
+        'patients',
+        'sales',
+        'receivables',
+        'expenses',
+        'financial',
+        'bank_accounts',
+        'chart_of_accounts',
+        'taxes',
+        'fiscal_simulator',
+        'reports',
+        'procedures',
+        'supplies',
+        'settings',
+      ];
+      const firstAllowed = candidateTabs.find((t) => canAccessTab(role, t, userPermissions, isPrimary));
+      if (firstAllowed) {
+        setCurrentTab(firstAllowed);
+        toast.info('Seu acesso a este módulo foi atualizado.');
       }
     }
-  }, [currentSession?.user?.role, currentTab]);
+  }, [currentSession?.user?.role, currentSession?.user?.permissions, currentSession?.user?.isPrimary, currentTab]);
 
   useEffect(() => {
     if (!activeTenantId) return;
@@ -772,6 +798,7 @@ function AppContent() {
           onToggleCollapse={setIsSidebarCollapsed}
           userRole={currentSession?.user?.role}
           userIsPrimary={currentSession?.user?.isPrimary}
+          userPermissions={currentSession?.user?.permissions}
         />
 
         {/* Main Content Area */}
@@ -871,6 +898,51 @@ function AppContent() {
                   : 'p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto'
               }`}
             >
+          {!canAccessTab(
+            currentSession?.user?.role || 'OWNER',
+            currentTab,
+            currentSession?.user?.permissions,
+            currentSession?.user?.isPrimary
+          ) ? (
+            <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center max-w-lg mx-auto my-12 shadow-xs">
+              <ShieldAlert className="w-12 h-12 text-rose-500 mx-auto mb-3" />
+              <h3 className="text-lg font-bold text-slate-800 mb-1">Acesso Restrito</h3>
+              <p className="text-sm text-slate-500 mb-6">
+                Seu perfil de usuário não possui autorização para acessar esta funcionalidade.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  const candidateTabs: NavTab[] = [
+                    'dashboard',
+                    'whatsapp',
+                    'agenda',
+                    'patients',
+                    'sales',
+                    'financial',
+                    'settings',
+                    'reports',
+                    'expenses',
+                    'procedures',
+                    'supplies',
+                  ];
+                  const allowed = candidateTabs.find((t) =>
+                    canAccessTab(
+                      currentSession?.user?.role || 'OWNER',
+                      t,
+                      currentSession?.user?.permissions,
+                      currentSession?.user?.isPrimary
+                    )
+                  );
+                  if (allowed) setCurrentTab(allowed);
+                }}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition-colors cursor-pointer inline-flex items-center gap-2 shadow-xs"
+              >
+                Voltar para área permitida
+              </button>
+            </div>
+          ) : (
+            <>
           {currentTab === 'whatsapp' && (
             <WhatsAppMainView
               tenantId={activeTenantId}
@@ -1082,6 +1154,8 @@ function AppContent() {
               onRefreshData={() => setTick((t) => t + 1)}
               onNavigateTab={handleNavigateTab}
             />
+          )}
+            </>
           )}
         </main>
           </>

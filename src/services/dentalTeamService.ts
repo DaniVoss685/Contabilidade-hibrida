@@ -1,4 +1,4 @@
-﻿import { supabase, SUPABASE_URL } from '../lib/supabaseClient';
+import { supabase, SUPABASE_URL } from '../lib/supabaseClient';
 import { UserRole } from '../types';
 
 export interface TeamMember {
@@ -6,6 +6,7 @@ export interface TeamMember {
   clinic_id: string;
   email: string;
   name: string;
+  whatsapp_display_name?: string | null;
   role: UserRole;
   is_active: boolean;
   is_primary?: boolean;
@@ -24,7 +25,7 @@ export const DentalTeamService = {
     try {
       const { data, error } = await supabase
         .from('df_users')
-        .select('id, clinic_id, email, name, role, is_active, is_primary, created_at, auth_user_id, permissions')
+        .select('id, clinic_id, email, name, whatsapp_display_name, role, is_active, is_primary, created_at, auth_user_id, permissions')
         .eq('clinic_id', tenantId)
         .order('name', { ascending: true });
 
@@ -69,6 +70,8 @@ export const DentalTeamService = {
     name: string;
     email: string;
     role: string;
+    whatsappDisplayName?: string;
+    whatsapp_display_name?: string;
     permissions?: string[];
   }): Promise<{ success: boolean; message?: string; error?: string; user_id?: string }> {
     const { data: sessionData } = await supabase.auth.getSession();
@@ -90,6 +93,7 @@ export const DentalTeamService = {
         name: params.name,
         email: params.email,
         role: params.role,
+        whatsapp_display_name: params.whatsapp_display_name ?? params.whatsappDisplayName,
         permissions: params.permissions,
       }),
     });
@@ -110,6 +114,8 @@ export const DentalTeamService = {
     userId: string;
     name?: string;
     role?: string;
+    whatsappDisplayName?: string | null;
+    whatsapp_display_name?: string | null;
     permissions?: string[];
   }): Promise<{ success: boolean; message?: string; error?: string }> {
     const { data: sessionData } = await supabase.auth.getSession();
@@ -131,6 +137,7 @@ export const DentalTeamService = {
         user_id: params.userId,
         name: params.name,
         role: params.role,
+        whatsapp_display_name: params.whatsapp_display_name !== undefined ? params.whatsapp_display_name : params.whatsappDisplayName,
         permissions: params.permissions,
       }),
     });

@@ -1,4 +1,4 @@
-﻿import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
@@ -49,7 +49,7 @@ Deno.serve(async (req) => {
 
     // 2. PARSER DO CORPO
     const body = await req.json().catch(() => ({}));
-    const { action, tenant_id, user_id, name, email, role, permissions } = body;
+    const { action, tenant_id, user_id, name, email, role, permissions, whatsapp_display_name } = body;
 
     if (!tenant_id) {
       return new Response(
@@ -94,7 +94,7 @@ Deno.serve(async (req) => {
     if (action === "list_members") {
       const { data: members, error: listErr } = await adminSupabase
         .from("df_users")
-        .select("id, clinic_id, email, name, role, is_active, is_primary, created_at, auth_user_id, permissions")
+        .select("id, clinic_id, email, name, whatsapp_display_name, role, is_active, is_primary, created_at, auth_user_id, permissions")
         .eq("clinic_id", tenant_id)
         .order("name", { ascending: true });
 
@@ -222,12 +222,14 @@ Deno.serve(async (req) => {
       }
 
       // 3. Criar registro oficial em df_users
+      const cleanWhatsappName = (whatsapp_display_name || "").trim() || null;
       const newUserId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const { error: insertErr } = await adminSupabase.from("df_users").insert({
         id: newUserId,
         clinic_id: tenant_id,
         email: cleanEmail,
         name: cleanName,
+        whatsapp_display_name: cleanWhatsappName,
         role: assignedRole,
         is_active: true,
         is_primary: false,
@@ -281,6 +283,10 @@ Deno.serve(async (req) => {
       const updateData: any = {};
       if (name) updateData.name = name.trim();
       if (role) updateData.role = role.toUpperCase();
+      if (whatsapp_display_name !== undefined) {
+        const trimmedDisplay = (whatsapp_display_name || "").trim();
+        updateData.whatsapp_display_name = trimmedDisplay.length > 0 ? trimmedDisplay : null;
+      }
       if (permissions !== undefined) updateData.permissions = permissions;
 
       const { error: updErr } = await adminSupabase

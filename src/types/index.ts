@@ -144,6 +144,7 @@ export interface StoredUserAccount {
   id: string;
   email: string;
   name: string;
+  whatsappDisplayName?: string | null;
   role: UserRole;
   passwordHash?: string; // Optional: Supabase Auth handles password hashes
   passwordSalt?: string;
@@ -154,6 +155,7 @@ export interface StoredUserAccount {
   emailVerified?: boolean;
   isActive?: boolean;
   isPrimary?: boolean;
+  permissions?: string[] | Record<string, boolean> | null;
   createdAt: string;
 }
 
@@ -202,9 +204,11 @@ export interface User {
   id: string;
   orgId: string;
   name: string;
+  whatsappDisplayName?: string | null;
   email: string;
   role: UserRole;
   isPrimary?: boolean;
+  permissions?: string[] | Record<string, boolean> | null;
 }
 
 // 2. Professional (Dentist Profile & Tax Settings)
@@ -806,5 +810,24 @@ export interface SystemPreferences {
   cardFees?: CardFeeSettings;
   dismissedOnboarding?: boolean; // Se o checklist de primeiros passos foi fechado manualmente pelo usuário
 }
+
+export type NavTab =
+  | 'dashboard'
+  | 'whatsapp'
+  | 'sales'
+  | 'procedures'
+  | 'supplies'
+  | 'receivables'
+  | 'expenses'
+  | 'recurrent_expenses'
+  | 'financial'
+  | 'bank_accounts'
+  | 'patients'
+  | 'agenda'
+  | 'chart_of_accounts'
+  | 'taxes'
+  | 'fiscal_simulator'
+  | 'reports'
+  | 'settings';
 
 export * from './whatsapp';

@@ -51,6 +51,7 @@ import { formatDateBr } from '../../lib/masks';
 import { supabase } from '../../lib/supabaseClient';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { formatPhoneDisplay, getContactDisplayName, getContactInitial, isWhatsAppGroup } from '../../lib/phoneUtils';
+import { resolveAttendantDisplayName, stripAttendantPrefixFromContent, formatAttendantAuthorLabel } from '../../lib/attendantIdentity';
 import { TransferModal } from './TransferModal';
 import { FinalizeModal } from './FinalizeModal';
 import { MediaViewerModal } from './MediaViewerModal';
@@ -192,12 +193,12 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   const [contactPhoto, setContactPhoto] = useState<string | null>(conversation.contact?.profile_pic_url || null);
   const [activeReactionPickerMsgId, setActiveReactionPickerMsgId] = useState<string | null>(null);
   const [headerNextAppointment, setHeaderNextAppointment] = useState<Appointment | null>(null);
-  const [staffMap, setStaffMap] = useState<Record<string, { id: string; name: string; role?: string }>>({});
+  const [staffMap, setStaffMap] = useState<Record<string, { id: string; name: string; role?: string; whatsapp_display_name?: string | null }>>({});
 
   useEffect(() => {
     if (tenantId) {
       DentalWhatsAppService.getStaff(tenantId).then((list) => {
-        const map: Record<string, { id: string; name: string; role?: string }> = {};
+        const map: Record<string, { id: string; name: string; role?: string; whatsapp_display_name?: string | null }> = {};
         list.forEach((u) => {
           map[u.id] = u;
         });
@@ -1585,6 +1586,15 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
               const isMine = msg.from_me;
               const mediaUrl = msg.media_storage_path ? signedUrls[msg.media_storage_path] : msg.media_url;
 
+              const isHumanAttendant = isMine && Boolean(msg.sender_id) && (!msg.origin || msg.origin === 'attendant');
+              const authorData = isHumanAttendant
+                ? staffMap[msg.sender_id!] || (msg.sender_id === currentUserId ? { name: currentUserName } : null)
+                : null;
+              const authorName = isHumanAttendant ? resolveAttendantDisplayName(authorData) : null;
+              const authorLabel = isHumanAttendant
+                ? formatAttendantAuthorLabel(authorData, msg.sender_id, currentUserId)
+                : null;
+
               return (
                 <React.Fragment key={msg.id}>
                   {showDateHeader && (
@@ -1608,15 +1618,17 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                           : 'bg-white text-slate-800 border border-slate-200/80 rounded-tl-xs'
                       }`}
                     >
-                      {/* Autoria Visual Interna do Atendente */}
-                      {isMine && msg.sender_id && (!msg.origin || msg.origin === 'attendant') && (
-                        <div className="mb-1 text-[10px] font-bold text-emerald-100 flex items-center gap-1 opacity-90">
-                          <User className="w-2.5 h-2.5" />
-                          <span>
-                            {msg.sender_id === currentUserId
-                              ? `${currentUserName || staffMap[msg.sender_id]?.name || 'Você'} (Você)`
-                              : staffMap[msg.sender_id]?.name || 'Atendente'}
-                          </span>
+                      {/* Autoria Visual Interna do Atendente — SEMPRE EM NEGRITO */}
+                      {isHumanAttendant && authorLabel && (
+                        <div
+                          className={`mb-1.5 text-[11px] font-bold flex items-center gap-1.5 ${
+                            msg.msg_type === 'sticker'
+                              ? 'bg-slate-900/80 text-white px-2.5 py-0.5 rounded-full shadow-2xs w-fit mb-1'
+                              : 'text-emerald-100 opacity-95'
+                          }`}
+                        >
+                          <User className="w-3 h-3 text-emerald-300 shrink-0" />
+                          <span className="font-bold tracking-tight">{authorLabel}</span>
                         </div>
                       )}
 
@@ -1867,10 +1879,16 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                           displayContent = displayContent.substring(fileNameTrimmed.length + 3);
                         }
 
+                        // Higienizar texto interno: se já contiver o prefixo "Nome:\n" do atendente, remove do corpo interno
+                        // pois a autoria já está renderizada em negrito acima do balão!
+                        if (isMine && authorName) {
+                          displayContent = stripAttendantPrefixFromContent(displayContent, authorName);
+                        }
+
                         if (!displayContent.trim()) return null;
 
                         return (
-                          <p className="whitespace-pre-wrap break-words">
+                          <p className={`whitespace-pre-wrap break-words font-normal ${isMine ? 'text-white' : 'text-slate-800'}`}>
                             {renderHighlightedText(displayContent, searchQuery)}
                           </p>
                         );
@@ -1980,7 +1998,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                       <div className="flex items-center justify-between font-semibold text-amber-900 mb-1 text-[11px]">
                         <div className="flex items-center gap-1.5">
                           <Lock className="w-3.5 h-3.5 text-amber-600" />
-                          <span>Nota Interna • {note.author?.name || 'Equipe'}</span>
+                          <span>Nota Interna • {resolveAttendantDisplayName(note.author)}</span>
                         </div>
                         <span className="text-[10px] text-amber-600">
                           {new Date(note.created_at).toLocaleTimeString([], {

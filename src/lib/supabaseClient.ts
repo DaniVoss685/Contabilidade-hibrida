@@ -174,12 +174,14 @@ export function mapDbUserToApp(db: any): StoredUserAccount {
     clinicId: db.clinic_id,
     email: db.email,
     name: db.name,
+    whatsappDisplayName: db.whatsapp_display_name || undefined,
     role: db.role,
     authUserId: db.auth_user_id || undefined,
     passwordHash: db.password_hash || undefined,
     salt: db.salt || undefined,
     isActive: db.is_active !== false,
     isPrimary: db.is_primary === true || db.role === 'SUPER_ADMIN',
+    permissions: db.permissions || null,
     createdAt: db.created_at || new Date().toISOString(),
   };
 }
@@ -190,11 +192,13 @@ export function mapAppUserToDb(app: StoredUserAccount): any {
     clinic_id: app.clinicId,
     email: app.email.trim().toLowerCase(),
     name: app.name,
+    whatsapp_display_name: app.whatsappDisplayName || null,
     role: app.role,
     auth_user_id: app.authUserId || null,
     password_hash: app.passwordHash || null,
     salt: app.salt || null,
     is_active: app.isActive !== false,
+    permissions: app.permissions || null,
     created_at: app.createdAt || new Date().toISOString(),
   };
 }
@@ -765,7 +769,7 @@ export const SupabaseService = {
       if (authUserId) {
         const { data, error } = await supabase
           .from('df_users')
-          .select('id, clinic_id, email, name, role, is_active, auth_user_id, is_primary, created_at')
+          .select('id, clinic_id, email, name, whatsapp_display_name, role, is_active, auth_user_id, is_primary, permissions, created_at')
           .eq('auth_user_id', authUserId)
           .maybeSingle();
 
@@ -779,7 +783,7 @@ export const SupabaseService = {
         const cleanEmail = email.trim().toLowerCase();
         const { data, error } = await supabase
           .from('df_users')
-          .select('id, clinic_id, email, name, role, is_active, auth_user_id, is_primary, created_at')
+          .select('id, clinic_id, email, name, whatsapp_display_name, role, is_active, auth_user_id, is_primary, permissions, created_at')
           .eq('email', cleanEmail)
           .maybeSingle();
 

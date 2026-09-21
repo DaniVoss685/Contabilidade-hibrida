@@ -23,6 +23,8 @@ import { normalizeBrazilianNumber, isValidBrazilianPhone, formatPhoneDisplay, is
 import { formatDateBr } from '../lib/masks';
 import { renderAppointmentTemplate } from '../lib/appointmentDateUtils';
 import { db } from '../lib/db';
+import { resolveAttendantDisplayName, formatOutboundTextWithPolicy } from '../lib/attendantIdentity';
+import { hasPermission } from '../lib/permissions';
 async function extractEdgeFunctionError(error: any): Promise<string> {
   if (!error) return 'Erro desconhecido.';
   try {
@@ -590,6 +592,7 @@ export const DentalWhatsAppService = {
   /**
    * Aplica a assinatura externa do atendente à mensagem enviada para a Evolution API.
    * Não altera o texto interno salvo no banco (df_wa_messages.content).
+   * Totalmente idempotente: nunca duplica o prefixo em reenvios ou retries.
    */
   async formatOutboundTextWithAgent(params: {
     tenantId: string;
@@ -603,34 +606,36 @@ export const DentalWhatsAppService = {
       const policy = await this.getAgentIdentificationPolicy(tenantId);
       if (policy === 'NUNCA') return text;
 
-      // Buscar nome do atendente
+      // Buscar perfil do atendente em df_users
       const { data: userRow } = await supabase
         .from('df_users')
-        .select('name, role, is_active')
+        .select('name, whatsapp_display_name, role, is_active, email')
         .eq('id', senderId)
         .eq('clinic_id', tenantId)
         .maybeSingle();
 
-      if (!userRow?.name) return text;
-      const firstName = userRow.name.trim().split(' ')[0] || userRow.name.trim();
+      const attendantName = resolveAttendantDisplayName(userRow);
 
-      if (policy === 'SEMPRE') {
-        return `${firstName}:\n${text}`;
-      }
-
-      // Se AUTOMATICO: verificar se há 2 ou mais atendentes ativos com permissão de WhatsApp
       const staffList = await this.getStaff(tenantId);
-      const activeAttendants = staffList.filter(
-        (u) =>
-          u.role &&
-          ['OWNER', 'ADMIN', 'RECEPTION', 'ASSISTANT', 'DENTIST', 'PROFESSIONAL', 'SUPER_ADMIN'].includes(u.role)
-      );
+      // Contagem rigorosa para a política AUTOMÁTICO:
+      // Considera apenas membros ativos com permissão efetiva de envio no WhatsApp (whatsapp:chat).
+      // Desconsidera FINANCE, consultores administrativos sem chat e usuários inativos.
+      const activeAttendants = staffList.filter((u) => {
+        if (!u.role) return false;
+        return hasPermission(u.role, 'whatsapp:chat', u.permissions, u.is_primary);
+      });
 
-      if (activeAttendants.length >= 2) {
-        return `${firstName}:\n${text}`;
-      }
+      const knownStaffNames = staffList
+        .map((u) => u.whatsapp_display_name || (u.name ? u.name.split(' ')[0] : ''))
+        .filter(Boolean) as string[];
 
-      return text;
+      return formatOutboundTextWithPolicy({
+        text,
+        attendantName,
+        policy,
+        activeAttendantsCount: activeAttendants.length,
+        knownStaffNames,
+      });
     } catch (e) {
       console.warn('[DentalWhatsAppService] Aviso ao formatar nome do atendente:', e);
       return text;
@@ -1010,13 +1015,22 @@ export const DentalWhatsAppService = {
     let evolutionMsgId: string | undefined;
 
     if (msg.msg_type === 'text') {
+      let outboundText = msg.content;
+      if (msg.sender_id && (!msg.origin || msg.origin === 'attendant')) {
+        outboundText = await this.formatOutboundTextWithAgent({
+          tenantId,
+          senderId: msg.sender_id,
+          text: msg.content,
+        });
+      }
+
       const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke('dental-whatsapp-api', {
         body: {
           action: 'send_text',
           tenant_id: tenantId,
           conversation_id: conversationId,
           recipient_number: recipientNumber,
-          text: msg.content,
+          text: outboundText,
         },
       });
 
@@ -1043,6 +1057,15 @@ export const DentalWhatsAppService = {
       }
       const b64 = btoa(binary);
 
+      let outboundCaption = msg.content || '';
+      if (outboundCaption && msg.sender_id && (!msg.origin || msg.origin === 'attendant')) {
+        outboundCaption = await this.formatOutboundTextWithAgent({
+          tenantId,
+          senderId: msg.sender_id,
+          text: outboundCaption,
+        });
+      }
+
       const { data: edgeRes, error: edgeErr } = await supabase.functions.invoke('dental-whatsapp-api', {
         body: {
           action: 'send_media',
@@ -1053,7 +1076,7 @@ export const DentalWhatsAppService = {
           base64: b64,
           mime_type: msg.media_mime_type || fileData.type || 'application/octet-stream',
           file_name: msg.media_file_name || 'arquivo',
-          caption: msg.content || '',
+          caption: outboundCaption,
         },
       });
 
@@ -1475,12 +1498,20 @@ export const DentalWhatsAppService = {
   /**
    * Obtém lista de membros da equipe da clínica (df_users) para atribuição e transferência.
    */
-  async getStaff(tenantId: string): Promise<{ id: string; name: string; role?: string; email?: string }[]> {
+  async getStaff(tenantId: string): Promise<{
+    id: string;
+    name: string;
+    whatsapp_display_name?: string | null;
+    role?: string;
+    email?: string;
+    permissions?: any;
+    is_primary?: boolean;
+  }[]> {
     if (!tenantId) return [];
 
     const { data, error } = await supabase
       .from('df_users')
-      .select('id, name, role, email')
+      .select('id, name, whatsapp_display_name, role, email, permissions, is_primary')
       .eq('clinic_id', tenantId)
       .eq('is_active', true)
       .order('name');
@@ -1761,7 +1792,7 @@ export const DentalWhatsAppService = {
       .select(`
         *,
         contact:df_wa_contacts(*, patient:df_patients(id, name, cpf, phone, email)),
-        assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role)
+        assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role, whatsapp_display_name)
       `)
       .eq('tenant_id', tenantId)
       .eq('contact_id', contactId)
@@ -1788,7 +1819,7 @@ export const DentalWhatsAppService = {
       .from('df_wa_conversations')
       .select(`
         *,
-        assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name)
+        assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, whatsapp_display_name)
       `)
       .eq('tenant_id', tenantId)
       .eq('contact_id', contactId)
@@ -1835,7 +1866,7 @@ export const DentalWhatsAppService = {
       conversationIds.length > 0
         ? supabase
             .from('df_wa_internal_notes')
-            .select('*, author:df_users(id, name, role)')
+            .select('*, author:df_users(id, name, role, whatsapp_display_name)')
             .in('conversation_id', conversationIds)
             .eq('tenant_id', tenantId)
             .order('created_at', { ascending: true })
@@ -1866,7 +1897,8 @@ export const DentalWhatsAppService = {
     };
 
     // 3. Inserir marcadores de ciclo para cada conversa
-    convs.forEach((c) => {
+    convs.forEach((c: any) => {
+      const resolvedAssignedName = c.assigned_user ? resolveAttendantDisplayName(c.assigned_user) : undefined;
       // Marcador de início do ciclo
       items.push({
         id: `marker_start_${c.id}`,
@@ -1879,10 +1911,10 @@ export const DentalWhatsAppService = {
             conversation_id: c.id,
             marker_type: 'start',
             title: `Atendimento iniciado em ${formatMarkerDate(c.created_at)}`,
-            subtitle: c.assigned_user?.name ? `Responsável: ${c.assigned_user.name}` : undefined,
+            subtitle: resolvedAssignedName && resolvedAssignedName !== 'Atendente' ? `Responsável: ${resolvedAssignedName}` : undefined,
             timestamp: c.created_at,
             status: c.status,
-            assigned_user_name: c.assigned_user?.name,
+            assigned_user_name: resolvedAssignedName,
           },
         },
       });
