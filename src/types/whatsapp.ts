@@ -266,6 +266,9 @@ export interface WhatsAppReminderLog {
   reminder_type: WhatsAppReminderType;
   scheduled_for: string;
   status: WhatsAppReminderStatus;
+  skip_reason?: string | null;
+  reference_message_id?: string | null;
+  reference_sent_at?: string | null;
   evolution_msg_id?: string | null;
   error_message?: string | null;
   sent_at?: string | null;

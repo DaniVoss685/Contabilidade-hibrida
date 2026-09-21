@@ -3012,12 +3012,13 @@ export const DentalWhatsAppService = {
         .eq('tenant_id', tenantId)
         .eq('appointment_id', appointment.id)
         .eq('reminder_type', reminderType)
+        .eq('scheduled_for', appointment.date)
         .maybeSingle();
 
       if (existingLog && existingLog.status === 'sent') {
         return {
           success: false,
-          error: `Este tipo de aviso (${reminderType}) já foi enviado anteriormente para esta consulta.`,
+          error: `Este tipo de aviso (${reminderType}) já foi enviado anteriormente para esta consulta nesta data (${appointment.date}).`,
         };
       }
     }
@@ -3117,6 +3118,8 @@ export const DentalWhatsAppService = {
           status: 'failed',
           error_message: errMsg,
           created_at: new Date().toISOString(),
+        }, {
+          onConflict: 'tenant_id,appointment_id,reminder_type,scheduled_for',
         });
         return {
           success: false,
@@ -3167,6 +3170,8 @@ export const DentalWhatsAppService = {
       evolution_msg_id: evolutionMsgId || null,
       sent_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
+    }, {
+      onConflict: 'tenant_id,appointment_id,reminder_type,scheduled_for',
     });
 
     return { success: true, evolutionMsgId };

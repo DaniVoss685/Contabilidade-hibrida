@@ -50,6 +50,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   });
   const [playbackRate, setPlaybackRate] = useState<number>(1);
   const [isMuted, setIsMuted] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -58,6 +60,8 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     if (!audio) return;
 
     let isSubscribed = true;
+    setHasError(false);
+    setErrorMessage(null);
 
     // Se já tiver no cache, aplicar imediatamente
     if (durationCache.has(src)) {
@@ -114,11 +118,41 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       }
     };
 
+    const handleError = () => {
+      const mediaError = audio.error;
+      let msg = 'Erro ao carregar o áudio';
+      if (mediaError) {
+        switch (mediaError.code) {
+          case 1: // MEDIA_ERR_ABORTED
+            msg = 'Carregamento do áudio cancelado';
+            break;
+          case 2: // MEDIA_ERR_NETWORK
+            msg = 'Falha de rede ao transferir áudio';
+            break;
+          case 3: // MEDIA_ERR_DECODE
+            msg = 'Erro ao decodificar arquivo de áudio';
+            break;
+          case 4: // MEDIA_ERR_SRC_NOT_SUPPORTED
+            msg = 'Origem ou formato não suportado/bloqueado por CSP';
+            break;
+          default:
+            msg = mediaError.message || msg;
+        }
+      }
+      console.warn(`[AudioPlayer] Falha no elemento de áudio (${src}): ${msg}`);
+      if (isSubscribed) {
+        setHasError(true);
+        setErrorMessage(msg);
+        setIsPlaying(false);
+      }
+    };
+
     audio.addEventListener('loadedmetadata', checkAndSetDuration);
     audio.addEventListener('durationchange', checkAndSetDuration);
     audio.addEventListener('canplay', checkAndSetDuration);
     audio.addEventListener('timeupdate', setAudioTime);
     audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('error', handleError);
 
     // Carregar elemento
     audio.load();
@@ -136,6 +170,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       audio.removeEventListener('canplay', checkAndSetDuration);
       audio.removeEventListener('timeupdate', setAudioTime);
       audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('error', handleError);
     };
   }, [src, initialDuration]);
 
@@ -153,12 +188,21 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       audio.pause();
       setIsPlaying(false);
     } else {
+      setHasError(false);
+      setErrorMessage(null);
+
+      if (audio.error) {
+        audio.load();
+      }
+
       audio
         .play()
         .then(() => setIsPlaying(true))
         .catch((err) => {
-          console.warn('Falha na reprodução de áudio:', err);
+          console.warn('[AudioPlayer] Falha na reprodução de áudio:', err);
           setIsPlaying(false);
+          setHasError(true);
+          setErrorMessage(err?.message || 'Falha na reprodução');
         });
     }
   };
@@ -209,7 +253,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
             ? 'bg-white text-emerald-800 hover:bg-emerald-50 hover:scale-105 active:scale-95'
             : 'bg-emerald-600 text-white hover:bg-emerald-500 hover:scale-105 active:scale-95'
         }`}
-        title={isPlaying ? 'Pausar' : 'Reproduzir'}
+        title={hasError ? (errorMessage || 'Erro ao reproduzir áudio - clique para tentar novamente') : (isPlaying ? 'Pausar' : 'Reproduzir')}
       >
         {isPlaying ? (
           <Pause className="w-4 h-4 fill-current" />

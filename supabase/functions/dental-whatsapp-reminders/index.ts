@@ -195,8 +195,9 @@ Deno.serve(async (req) => {
     const forceAppointmentId = body.forceAppointmentId || null;
     const forceReminderType = body.forceReminderType || null; // 'reminder_24h' | 'reminder_2h'
     const dryRun = Boolean(body.dryRun);
+    const bypassIdempotency = Boolean(body.bypassIdempotency);
 
-    console.log(`[dental-whatsapp-reminders] Execução em ${executionTime}. forceAppt=${forceAppointmentId}, forceType=${forceReminderType}, dryRun=${dryRun}`);
+    console.log(`[dental-whatsapp-reminders] Execução em ${executionTime}. forceAppt=${forceAppointmentId}, forceType=${forceReminderType}, dryRun=${dryRun}, bypassIdempotency=${bypassIdempotency}`);
 
     // 1. Obter configurações ativas de todas as clínicas
     const { data: reminderSettings, error: setErr } = await adminSupabase
@@ -283,12 +284,15 @@ Deno.serve(async (req) => {
       let apptQuery = adminSupabase
         .from("df_appointments")
         .select("*")
-        .eq("tenant_id", tenantId)
-        .in("status", ["PENDENTE", "CONFIRMADA", "AGENDADA", "AGUARDANDO"]);
+        .eq("tenant_id", tenantId);
 
       if (forceAppointmentId) {
         apptQuery = apptQuery.eq("id", forceAppointmentId);
       } else {
+        // Regra 21: Consultas ativas elegíveis (PENDENTE, CONFIRMADA, AGENDADA, AGUARDANDO)
+        // Excluir expressamente: CANCELADA, FALTOU, FINALIZADA
+        apptQuery = apptQuery.in("status", ["PENDENTE", "CONFIRMADA", "AGENDADA", "AGUARDANDO"]);
+
         // Consultas de hoje e dos próximos 3 dias em UTC-3 (America/Sao_Paulo)
         const nowBr = new Date(Date.now() - 3 * 3600 * 1000);
         const todayStr = nowBr.toISOString().split("T")[0];
@@ -365,29 +369,164 @@ Deno.serve(async (req) => {
             continue;
           }
 
-          // 4. VERIFICAÇÃO DE IDEMPOTÊNCIA: Não reenviar se já existe log 'sent' para esta data de agendamento
-          const { data: existingLog } = await adminSupabase
-            .from("df_wa_reminders_log")
-            .select("id, status, sent_at")
+          // 4. REVALIDAÇÃO DE STATUS DA CONSULTA: Nunca disparar para consultas canceladas/finalizadas
+          const { data: freshAppt } = await adminSupabase
+            .from("df_appointments")
+            .select("id, status, date, start_time")
+            .eq("id", appt.id)
             .eq("tenant_id", tenantId)
-            .eq("appointment_id", appt.id)
-            .eq("reminder_type", remType)
-            .eq("scheduled_for", appt.date)
-            .eq("status", "sent")
             .maybeSingle();
 
-          if (existingLog) {
+          const ELIGIBLE_STATUSES = ["PENDENTE", "CONFIRMADA", "AGENDADA", "AGUARDANDO"];
+          if (!freshAppt || !ELIGIBLE_STATUSES.includes(freshAppt.status)) {
             logs.push({
               tenant_id: tenantId,
               appointment_id: appt.id,
               reminder_type: remType,
               scheduled_for: appt.date,
-              result: "DUPLICATE",
-              reason: "Lembrete já enviado anteriormente para esta data de consulta",
-              sent_at: existingLog.sent_at,
+              result: "INELIGIBLE_STATUS",
+              reason: `Consulta em status não elegível para disparo: ${freshAppt?.status || 'removida'}`,
+            });
+            continue;
+          }
+
+          // 5. VERIFICAÇÃO DE IDEMPOTÊNCIA: Checar se já existe log ('sent' ou 'skipped') para esta data/ocorrência
+          const { data: existingLog } = await adminSupabase
+            .from("df_wa_reminders_log")
+            .select("id, status, skip_reason, sent_at, created_at")
+            .eq("tenant_id", tenantId)
+            .eq("appointment_id", appt.id)
+            .eq("reminder_type", remType)
+            .eq("scheduled_for", appt.date)
+            .in("status", ["sent", "skipped"])
+            .maybeSingle();
+
+          if (existingLog && !bypassIdempotency) {
+            logs.push({
+              tenant_id: tenantId,
+              appointment_id: appt.id,
+              reminder_type: remType,
+              scheduled_for: appt.date,
+              result: existingLog.status === "sent" ? "DUPLICATE" : "ALREADY_SKIPPED",
+              reason: existingLog.status === "sent"
+                ? "Lembrete já enviado anteriormente para esta data de agendamento"
+                : `Lembrete já suprimido anteriormente (${existingLog.skip_reason || 'skipped'})`,
+              sent_at: existingLog.sent_at || existingLog.created_at,
             });
             totalSkipped++;
             continue;
+          }
+
+          // 6. CADÊNCIA INTELIGENTE (48 HORAS) - ESPECÍFICA PARA reminder_24h
+          // Se houver confirmação ou reagendamento enviado com sucesso e o intervalo até o início da consulta for < 48h,
+          // suprime o reminder_24h para evitar mensagens redundantes próximas ao paciente.
+          if (remType === "reminder_24h") {
+            let lastCommSentAt: string | null = null;
+            let lastCommMsgId: string | null = null;
+            let lastCommType: string | null = null;
+
+            // Fonte canônica 1: df_wa_reminders_log com status = 'sent'
+            const { data: commLog } = await adminSupabase
+              .from("df_wa_reminders_log")
+              .select("id, evolution_msg_id, reminder_type, sent_at, created_at")
+              .eq("tenant_id", tenantId)
+              .eq("appointment_id", appt.id)
+              .in("reminder_type", ["confirmation", "reschedule"])
+              .eq("status", "sent")
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (commLog) {
+              lastCommSentAt = commLog.sent_at || commLog.created_at;
+              lastCommMsgId = commLog.evolution_msg_id || commLog.id;
+              lastCommType = commLog.reminder_type;
+            }
+
+            // Fonte canônica 2: df_wa_messages com origin transacional aceita pela Evolution
+            const { data: commMsg } = await adminSupabase
+              .from("df_wa_messages")
+              .select("id, evolution_msg_id, origin, created_at, delivery_status")
+              .eq("tenant_id", tenantId)
+              .eq("appointment_id", appt.id)
+              .in("origin", ["appointment_confirmation", "appointment_reschedule"])
+              .eq("from_me", true)
+              .not("evolution_msg_id", "is", null)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (commMsg && (commMsg.evolution_msg_id || (commMsg.delivery_status && commMsg.delivery_status >= 1))) {
+              const msgTime = new Date(commMsg.created_at).getTime();
+              const logTime = lastCommSentAt ? new Date(lastCommSentAt).getTime() : 0;
+              if (msgTime >= logTime) {
+                lastCommSentAt = commMsg.created_at;
+                lastCommMsgId = commMsg.evolution_msg_id || commMsg.id;
+                lastCommType = commMsg.origin === "appointment_reschedule" ? "reschedule" : "confirmation";
+              }
+            }
+
+            // Validar intervalo de 48 horas se houve comunicação bem-sucedida
+            if (lastCommSentAt) {
+              const commSentMs = new Date(lastCommSentAt).getTime();
+              const diffMs = apptTime - commSentMs;
+              const CADENCE_LIMIT_MS = 48 * 60 * 60 * 1000; // 48 horas
+
+              if (diffMs < CADENCE_LIMIT_MS) {
+                const diffHours = (diffMs / (1000 * 60 * 60)).toFixed(1);
+                console.log(
+                  `[dental-whatsapp-reminders] Cadência inteligente ativada: suprimindo reminder_24h para consulta ${appt.id}. Intervalo entre ${lastCommType} e consulta: ${diffHours}h (< 48h)`
+                );
+
+                // Resolver contact_id para auditoria completa
+                let logContactId: string | null = null;
+                if (appt.patient_id) {
+                  const { data: ctcRow } = await adminSupabase
+                    .from("df_wa_contacts")
+                    .select("id")
+                    .eq("tenant_id", tenantId)
+                    .eq("patient_id", appt.patient_id)
+                    .maybeSingle();
+                  logContactId = ctcRow?.id || null;
+                }
+
+                if (!dryRun) {
+                  const skipLogId = `rem_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+                  await adminSupabase.from("df_wa_reminders_log").upsert({
+                    id: skipLogId,
+                    tenant_id: tenantId,
+                    appointment_id: appt.id,
+                    contact_id: logContactId,
+                    reminder_type: "reminder_24h",
+                    scheduled_for: appt.date,
+                    status: "skipped",
+                    skip_reason: "recent_transactional_message",
+                    reference_message_id: lastCommMsgId,
+                    reference_sent_at: lastCommSentAt,
+                    error_message: `Lembrete de 24h suprimido por cadência inteligente: ${lastCommType} recente enviado a ${diffHours}h da consulta (< 48h)`,
+                    sent_at: new Date().toISOString(),
+                    created_at: new Date().toISOString(),
+                  }, {
+                    onConflict: "tenant_id,appointment_id,reminder_type,scheduled_for",
+                  });
+                }
+
+                logs.push({
+                  tenant_id: tenantId,
+                  appointment_id: appt.id,
+                  reminder_type: remType,
+                  scheduled_for: appt.date,
+                  result: "SKIPPED",
+                  skip_reason: "recent_transactional_message",
+                  reference_message_id: lastCommMsgId,
+                  reference_sent_at: lastCommSentAt,
+                  diff_hours: Number(diffHours),
+                  reason: `Comunicação recente (${lastCommType}) enviada a ${diffHours}h da consulta (< 48h)`,
+                });
+                totalSkipped++;
+                continue;
+              }
+            }
           }
 
           // 5. REGRA 27: RESOLUÇÃO DE TELEFONE ATUAL FRESCO
@@ -541,7 +680,7 @@ Deno.serve(async (req) => {
 
             // 8. Gravar log em df_wa_reminders_log (status: 'sent')
             const reminderLogId = `rem_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-            await adminSupabase.from("df_wa_reminders_log").insert({
+            await adminSupabase.from("df_wa_reminders_log").upsert({
               id: reminderLogId,
               tenant_id: tenantId,
               appointment_id: appt.id,
@@ -552,6 +691,8 @@ Deno.serve(async (req) => {
               evolution_msg_id: msgId,
               sent_at: new Date().toISOString(),
               created_at: new Date().toISOString(),
+            }, {
+              onConflict: "tenant_id,appointment_id,reminder_type,scheduled_for",
             });
 
             // 9. REGRA 30: MENSAGEM TRANSACIONAL COM ORIGEM DEDICADA E SEM CRIAR ATENDIMENTO
@@ -605,7 +746,7 @@ Deno.serve(async (req) => {
 
             // REGRA 28: Gravar falha sem marcar como 'sent' para permitir retry controlado
             const reminderLogId = `rem_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-            await adminSupabase.from("df_wa_reminders_log").insert({
+            await adminSupabase.from("df_wa_reminders_log").upsert({
               id: reminderLogId,
               tenant_id: tenantId,
               appointment_id: appt.id,
@@ -615,6 +756,8 @@ Deno.serve(async (req) => {
               status: "failed",
               error_message: err.message || "Erro no envio Evolution",
               created_at: new Date().toISOString(),
+            }, {
+              onConflict: "tenant_id,appointment_id,reminder_type,scheduled_for",
             });
 
             logs.push({

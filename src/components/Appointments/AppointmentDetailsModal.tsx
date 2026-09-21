@@ -556,15 +556,25 @@ export const AppointmentDetailsModal: React.FC<AppointmentDetailsModalProps> = (
                 >
                   Confirmação: {remindersLog.some((l) => l.reminder_type === 'confirmation' && l.status === 'sent') ? 'Enviada' : 'Pendente'}
                 </span>
-                <span
-                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
-                    remindersLog.some((l) => l.reminder_type === 'reminder_24h' && l.status === 'sent')
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                      : 'bg-slate-100 text-slate-500'
-                  }`}
-                >
-                  Lembrete 24h: {remindersLog.some((l) => l.reminder_type === 'reminder_24h' && l.status === 'sent') ? 'Enviado' : 'Pendente'}
-                </span>
+                {(() => {
+                  const rem24 = remindersLog.find((l) => l.reminder_type === 'reminder_24h');
+                  const isSent = rem24?.status === 'sent';
+                  const isSkipped = rem24?.status === 'skipped';
+                  return (
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
+                        isSent
+                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          : isSkipped
+                          ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                          : 'bg-slate-100 text-slate-500'
+                      }`}
+                      title={rem24?.error_message || undefined}
+                    >
+                      Lembrete 24h: {isSent ? 'Enviado' : isSkipped ? 'Evitado (Cadência)' : 'Pendente'}
+                    </span>
+                  );
+                })()}
                 <span
                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${
                     remindersLog.some((l) => l.reminder_type === 'reminder_2h' && l.status === 'sent')

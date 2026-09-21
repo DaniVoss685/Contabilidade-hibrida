@@ -431,6 +431,11 @@ export const WhatsAppMessageTemplatesTab: React.FC<WhatsAppMessageTemplatesTabPr
           </div>
         </div>
 
+        {/* Informação sobre Cadência Inteligente */}
+        <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200/80 rounded-xl px-3 py-2">
+          💡 <strong>Cadência Inteligente:</strong> Lembretes de 24h são automaticamente evitados quando uma confirmação recente já foi enviada próxima ao horário da consulta (intervalo &lt; 48h).
+        </p>
+
         {/* Textarea + Variáveis */}
         <div className="space-y-2">
           <textarea
