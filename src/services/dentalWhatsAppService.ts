@@ -342,7 +342,7 @@ export const DentalWhatsAppService = {
       .select(`
         *,
         contact:df_wa_contacts(*),
-        assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role),
+        assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role, whatsapp_display_name),
         observation_assigned_user:df_users!df_wa_conversations_observation_assigned_to_fkey(id, name)
       `)
       .eq('tenant_id', tenantId)
@@ -457,7 +457,11 @@ export const DentalWhatsAppService = {
 
       supabase
         .from('df_wa_transfers')
-        .select('*')
+        .select(`
+          *,
+          from_user:df_users!df_wa_transfers_from_user_id_fkey(id, name, role, whatsapp_display_name),
+          to_user:df_users!df_wa_transfers_to_user_id_fkey(id, name, role, whatsapp_display_name)
+        `)
         .eq('conversation_id', conversationId)
         .eq('tenant_id', tenantId)
         .order('transferred_at', { ascending: true }),
@@ -498,9 +502,10 @@ export const DentalWhatsAppService = {
       });
     }
 
-    // Mapear eventos
+    // Mapear eventos (ignora 'transferred' para evitar duplicidade com df_wa_transfers)
     if (eventsRes.data) {
       eventsRes.data.forEach((e: any) => {
+        if (e.event_type === 'transferred') return;
         items.push({
           id: e.id,
           type: 'event',
@@ -658,7 +663,7 @@ export const DentalWhatsAppService = {
     // Buscar conversa e contato
     const { data: conv } = await supabase
       .from('df_wa_conversations')
-      .select('id, contact:df_wa_contacts(whatsapp_number)')
+      .select('id, assigned_to, status, contact:df_wa_contacts(whatsapp_number)')
       .eq('id', conversationId)
       .eq('tenant_id', tenantId)
       .single();
@@ -742,6 +747,23 @@ export const DentalWhatsAppService = {
       return { success: false, error: insErr.message };
     }
 
+    // Se a conversa estava na fila (sem responsável), o envio de mensagem pelo atendente assume atomicamente o atendimento
+    if (senderId && (!conv?.assigned_to || conv?.status === 'na_fila')) {
+      try {
+        await supabase
+          .from('df_wa_conversations')
+          .update({
+            assigned_to: senderId,
+            status: 'em_atendimento',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', conversationId)
+          .eq('tenant_id', tenantId);
+      } catch (autoClaimErr) {
+        console.warn('[DentalWhatsAppService] Aviso ao auto-atribuir conversa na fila:', autoClaimErr);
+      }
+    }
+
     if (sendError) {
       return { success: false, messageId: dbMsgId, error: sendError };
     }
@@ -764,7 +786,7 @@ export const DentalWhatsAppService = {
 
     const { data: conv } = await supabase
       .from('df_wa_conversations')
-      .select('id, contact:df_wa_contacts(whatsapp_number)')
+      .select('id, assigned_to, status, contact:df_wa_contacts(whatsapp_number)')
       .eq('id', conversationId)
       .eq('tenant_id', tenantId)
       .single();
@@ -866,6 +888,23 @@ export const DentalWhatsAppService = {
 
     if (insErr) {
       return { success: false, error: insErr.message };
+    }
+
+    // Se a conversa estava na fila (sem responsável), o envio de mídia pelo atendente assume atomicamente o atendimento
+    if (senderId && (!conv?.assigned_to || conv?.status === 'na_fila')) {
+      try {
+        await supabase
+          .from('df_wa_conversations')
+          .update({
+            assigned_to: senderId,
+            status: 'em_atendimento',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', conversationId)
+          .eq('tenant_id', tenantId);
+      } catch (autoClaimErr) {
+        console.warn('[DentalWhatsAppService] Aviso ao auto-atribuir conversa na fila:', autoClaimErr);
+      }
     }
 
     if (sendError) {
@@ -1144,12 +1183,44 @@ export const DentalWhatsAppService = {
   }): Promise<{ success: boolean; error?: string }> {
     const { conversationId, tenantId, fromUserId, toUserId, reason } = params;
 
-    // Atualizar conversa
+    if (!conversationId || !tenantId || !toUserId) {
+      return { success: false, error: 'Parâmetros obrigatórios ausentes.' };
+    }
+
+    // 1. Validar atendente de destino no mesmo tenant e ativo
+    const { data: targetUser, error: userErr } = await supabase
+      .from('df_users')
+      .select('id, name, clinic_id, is_active, role, whatsapp_display_name')
+      .eq('id', toUserId)
+      .eq('clinic_id', tenantId)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (userErr || !targetUser) {
+      return { success: false, error: 'Profissional de destino inválido ou inativo nesta clínica.' };
+    }
+
+    // 2. Obter nome/identidade do atendente de origem para o histórico
+    let fromUserName = 'Atendente';
+    if (fromUserId) {
+      const { data: originUser } = await supabase
+        .from('df_users')
+        .select('id, name, whatsapp_display_name')
+        .eq('id', fromUserId)
+        .eq('clinic_id', tenantId)
+        .maybeSingle();
+      if (originUser) {
+        fromUserName = originUser.whatsapp_display_name || originUser.name;
+      }
+    }
+    const toUserName = targetUser.whatsapp_display_name || targetUser.name;
+
+    // 3. Atualizar conversa mantendo status operacional 'em_atendimento'
     const { error: updErr } = await supabase
       .from('df_wa_conversations')
       .update({
         assigned_to: toUserId,
-        status: 'transferido',
+        status: 'em_atendimento',
         transfer_reason: reason || null,
         updated_at: new Date().toISOString(),
       })
@@ -1160,28 +1231,60 @@ export const DentalWhatsAppService = {
       return { success: false, error: updErr.message };
     }
 
-    // Registrar histórico de transferência
+    const nowIso = new Date().toISOString();
+    const transferId = `trf_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    // 4. Registrar histórico persistente em df_wa_transfers (fonte canônica da timeline de transferência)
     await supabase.from('df_wa_transfers').insert({
-      id: `trf_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      id: transferId,
       tenant_id: tenantId,
       conversation_id: conversationId,
       from_user_id: fromUserId || null,
       to_user_id: toUserId,
       reason: reason || null,
-      transferred_at: new Date().toISOString(),
+      transferred_at: nowIso,
     });
 
-    // Registrar evento na timeline
+    // 5. Registrar evento interno permanente na timeline (df_wa_events) com referência biunívoca a transfer_id
+    const eventDescription = `Atendimento transferido: ${fromUserName} → ${toUserName}${
+      reason ? ` • Motivo: ${reason}` : ''
+    }`;
+
     await supabase.from('df_wa_events').insert({
       id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       tenant_id: tenantId,
       conversation_id: conversationId,
       event_type: 'transferred',
-      description: `Atendimento transferido para outro profissional. ${reason ? `Motivo: ${reason}` : ''}`,
+      description: eventDescription,
       author_id: fromUserId || null,
-      metadata: { from_user_id: fromUserId, to_user_id: toUserId, reason },
-      created_at: new Date().toISOString(),
+      metadata: {
+        transfer_id: transferId,
+        from_user_id: fromUserId || null,
+        from_user_name: fromUserName,
+        to_user_id: toUserId,
+        to_user_name: toUserName,
+        reason: reason || null,
+      },
+      created_at: nowIso,
     });
+
+    // 6. Notificar individualmente o novo atendente responsável
+    try {
+      await supabase.from('df_notifications').insert({
+        id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        tenant_id: tenantId,
+        user_id: toUserId,
+        type: 'whatsapp_transfer',
+        title: 'Atendimento transferido para você',
+        body: `${fromUserName} transferiu uma conversa para você.${reason ? ` Motivo: ${reason}` : ''}`,
+        entity_type: 'whatsapp_conversation',
+        entity_id: conversationId,
+        is_read: false,
+        created_at: nowIso,
+      });
+    } catch (notifErr) {
+      console.warn('[DentalWhatsAppService] Aviso ao registrar notificação de transferência:', notifErr);
+    }
 
     return { success: true };
   },
@@ -1220,7 +1323,7 @@ export const DentalWhatsAppService = {
       tenant_id: tenantId,
       conversation_id: conversationId,
       event_type: 'finalized',
-      description: `Atendimento finalizado. Motivo: ${reason || 'Concluído'}`,
+      description: `Atendimento finalizado. Motivo: ${reason || 'Atendimento concluído'}`,
       author_id: authorId || null,
       metadata: { reason, notes },
       created_at: new Date().toISOString(),
@@ -1230,18 +1333,21 @@ export const DentalWhatsAppService = {
   },
 
   /**
-   * Atualiza status da conversa (Kanban ou menu operacional).
+   * Reabre atendimento fechado (transiciona para 'em_atendimento').
    */
-  async updateStatus(
+  async reopenConversation(
     conversationId: string,
     tenantId: string,
-    status: WhatsAppChatStatus,
     authorId?: string
   ): Promise<boolean> {
     const { error } = await supabase
       .from('df_wa_conversations')
       .update({
-        status,
+        status: 'em_atendimento',
+        finalized_at: null,
+        finalization_reason: null,
+        finalization_notes: null,
+        assigned_to: authorId || null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', conversationId)
@@ -1252,10 +1358,59 @@ export const DentalWhatsAppService = {
         id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         tenant_id: tenantId,
         conversation_id: conversationId,
-        event_type: 'status_changed',
-        description: `Status alterado para "${status}".`,
+        event_type: 'reopened',
+        description: 'Atendimento reaberto pelo usuário.',
         author_id: authorId || null,
-        metadata: { new_status: status },
+        metadata: { reopened_by: authorId },
+        created_at: new Date().toISOString(),
+      });
+      return true;
+    }
+    return false;
+  },
+
+  /**
+   * Atualiza status do atendimento no Kanban ou Chat com persistência de auditoria.
+   */
+  async updateStatus(
+    conversationId: string,
+    tenantId: string,
+    status: WhatsAppChatStatus,
+    authorId?: string,
+    assignedTo?: string | null
+  ): Promise<boolean> {
+    const updatePayload: any = {
+      status,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (assignedTo !== undefined) {
+      updatePayload.assigned_to = assignedTo;
+    } else if (status === 'na_fila') {
+      updatePayload.assigned_to = null;
+    }
+
+    const { error } = await supabase
+      .from('df_wa_conversations')
+      .update(updatePayload)
+      .eq('id', conversationId)
+      .eq('tenant_id', tenantId);
+
+    if (!error) {
+      let statusLabel: string = status;
+      if (status === 'na_fila') statusLabel = 'Fila de Espera';
+      else if (status === 'em_atendimento') statusLabel = 'Em Atendimento';
+      else if (status === 'aguardando_cliente') statusLabel = 'Aguardando Paciente';
+      else if (status === 'aguardando_interno') statusLabel = 'Aguardando Interno';
+
+      await supabase.from('df_wa_events').insert({
+        id: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        tenant_id: tenantId,
+        conversation_id: conversationId,
+        event_type: 'status_changed',
+        description: `Status alterado para "${statusLabel}".`,
+        author_id: authorId || null,
+        metadata: { new_status: status, assigned_to: updatePayload.assigned_to },
         created_at: new Date().toISOString(),
       });
       return true;
@@ -1858,7 +2013,11 @@ export const DentalWhatsAppService = {
       conversationIds.length > 0
         ? supabase
             .from('df_wa_transfers')
-            .select('*')
+            .select(`
+              *,
+              from_user:df_users!df_wa_transfers_from_user_id_fkey(id, name, role, whatsapp_display_name),
+              to_user:df_users!df_wa_transfers_to_user_id_fkey(id, name, role, whatsapp_display_name)
+            `)
             .in('conversation_id', conversationIds)
             .eq('tenant_id', tenantId)
             .order('transferred_at', { ascending: true })
@@ -1962,9 +2121,10 @@ export const DentalWhatsAppService = {
       });
     }
 
-    // 5. Mapear eventos
+    // 5. Mapear eventos (ignora 'transferred' para evitar duplicidade com df_wa_transfers)
     if (eventsRes.data) {
       eventsRes.data.forEach((e: any) => {
+        if (e.event_type === 'transferred') return;
         items.push({
           id: e.id,
           type: 'event',

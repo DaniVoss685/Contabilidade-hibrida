@@ -1113,6 +1113,61 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
     }
   };
 
+  // Seletor e Atualização Dinâmica de Status dentro do Chat
+  const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
+  const [showReturnToQueueModal, setShowReturnToQueueModal] = useState(false);
+  const [changingStatus, setChangingStatus] = useState(false);
+
+  const handleUpdateStatus = async (newStatus: 'em_atendimento' | 'aguardando_cliente' | 'aguardando_interno' | 'na_fila') => {
+    if (!conversation.id || changingStatus) return;
+    setStatusDropdownOpen(false);
+
+    if (newStatus === 'na_fila') {
+      setShowReturnToQueueModal(true);
+      return;
+    }
+
+    setChangingStatus(true);
+    try {
+      await DentalWhatsAppService.updateStatus(
+        conversation.id,
+        tenantId,
+        newStatus,
+        currentUserId,
+        conversation.assigned_to
+      );
+      await loadTimeline();
+      onConversationUpdated?.();
+    } catch (err: any) {
+      console.error('Erro ao atualizar status:', err);
+      alert('Erro ao atualizar status: ' + (err.message || 'Falha na comunicação'));
+    } finally {
+      setChangingStatus(false);
+    }
+  };
+
+  const handleConfirmReturnToQueue = async () => {
+    if (!conversation.id || changingStatus) return;
+    setChangingStatus(true);
+    try {
+      await DentalWhatsAppService.updateStatus(
+        conversation.id,
+        tenantId,
+        'na_fila',
+        currentUserId,
+        null
+      );
+      setShowReturnToQueueModal(false);
+      await loadTimeline();
+      onConversationUpdated?.();
+    } catch (err: any) {
+      console.error('Erro ao devolver para a fila:', err);
+      alert('Erro ao devolver para a fila: ' + (err.message || 'Falha na comunicação'));
+    } finally {
+      setChangingStatus(false);
+    }
+  };
+
   // Confirmar Exclusão Local
   const confirmDeleteMessage = async () => {
     if (!messageToDelete) return;
@@ -1187,13 +1242,40 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
     return null;
   };
 
-  // Ordenação estável e cronológica dos itens da timeline
+  // Ordenação estável, cronológica e deduplicada dos itens da timeline
   const sortedTimelineItems = useMemo(() => {
-    return [...timelineItems].sort((a, b) => {
+    const sorted = [...timelineItems].sort((a, b) => {
       const timeA = new Date(a.created_at || (a as any).timestamp || 0).getTime();
       const timeB = new Date(b.created_at || (b as any).timestamp || 0).getTime();
       return timeA - timeB;
     });
+
+    const deduplicated: WhatsAppTimelineItem[] = [];
+    const seenTransfers = new Set<string>();
+
+    for (const item of sorted) {
+      const isTransferItem =
+        item.type === 'transfer' ||
+        (item.type === 'event' && (item.data.item as any)?.event_type === 'transferred');
+
+      if (isTransferItem) {
+        const transferData = item.data.item as any;
+        const transferId = transferData?.id || (item as any).id;
+        const toId = transferData?.to_user_id || transferData?.metadata?.to_user_id || '';
+        const timestampApprox = Math.floor(new Date(item.created_at || 0).getTime() / 5000);
+        const signature = `${toId}_${timestampApprox}`;
+
+        if (seenTransfers.has(signature) || (transferId && seenTransfers.has(transferId))) {
+          continue;
+        }
+        if (transferId) seenTransfers.add(transferId);
+        seenTransfers.add(signature);
+      }
+
+      deduplicated.push(item);
+    }
+
+    return deduplicated;
   }, [timelineItems]);
 
   return (
@@ -1373,6 +1455,114 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                   <span>Assumir</span>
                 </button>
               )}
+
+              {/* Seletor Discreto de Status de Atendimento */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setStatusDropdownOpen((prev) => !prev)}
+                  disabled={changingStatus}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs ${
+                    conversation.status === 'aguardando_cliente'
+                      ? 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-200'
+                      : conversation.status === 'aguardando_interno'
+                      ? 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-200'
+                      : conversation.status === 'na_fila'
+                      ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                  }`}
+                  title="Alterar status deste atendimento"
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      conversation.status === 'aguardando_cliente'
+                        ? 'bg-blue-500'
+                        : conversation.status === 'aguardando_interno'
+                        ? 'bg-purple-500'
+                        : conversation.status === 'na_fila'
+                        ? 'bg-amber-500'
+                        : 'bg-emerald-500'
+                    }`}
+                  />
+                  <span>
+                    {conversation.status === 'aguardando_cliente'
+                      ? 'Aguardando Paciente'
+                      : conversation.status === 'aguardando_interno'
+                      ? 'Aguardando Interno'
+                      : conversation.status === 'na_fila'
+                      ? 'Na Fila'
+                      : 'Em Atendimento'}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+                </button>
+
+                {statusDropdownOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-30"
+                      onClick={() => setStatusDropdownOpen(false)}
+                    />
+                    <div className="absolute right-0 top-full mt-1.5 w-52 bg-white border border-slate-200 rounded-xl shadow-xl z-40 py-1.5 text-xs animate-in fade-in zoom-in-95 duration-150">
+                      <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                        Alterar Status
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateStatus('em_atendimento')}
+                        className={`w-full px-3 py-2 text-left flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer ${
+                          conversation.status === 'em_atendimento' ? 'text-emerald-700 font-bold bg-emerald-50/50' : 'text-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                          <span>Em Atendimento</span>
+                        </div>
+                        {conversation.status === 'em_atendimento' && <Check className="w-3.5 h-3.5 text-emerald-600" />}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateStatus('aguardando_cliente')}
+                        className={`w-full px-3 py-2 text-left flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer ${
+                          conversation.status === 'aguardando_cliente' ? 'text-blue-700 font-bold bg-blue-50/50' : 'text-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-blue-500" />
+                          <span>Aguardando Paciente</span>
+                        </div>
+                        {conversation.status === 'aguardando_cliente' && <Check className="w-3.5 h-3.5 text-blue-600" />}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateStatus('aguardando_interno')}
+                        className={`w-full px-3 py-2 text-left flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer ${
+                          conversation.status === 'aguardando_interno' ? 'text-purple-700 font-bold bg-purple-50/50' : 'text-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-purple-500" />
+                          <span>Aguardando Interno</span>
+                        </div>
+                        {conversation.status === 'aguardando_interno' && <Check className="w-3.5 h-3.5 text-purple-600" />}
+                      </button>
+
+                      <div className="my-1 border-t border-slate-100" />
+
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateStatus('na_fila')}
+                        className="w-full px-3 py-2 text-left flex items-center gap-2 text-amber-700 hover:bg-amber-50 transition-colors cursor-pointer"
+                      >
+                        <Clock className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Devolver para Fila</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
 
               <button
                 onClick={() => setShowTransferModal(true)}
@@ -2014,7 +2204,66 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
               );
             }
 
-            // EVENTO DE TIMELINE (Claim, Transferência, etc.)
+            // EVENTO DE TRANSFERÊNCIA INTERNO PERMANENTE
+            if (
+              item.type === 'transfer' ||
+              (item.type === 'event' && (item.data.item as any).event_type === 'transferred')
+            ) {
+              const transferData = item.data.item as any;
+              const fromName =
+                transferData.from_user?.whatsapp_display_name ||
+                transferData.from_user?.name ||
+                transferData.metadata?.from_user_name ||
+                staffMap[transferData.from_user_id || transferData.author_id]?.whatsapp_display_name ||
+                staffMap[transferData.from_user_id || transferData.author_id]?.name ||
+                'Atendente';
+
+              const toName =
+                transferData.to_user?.whatsapp_display_name ||
+                transferData.to_user?.name ||
+                transferData.metadata?.to_user_name ||
+                staffMap[transferData.to_user_id || transferData.metadata?.to_user_id]?.whatsapp_display_name ||
+                staffMap[transferData.to_user_id || transferData.metadata?.to_user_id]?.name ||
+                'Colega';
+
+              const reasonText = transferData.reason || transferData.metadata?.reason;
+              const transferTime = new Date(item.created_at).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+
+              return (
+                <React.Fragment key={item.id}>
+                  {showDateHeader && (
+                    <div className="flex justify-center my-3">
+                      <span className="px-3 py-1 rounded-full bg-slate-200/80 border border-slate-300/60 text-slate-600 text-[10px] font-bold uppercase tracking-wider shadow-2xs">
+                        {formatTimelineDate(itemDate)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-center my-2">
+                    <div className="max-w-md w-auto px-3.5 py-1.5 rounded-xl bg-purple-50/80 border border-purple-200/80 text-purple-950 text-xs shadow-2xs text-center">
+                      <div className="flex items-center justify-center gap-1.5 font-semibold">
+                        <ArrowRightLeft className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                        <span>
+                          Atendimento transferido: <strong>{fromName}</strong> → <strong>{toName}</strong>
+                        </span>
+                        <span className="text-[10px] text-purple-400 font-normal">
+                          • {transferTime}
+                        </span>
+                      </div>
+                      {reasonText && (
+                        <p className="text-[11px] text-purple-700/90 mt-0.5 italic">
+                          Motivo: {reasonText}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </React.Fragment>
+              );
+            }
+
+            // OUTROS EVENTOS DE TIMELINE (Claim, Início, etc.)
             return (
               <React.Fragment key={item.id}>
                 {showDateHeader && (
@@ -2410,6 +2659,39 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                 className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-xl shadow-md cursor-pointer disabled:opacity-50"
               >
                 {deleting ? 'Excluindo...' : 'Sim, Excluir'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CONFIRMAÇÃO PARA DEVOLVER PARA A FILA */}
+      {showReturnToQueueModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="max-w-sm w-full bg-white rounded-2xl p-6 shadow-2xl border border-slate-200 text-center">
+            <div className="w-12 h-12 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center mx-auto mb-3">
+              <Clock className="w-6 h-6" />
+            </div>
+            <h4 className="text-sm font-bold text-slate-900 mb-1">Devolver para a Fila?</h4>
+            <p className="text-xs text-slate-500 mb-5 leading-relaxed">
+              Este atendimento será desvinculado do seu usuário e voltará para a fila geral da clínica, ficando disponível para qualquer atendente assumir.
+            </p>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                disabled={changingStatus}
+                onClick={() => setShowReturnToQueueModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={changingStatus}
+                onClick={handleConfirmReturnToQueue}
+                className="px-4 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-500 rounded-xl shadow-md cursor-pointer disabled:opacity-50"
+              >
+                {changingStatus ? 'Devolvendo...' : 'Sim, Devolver para Fila'}
               </button>
             </div>
           </div>

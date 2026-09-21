@@ -948,6 +948,7 @@ function AppContent() {
               tenantId={activeTenantId}
               currentUserId={currentSession?.user?.id}
               currentUserName={currentSession?.user?.name}
+              currentUserRole={currentSession?.user?.role}
               initialPatientId={initialWhatsAppPatientId}
               initialConversationId={initialWhatsAppConversationId}
               initialContactId={initialWhatsAppContactId}

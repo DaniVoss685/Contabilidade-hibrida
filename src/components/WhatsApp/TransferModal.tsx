@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, ArrowRightLeft, User, AlertCircle, MessageSquare } from 'lucide-react';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
-import { hasPermission } from '../../lib/permissions';
+import { hasPermission, getRoleLabel } from '../../lib/permissions';
 
 interface TransferModalProps {
   isOpen: boolean;
@@ -152,7 +152,7 @@ export const TransferModal: React.FC<TransferModalProps> = ({
                       </div>
                       <div>
                         <p className="font-medium text-slate-800">{u.name}</p>
-                        {u.role && <p className="text-[10px] text-slate-400 capitalize">{u.role}</p>}
+                        {u.role && <p className="text-[10px] text-slate-400">{getRoleLabel(u.role)}</p>}
                       </div>
                     </div>
                     <input

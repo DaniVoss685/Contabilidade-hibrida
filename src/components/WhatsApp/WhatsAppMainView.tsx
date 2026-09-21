@@ -39,6 +39,7 @@ interface WhatsAppMainViewProps {
   tenantId: string;
   currentUserId?: string;
   currentUserName?: string;
+  currentUserRole?: string;
   onNavigateToAgenda?: (date?: string, patientId?: string) => void;
   initialPatientId?: string;
   initialConversationId?: string;
@@ -50,6 +51,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   tenantId,
   currentUserId,
   currentUserName,
+  currentUserRole,
   onNavigateToAgenda,
   initialPatientId,
   initialConversationId,
@@ -71,6 +73,17 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   const [viewMode, setViewMode] = useState<'chat' | 'kanban'>('chat');
   const [showContext, setShowContext] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [staffMembers, setStaffMembers] = useState<
+    { id: string; name: string; role?: string; whatsapp_display_name?: string | null }[]
+  >([]);
+
+  useEffect(() => {
+    if (tenantId) {
+      DentalWhatsAppService.getStaff(tenantId)
+        .then((list) => setStaffMembers(list))
+        .catch(() => {});
+    }
+  }, [tenantId]);
 
   // Modais
   const [isNewContactOpen, setIsNewContactOpen] = useState(false);
@@ -723,6 +736,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
             history={history}
             tenantId={tenantId}
             currentUserId={currentUserId}
+            staffMembers={staffMembers}
             onSelectConversation={(conv) => {
               consumedInitialConvRef.current = conv.id;
               setSelectedConversation(conv);
@@ -755,6 +769,10 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                 onOpenNewContact={() => setIsNewContactOpen(true)}
                 onOpenSettings={() => setIsSettingsOpen(true)}
                 currentUserId={currentUserId}
+                currentUserRole={
+                  currentUserRole || staffMembers.find((s) => s.id === currentUserId)?.role
+                }
+                staffMembers={staffMembers}
                 loading={loading}
               />
             </div>

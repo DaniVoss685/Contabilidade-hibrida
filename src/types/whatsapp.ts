@@ -104,6 +104,7 @@ export interface WhatsAppConversation {
     name: string;
     email?: string;
     role?: string;
+    whatsapp_display_name?: string | null;
   } | null;
   observation_assigned_user?: {
     id: string;
@@ -188,8 +189,8 @@ export interface WhatsAppTransfer {
   transferred_at: string;
 
   // Joined
-  from_user?: { id: string; name: string } | null;
-  to_user?: { id: string; name: string } | null;
+  from_user?: { id: string; name: string; whatsapp_display_name?: string | null; role?: string } | null;
+  to_user?: { id: string; name: string; whatsapp_display_name?: string | null; role?: string } | null;
 }
 
 export interface WhatsAppCall {
