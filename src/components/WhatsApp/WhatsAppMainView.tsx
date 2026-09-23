@@ -30,6 +30,7 @@ import { AppointmentDetailsModal } from '../Appointments/AppointmentDetailsModal
 import { PatientModal } from '../Modals/PatientModal';
 import { Appointment, Patient } from '../../types';
 import { normalizeBrazilianNumber, isWhatsAppGroup } from '../../lib/phoneUtils';
+import { withGuardianDisplayName } from '../../lib/contactsFilter';
 
 export interface RealtimeMessageEvent {
   eventType: 'INSERT' | 'UPDATE' | 'DELETE';
@@ -196,14 +197,22 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
         DentalWhatsAppService.getContactRelations(tenantId),
       ]);
 
-      setConversations(convs);
-      setHistory(hist);
-      setContacts(ctcs);
+      // A31: anexa o nome do responsável (quando aplicável) diretamente nos
+      // objetos de contato ANTES de guardar no estado — assim todo consumidor
+      // de getContactDisplayName (header do chat, drawer, kanban, reply-to)
+      // já resolve o nome certo, sem precisar receber `relations` separadamente.
+      const enrichedConvs = convs.map((c) => ({ ...c, contact: withGuardianDisplayName(c.contact, relations) }));
+      const enrichedHist = hist.map((c) => ({ ...c, contact: withGuardianDisplayName(c.contact, relations) }));
+      const enrichedContacts = ctcs.map((c) => withGuardianDisplayName(c, relations)!);
+
+      setConversations(enrichedConvs);
+      setHistory(enrichedHist);
+      setContacts(enrichedContacts);
       setContactRelations(relations);
 
       // Sincronizar conversa selecionada com dados atualizados
       if (selectedConversationRef.current) {
-        const found = [...convs, ...hist].find(
+        const found = [...enrichedConvs, ...enrichedHist].find(
           (c) => c.id === selectedConversationRef.current?.id
         );
         if (found) {
@@ -636,9 +645,13 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   const isProcessingContactRef = useRef(false);
 
   // Ao selecionar um contato na aba Contatos (Navegação Pura - Modo Consulta sem criar atendimento no banco)
-  const handleSelectContact = async (contact: WhatsAppContact) => {
-    if (!contact?.id || isProcessingContactRef.current) return;
+  const handleSelectContact = async (rawContact: WhatsAppContact) => {
+    if (!rawContact?.id || isProcessingContactRef.current) return;
     isProcessingContactRef.current = true;
+    // Garante guardianDisplayName mesmo quando o contato chega de uma fonte que
+    // ainda não passou pelo enriquecimento de loadConversations (ex.:
+    // getOrCreateContactForPatient, navegação vinda da Agenda/Pacientes).
+    const contact = withGuardianDisplayName(rawContact, contactRelations)!;
 
     try {
       // 1. Verificar se já existe conversa ativa nas abas ativas em memória
@@ -656,7 +669,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
           tenantId
         );
         if (dbActive) {
-          activeConv = dbActive;
+          activeConv = { ...dbActive, contact: withGuardianDisplayName(dbActive.contact, contactRelations) };
         }
       }
 
@@ -686,7 +699,8 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
           .maybeSingle();
 
         if (dbHist) {
-          histConv = dbHist as any as WhatsAppConversation;
+          const rawHistConv = dbHist as any as WhatsAppConversation;
+          histConv = { ...rawHistConv, contact: withGuardianDisplayName(rawHistConv.contact, contactRelations) };
         }
       }
 

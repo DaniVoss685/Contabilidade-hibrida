@@ -132,6 +132,16 @@ export interface ContactNameResolvable {
   name?: string | null;
   whatsapp_number?: string | null;
   patient?: { name?: string | null } | null;
+  /**
+   * Enriquecimento client-side (não é coluna do banco): nome do responsável
+   * (df_patient_guardians) quando este número é o telefone de um guardian —
+   * ver DentalWhatsAppService.getContactRelations e A31 no CLAUDE.md. Anexado
+   * pelo carregador de dados (WhatsAppMainView) em conversations/history/
+   * contacts ANTES de guardar no estado, para que todo consumidor de
+   * getContactDisplayName (header do chat, drawer, sidebar, kanban) mostre o
+   * mesmo nome sem precisar de prop-drilling de relations em cada componente.
+   */
+  guardianDisplayName?: string | null;
 }
 
 /**
@@ -165,10 +175,13 @@ export function isPhoneLikeContactName(name?: string | null, whatsappNumber?: st
 }
 
 /**
- * Regra canônica de resolução do nome de exibição de um contato:
- * 1ª Prioridade: Nome do paciente clínico vinculado (se houver)
- * 2ª Prioridade: Nome cadastrado no WhatsApp (se não for placeholder de telefone)
- * 3ª Fallback: Número do WhatsApp formatado como telefone amigável
+ * Regra canônica de resolução do nome de exibição de um contato (A31):
+ * 1ª Prioridade: Nome do RESPONSÁVEL (guardian), quando este número é o
+ *    telefone de um responsável — nunca o paciente primário legado vinculado
+ *    ao contato, que pode ser só um dos dependentes daquele número.
+ * 2ª Prioridade: Nome do paciente clínico vinculado (telefone próprio)
+ * 3ª Prioridade: Nome cadastrado no WhatsApp (se não for placeholder de telefone)
+ * 4ª Fallback: Número do WhatsApp formatado como telefone amigável
  */
 export function getContactDisplayName(contact?: ContactNameResolvable | null): string {
   if (!contact) return 'Contato';
@@ -181,7 +194,12 @@ export function getContactDisplayName(contact?: ContactNameResolvable | null): s
     return 'Grupo do WhatsApp';
   }
 
-  // 1ª Prioridade: Nome do paciente vinculado (apenas indivíduos)
+  // 1ª Prioridade: Nome do responsável (telefone compartilhado — ver A31)
+  if (contact.guardianDisplayName && contact.guardianDisplayName.trim()) {
+    return contact.guardianDisplayName.trim();
+  }
+
+  // 2ª Prioridade: Nome do paciente vinculado (apenas indivíduos)
   if (contact.patient?.name && contact.patient.name.trim()) {
     return contact.patient.name.trim();
   }

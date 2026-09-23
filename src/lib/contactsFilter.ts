@@ -57,6 +57,27 @@ export function getContactDisplayNameForList(
 }
 
 /**
+ * Anexa `guardianDisplayName` (ContactNameResolvable, phoneUtils.ts) a um contato,
+ * a partir do enriquecimento em lote (getContactRelations). Com isso,
+ * getContactDisplayName — usado em TODO lugar que mostra o nome de um contato
+ * (header do chat, drawer, sidebar de conversas, Kanban, reply-to) — já resolve
+ * o nome do responsável automaticamente, sem cada componente precisar receber
+ * `relations` separadamente e reimplementar a precedência A31. Retorna um NOVO
+ * objeto (nunca muta o original) só quando há mudança real, para não quebrar
+ * referências/memoização React à toa.
+ */
+export function withGuardianDisplayName<T extends WhatsAppContact>(
+  contact: T | null | undefined,
+  relations: Record<string, WhatsAppContactRelations>
+): T | null | undefined {
+  if (!contact) return contact;
+  const relation = relations[contact.id];
+  const guardianDisplayName = relation?.isGuardianPhone ? relation.guardianName || null : null;
+  if ((contact as any).guardianDisplayName === guardianDisplayName) return contact;
+  return { ...contact, guardianDisplayName };
+}
+
+/**
  * Tags visuais da aba Contatos (A3-A6): reflete o modelo N:N (df_wa_contact_patients)
  * e o de responsável (df_patient_guardians) já homologados, sem reduzir de volta a 1:1.
  * Um contato pode combinar múltiplas tags (ex.: responsável que também é paciente da

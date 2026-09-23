@@ -73,6 +73,12 @@ export interface WhatsAppContact {
     phone?: string;
     email?: string;
   } | null;
+
+  /**
+   * Enriquecimento client-side (não é coluna do banco) — ver ContactNameResolvable
+   * em phoneUtils.ts e withGuardianDisplayName em contactsFilter.ts (A31).
+   */
+  guardianDisplayName?: string | null;
 }
 
 /**
