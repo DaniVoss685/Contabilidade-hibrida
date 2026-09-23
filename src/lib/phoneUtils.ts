@@ -35,6 +35,35 @@ export function normalizeBrazilianNumber(rawNumber: string): string {
 }
 
 /**
+ * Detecta números "placeholder" (formato estruturalmente válido, mas sem sentido real):
+ * todos os dígitos do número local iguais (ex.: 99999999999) ou sequência estritamente
+ * crescente/decrescente de dígitos consecutivos (ex.: 12345678901234567890 → local 123456789).
+ * Espelha fn_is_placeholder_phone_local (supabase/migrations) — manter em sincronia manualmente,
+ * a trigger de banco roda server-side e não importa este arquivo. Nunca bloqueia o cadastro do
+ * paciente (CLAUDE.md: telefone nunca bloqueia) — usado apenas para avisar o usuário e para a
+ * trigger decidir se cria/atualiza o df_wa_contact correspondente (A23).
+ */
+export function isPlaceholderPhoneNumber(rawNumber: string): boolean {
+  const normalized = normalizeBrazilianNumber(rawNumber);
+  if (!normalized.startsWith('55') || normalized.length < 12) return false;
+
+  const local = normalized.substring(4); // remove "55" (DDI) + 2 dígitos de DDD
+  if (local.length < 8) return false;
+
+  if (/^(\d)\1+$/.test(local)) return true;
+
+  let ascending = true;
+  let descending = true;
+  for (let i = 0; i < local.length - 1; i++) {
+    const a = local.charCodeAt(i);
+    const b = local.charCodeAt(i + 1);
+    if (b - a !== 1) ascending = false;
+    if (a - b !== 1) descending = false;
+  }
+  return ascending || descending;
+}
+
+/**
  * Identifica se um identificador ou número representa um Grupo do WhatsApp.
  * Critérios:
  * - Sufixo '@g.us'
@@ -53,22 +82,45 @@ export function isWhatsAppGroup(jidOrNumber?: string | null): boolean {
   return false;
 }
 
-export function formatPhoneDisplay(number: string): string {
+export function formatPhoneDisplay(
+  number: string | undefined | null,
+  options?: { includeCountryCode?: boolean }
+): string {
   if (!number) return '';
-  if (isWhatsAppGroup(number)) {
+  const trimmed = String(number).trim();
+  if (isWhatsAppGroup(trimmed)) {
     return 'Grupo do WhatsApp';
   }
-  const normalized = normalizeBrazilianNumber(number);
-  const digits = normalized.startsWith('55') ? normalized.substring(2) : normalized;
+  const hasPlus = trimmed.startsWith('+');
+  const clean = trimmed.replace(/\D/g, '');
 
-  if (digits.length === 11) {
-    return `(${digits.substring(0, 2)}) ${digits.substring(2, 7)}-${digits.substring(7)}`;
+  let ddd = '';
+  let local = '';
+  let isCell = false;
+
+  if (clean.startsWith('55') && (clean.length === 12 || clean.length === 13)) {
+    ddd = clean.slice(2, 4);
+    local = clean.slice(4);
+    isCell = local.length === 9;
+  } else if (clean.length === 10 || clean.length === 11) {
+    ddd = clean.slice(0, 2);
+    local = clean.slice(2);
+    isCell = local.length === 9;
+  } else {
+    return trimmed;
   }
-  if (digits.length === 10) {
-    return `(${digits.substring(0, 2)}) ${digits.substring(2, 6)}-${digits.substring(6)}`;
-  }
-  return number;
+
+  const formattedLocal = isCell
+    ? `${local.slice(0, 5)}-${local.slice(5)}`
+    : `${local.slice(0, 4)}-${local.slice(4)}`;
+
+  const shouldIncludePlus = options?.includeCountryCode ?? hasPlus;
+  return shouldIncludePlus
+    ? `+55 (${ddd}) ${formattedLocal}`
+    : `(${ddd}) ${formattedLocal}`;
 }
+
+export const formatPhone = formatPhoneDisplay;
 
 export function isValidBrazilianPhone(number: string): boolean {
   const norm = normalizeBrazilianNumber(number);

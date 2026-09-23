@@ -18,6 +18,7 @@ import {
   WhatsAppReminderStatus,
   WhatsAppReminderLog,
   WhatsAppReminderSettings,
+  WhatsAppContactRelations,
 } from '../types/whatsapp';
 import { normalizeBrazilianNumber, isValidBrazilianPhone, formatPhoneDisplay, isWhatsAppGroup } from '../lib/phoneUtils';
 import { formatDateBr } from '../lib/masks';
@@ -417,7 +418,7 @@ export const DentalWhatsAppService = {
       .from('df_wa_conversations')
       .select(`
         *,
-        contact:df_wa_contacts(*, patient:df_patients(id, name, cpf, phone, email))
+        contact:df_wa_contacts(*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email))
       `)
       .eq('id', conversationId)
       .eq('tenant_id', tenantId)
@@ -1503,7 +1504,7 @@ export const DentalWhatsAppService = {
 
     let query = supabase
       .from('df_wa_contacts')
-      .select('*, patient:df_patients(id, name, cpf, phone, email)')
+      .select('*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)')
       .eq('tenant_id', tenantId)
       .order('name', { ascending: true });
 
@@ -1518,6 +1519,89 @@ export const DentalWhatsAppService = {
       return [];
     }
     return (data || []) as any as WhatsAppContact[];
+  },
+
+  /**
+   * Enriquecimento em lote (sem N+1) da aba Contatos: para cada contato do tenant,
+   * quantos pacientes estão vinculados (df_wa_contact_patients, já inclui o vínculo
+   * primário — ver migration 20260922190000) e se o número pertence a um responsável
+   * (df_patient_guardians.phone, comparado normalizado). As duas fontes já são
+   * canônicas e homologadas em outras telas — aqui só agregamos, nunca duplicamos
+   * lógica de vínculo/matching (A3-A6/A30/A32).
+   */
+  async getContactRelations(tenantId: string): Promise<Record<string, WhatsAppContactRelations>> {
+    if (!tenantId) return {};
+
+    const [contactsRes, linksRes, guardiansRes] = await Promise.all([
+      supabase.from('df_wa_contacts').select('id, whatsapp_number').eq('tenant_id', tenantId),
+      supabase
+        .from('df_wa_contact_patients')
+        .select('contact_id, patient_id, patient:df_patients!df_wa_contact_patients_patient_id_fkey(name)')
+        .eq('tenant_id', tenantId),
+      supabase
+        .from('df_patient_guardians')
+        .select('id, name, phone, linked_patient_id')
+        .eq('tenant_id', tenantId),
+    ]);
+
+    if (contactsRes.error || linksRes.error || guardiansRes.error) {
+      console.error(
+        '[DentalWhatsAppService] Erro ao carregar relações de contatos:',
+        contactsRes.error?.message || linksRes.error?.message || guardiansRes.error?.message
+      );
+      return {};
+    }
+
+    const contacts = contactsRes.data || [];
+    const links = (linksRes.data || []) as any[];
+    const guardians = (guardiansRes.data || []) as any[];
+
+    // Contagem de dependentes por guardian_id (df_patient_guardian_links), só para os
+    // guardians deste tenant — 1 query extra, ainda sem N+1 por contato.
+    const guardianIds = guardians.map((g) => g.id);
+    let dependentCountByGuardianId: Record<string, number> = {};
+    if (guardianIds.length > 0) {
+      const { data: guardianLinks } = await supabase
+        .from('df_patient_guardian_links')
+        .select('guardian_id')
+        .in('guardian_id', guardianIds);
+      (guardianLinks || []).forEach((l: any) => {
+        dependentCountByGuardianId[l.guardian_id] = (dependentCountByGuardianId[l.guardian_id] || 0) + 1;
+      });
+    }
+
+    const guardianByNormalizedPhone = new Map<string, { name: string; id: string; linked_patient_id: string | null }>();
+    guardians.forEach((g) => {
+      const norm = normalizeBrazilianNumber(g.phone || '');
+      if (norm) guardianByNormalizedPhone.set(norm, g);
+    });
+
+    const patientCountByContact = new Map<string, { count: number; names: string[] }>();
+    links.forEach((l) => {
+      const entry = patientCountByContact.get(l.contact_id) || { count: 0, names: [] };
+      entry.count += 1;
+      const name = (l.patient as any)?.name;
+      if (name) entry.names.push(name);
+      patientCountByContact.set(l.contact_id, entry);
+    });
+
+    const result: Record<string, WhatsAppContactRelations> = {};
+    contacts.forEach((ctc) => {
+      const patientInfo = patientCountByContact.get(ctc.id) || { count: 0, names: [] };
+      const normalizedNumber = normalizeBrazilianNumber(ctc.whatsapp_number || '');
+      const guardian = normalizedNumber ? guardianByNormalizedPhone.get(normalizedNumber) : undefined;
+
+      result[ctc.id] = {
+        patientCount: patientInfo.count,
+        patientNames: patientInfo.names,
+        isGuardianPhone: Boolean(guardian),
+        guardianName: guardian?.name,
+        guardianDependentCount: guardian ? dependentCountByGuardianId[guardian.id] || 0 : undefined,
+        guardianIsAlsoPatient: guardian ? Boolean(guardian.linked_patient_id) : undefined,
+      };
+    });
+
+    return result;
   },
 
   /**
@@ -1547,7 +1631,7 @@ export const DentalWhatsAppService = {
         },
         { onConflict: 'tenant_id,whatsapp_number' }
       )
-      .select('*, patient:df_patients(id, name, cpf, phone, email)')
+      .select('*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)')
       .single();
 
     if (ctcErr || !contact) {
@@ -1687,6 +1771,218 @@ export const DentalWhatsAppService = {
 
     const res = await StorageService.createSignedUrl(storagePath, 3600); // 1 hora de validade
     return res.signedUrl;
+  },
+
+  /**
+   * Resolução canônica de Blob local para documentos e PDFs do WhatsApp.
+   * Evita bloqueio ERR_BLOCKED_BY_CSP em iframes ao obter o arquivo autenticado
+   * via Supabase Storage SDK (ou fetch seguro de fallback) e normalizar para Blob local.
+   * Valida isolamento multi-tenant e path traversal.
+   */
+  async resolveDocumentBlob(params: {
+    storagePath?: string | null;
+    mediaUrl?: string | null;
+    tenantId?: string;
+    expectedMimeType?: string;
+    fileName?: string;
+  }): Promise<{ blob: Blob | null; error?: string; source: 'storage' | 'fallback_url' }> {
+    const { storagePath, mediaUrl, tenantId, expectedMimeType, fileName } = params;
+
+    // 1. Prioridade canônica: download direto via Supabase Storage SDK com bucket privado dental-private
+    if (storagePath) {
+      // Prevenção estrita de Path Traversal
+      const normalizedPath = storagePath.trim();
+      if (
+        normalizedPath.includes('..') ||
+        normalizedPath.includes('\\') ||
+        normalizedPath.startsWith('/')
+      ) {
+        return {
+          blob: null,
+          error: 'Caminho de arquivo inválido ou inseguro.',
+          source: 'storage',
+        };
+      }
+
+      // Validação de isolamento multi-tenant quando tenantId for fornecido
+      if (tenantId) {
+        const expectedPrefix = `${tenantId}/`;
+        if (!normalizedPath.startsWith(expectedPrefix)) {
+          return {
+            blob: null,
+            error: 'Acesso negado: o documento não pertence à clínica autorizada.',
+            source: 'storage',
+          };
+        }
+      }
+
+      try {
+        const { data, error } = await supabase.storage
+          .from(DENTAL_STORAGE_BUCKET)
+          .download(normalizedPath);
+
+        if (error || !data) {
+          console.warn('[DentalWhatsAppService] Falha ao baixar documento do storage:', error?.message);
+          // Se falhou no storage mas temos mediaUrl, tenta fallback
+          if (!mediaUrl) {
+            return {
+              blob: null,
+              error: error?.message || 'Falha ao baixar documento.',
+              source: 'storage',
+            };
+          }
+        } else {
+          // Normaliza o MIME type para application/pdf caso seja comprovadamente PDF
+          const isPdf =
+            (expectedMimeType && expectedMimeType.includes('pdf')) ||
+            (fileName && fileName.toLowerCase().endsWith('.pdf')) ||
+            normalizedPath.toLowerCase().endsWith('.pdf');
+
+          let finalBlob = data;
+          if (isPdf && data.type !== 'application/pdf') {
+            const buffer = await data.arrayBuffer();
+            finalBlob = new Blob([buffer], { type: 'application/pdf' });
+          }
+
+          return {
+            blob: finalBlob,
+            source: 'storage',
+          };
+        }
+      } catch (err: any) {
+        console.warn('[DentalWhatsAppService] Exceção ao baixar arquivo do storage:', err);
+        if (!mediaUrl) {
+          return {
+            blob: null,
+            error: err?.message || 'Erro inesperado ao acessar documento.',
+            source: 'storage',
+          };
+        }
+      }
+    }
+
+    // 2. Fallback para registros legados que só possuem media_url
+    if (mediaUrl) {
+      try {
+        const res = await fetch(mediaUrl);
+        if (!res.ok) {
+          return {
+            blob: null,
+            error: `Erro ao obter documento via URL: ${res.statusText}`,
+            source: 'fallback_url',
+          };
+        }
+
+        const rawBlob = await res.blob();
+        const isPdf =
+          (expectedMimeType && expectedMimeType.includes('pdf')) ||
+          (fileName && fileName.toLowerCase().endsWith('.pdf')) ||
+          (storagePath && storagePath.toLowerCase().endsWith('.pdf')) ||
+          mediaUrl.toLowerCase().includes('.pdf');
+
+        let finalBlob = rawBlob;
+        if (isPdf && rawBlob.type !== 'application/pdf') {
+          const buffer = await rawBlob.arrayBuffer();
+          finalBlob = new Blob([buffer], { type: 'application/pdf' });
+        }
+
+        return {
+          blob: finalBlob,
+          source: 'fallback_url',
+        };
+      } catch (err: any) {
+        return {
+          blob: null,
+          error: err?.message || 'Falha ao obter documento legado via URL.',
+          source: 'fallback_url',
+        };
+      }
+    }
+
+    return {
+      blob: null,
+      error: 'Nenhuma referência de documento disponível.',
+      source: 'storage',
+    };
+  },
+
+  /**
+   * Verifica, via leitura direta (RLS do próprio usuário), se uma mensagem do WhatsApp
+   * já foi anexada ao prontuário de um paciente. Usado para pré-popular o botão
+   * "Anexar ao prontuário" sem custo de uma chamada privilegiada.
+   */
+  async getAttachedClinicalDocument(params: {
+    tenantId: string;
+    patientId: string;
+    messageId: string;
+  }): Promise<{ id: string; originalFilename: string } | null> {
+    const { tenantId, patientId, messageId } = params;
+    if (!tenantId || !patientId || !messageId) return null;
+
+    const { data, error } = await supabase
+      .from('df_clinical_attachments')
+      .select('id, original_filename')
+      .eq('tenant_id', tenantId)
+      .eq('patient_id', patientId)
+      .eq('source_message_id', messageId)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return { id: data.id, originalFilename: data.original_filename };
+  },
+
+  /**
+   * Anexa um documento/imagem do WhatsApp ao prontuário do paciente vinculado ao contato,
+   * via Edge Function segura (dental-whatsapp-attach-document). O frontend nunca envia
+   * storage_path: o backend resolve tudo a partir de message_id + JWT do usuário.
+   * tenantId é a clínica OPERACIONAL ativa (db.getActiveTenantId() / Modo Consultoria) —
+   * o backend nunca aceita isso sozinho, sempre valida vínculo real do chamador com ela.
+   */
+  async attachMessageToPatientRecord(params: {
+    messageId: string;
+    patientId: string;
+    documentType: string;
+    description?: string;
+    documentDate?: string;
+    tenantId?: string;
+  }): Promise<{
+    success: boolean;
+    alreadyAttached?: boolean;
+    attachment?: { id: string; originalFilename: string };
+    error?: string;
+  }> {
+    const { messageId, patientId, documentType, description, documentDate, tenantId } = params;
+
+    try {
+      const { data, error } = await supabase.functions.invoke('dental-whatsapp-attach-document', {
+        body: {
+          message_id: messageId,
+          patient_id: patientId,
+          document_type: documentType,
+          description: description || '',
+          document_date: documentDate || '',
+          tenant_id: tenantId || '',
+        },
+      });
+
+      if (error) {
+        return { success: false, error: await extractEdgeFunctionError(error) };
+      }
+
+      if (!data?.success) {
+        return { success: false, error: data?.error || 'Não foi possível anexar o documento ao prontuário.' };
+      }
+
+      return {
+        success: true,
+        alreadyAttached: Boolean(data.alreadyAttached),
+        attachment: data.attachment
+          ? { id: data.attachment.id, originalFilename: data.attachment.originalFilename }
+          : undefined,
+      };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Falha na comunicação com o servidor.' };
+    }
   },
 
   /**
@@ -1839,7 +2135,7 @@ export const DentalWhatsAppService = {
       .from('df_wa_conversations')
       .select(`
         *,
-        contact:df_wa_contacts(*, patient:df_patients(id, name, cpf, phone, email)),
+        contact:df_wa_contacts(*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)),
         assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role)
       `)
       .eq('tenant_id', tenantId)
@@ -1872,7 +2168,7 @@ export const DentalWhatsAppService = {
       })
       .select(`
         *,
-        contact:df_wa_contacts(*, patient:df_patients(id, name, cpf, phone, email)),
+        contact:df_wa_contacts(*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)),
         assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role)
       `)
       .single();
@@ -1883,7 +2179,7 @@ export const DentalWhatsAppService = {
         .from('df_wa_conversations')
         .select(`
           *,
-          contact:df_wa_contacts(*, patient:df_patients(id, name, cpf, phone, email)),
+          contact:df_wa_contacts(*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)),
           assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role)
         `)
         .eq('tenant_id', tenantId)
@@ -1946,7 +2242,7 @@ export const DentalWhatsAppService = {
       .from('df_wa_conversations')
       .select(`
         *,
-        contact:df_wa_contacts(*, patient:df_patients(id, name, cpf, phone, email)),
+        contact:df_wa_contacts(*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)),
         assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role, whatsapp_display_name)
       `)
       .eq('tenant_id', tenantId)
@@ -2706,6 +3002,15 @@ export const DentalWhatsAppService = {
           await this.syncPatientToContact(p, p.tenant_id);
           processed++;
         } else {
+          // Telefone compartilhado: o contato já tem outro paciente como
+          // primário. Vincula este como SECUNDÁRIO (irmãos no mesmo número)
+          // em vez de apenas contabilizar como conflito não resolvido.
+          await supabase
+            .from('df_wa_contact_patients')
+            .upsert(
+              { tenant_id: p.tenant_id, contact_id: byNumber.id, patient_id: p.id, is_primary: false },
+              { onConflict: 'contact_id,patient_id' }
+            );
           conflicts++;
         }
       } else {
@@ -2870,7 +3175,7 @@ export const DentalWhatsAppService = {
     // 2. Verificar se já existe contato com esse patient_id no MESMO tenant
     const { data: existingContact, error: existingErr } = await supabase
       .from('df_wa_contacts')
-      .select('*, patient:df_patients(id, name, cpf, phone, email)')
+      .select('*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)')
       .eq('tenant_id', tenantId)
       .eq('patient_id', patientId)
       .maybeSingle();
@@ -2933,7 +3238,7 @@ export const DentalWhatsAppService = {
     // 3. Verificar se já existe contato com esse número no MESMO tenant
     const { data: byNumber, error: byNumErr } = await supabase
       .from('df_wa_contacts')
-      .select('*, patient:df_patients(id, name, cpf, phone, email)')
+      .select('*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)')
       .eq('tenant_id', tenantId)
       .eq('whatsapp_number', cleanNumber)
       .maybeSingle();
@@ -2983,7 +3288,7 @@ export const DentalWhatsAppService = {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      .select('*, patient:df_patients(id, name, cpf, phone, email)')
+      .select('*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)')
       .single();
 
     if (insErr) {
@@ -2998,7 +3303,7 @@ export const DentalWhatsAppService = {
       if (insErr.code === '23505') {
         const { data: retry } = await supabase
           .from('df_wa_contacts')
-          .select('*, patient:df_patients(id, name, cpf, phone, email)')
+          .select('*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)')
           .eq('tenant_id', tenantId)
           .eq('whatsapp_number', cleanNumber)
           .maybeSingle();

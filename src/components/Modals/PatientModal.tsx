@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { User, X, Loader2, Phone, Mail, AlertCircle, Edit3, Calendar } from 'lucide-react';
 import { Patient } from '../../types';
 import { db } from '../../lib/db';
+import { SupabaseService } from '../../lib/supabaseClient';
+import { getPhoneFieldLabel } from '../../lib/patientGuardianDisplay';
+import { isPlaceholderPhoneNumber } from '../../lib/phoneUtils';
 import {
   formatCpf,
   isValidCpf,
@@ -47,6 +50,15 @@ export const PatientModal: React.FC<PatientModalProps> = ({
   const [birthDate, setBirthDate] = useState('');
   const [email, setEmail] = useState('');
 
+  // Responsável (guardian) — Fase 3 do modelo de telefone compartilhado
+  const [phoneOwner, setPhoneOwner] = useState<'PATIENT' | 'RESPONSIBLE'>('PATIENT');
+  const [guardianId, setGuardianId] = useState<string | undefined>(undefined);
+  const [guardianName, setGuardianName] = useState('');
+  const [guardianRelationship, setGuardianRelationship] = useState('');
+  const [guardianCpf, setGuardianCpf] = useState('');
+  const [guardianEmail, setGuardianEmail] = useState('');
+  const [guardianCandidates, setGuardianCandidates] = useState<Array<{ id: string; name: string; cpf?: string; phone?: string; email?: string }>>([]);
+
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
@@ -63,19 +75,76 @@ export const PatientModal: React.FC<PatientModalProps> = ({
         setPhone(patient.phone ? maskPhoneInput(patient.phone) : '');
         setBirthDate(patient.birthDate || '');
         setEmail(patient.email || '');
+        setPhoneOwner(patient.phoneOwner === 'RESPONSIBLE' ? 'RESPONSIBLE' : 'PATIENT');
+        setGuardianId(undefined);
+        setGuardianName('');
+        setGuardianRelationship('');
+        setGuardianCpf('');
+        setGuardianEmail('');
+        if (patient.phoneOwner === 'RESPONSIBLE') {
+          const tenantId = db.getActiveTenantId() || '';
+          if (tenantId) {
+            SupabaseService.getPrimaryGuardianForPatient(tenantId, patient.id).then((g) => {
+              if (g) {
+                setGuardianId(g.id);
+                setGuardianName(g.name || '');
+                setGuardianRelationship(g.relationshipType || '');
+                setGuardianCpf(g.cpf ? formatCpf(g.cpf) : '');
+                setGuardianEmail(g.email || '');
+              }
+            }).catch(() => {});
+          }
+        }
       } else {
         setName(initialData?.name || '');
         setCpf(initialData?.cpf ? formatCpf(initialData.cpf) : '');
         setPhone(initialData?.phone ? maskPhoneInput(initialData.phone) : '');
         setBirthDate(initialData?.birthDate || '');
         setEmail(initialData?.email || '');
+        setPhoneOwner('PATIENT');
+        setGuardianId(undefined);
+        setGuardianName('');
+        setGuardianRelationship('');
+        setGuardianCpf('');
+        setGuardianEmail('');
       }
+      setGuardianCandidates([]);
       setErrors({});
       setIsDirty(false);
       setIsSubmitting(false);
       setShowConfirmDiscard(false);
     }
   }, [isOpen, isEdit, patient, initialData]);
+
+  // Busca responsáveis já cadastrados no tenant com o mesmo telefone/CPF
+  // informado, para reaproveitar (não duplicar responsável entre irmãos).
+  useEffect(() => {
+    if (phoneOwner !== 'RESPONSIBLE' || !isOpen) {
+      setGuardianCandidates([]);
+      return;
+    }
+    const tenantId = db.getActiveTenantId() || '';
+    const cleanPhone = phone.replace(/\D/g, '');
+    const cleanGuardianCpf = guardianCpf.replace(/\D/g, '');
+    if (!tenantId || (!cleanPhone && !cleanGuardianCpf)) {
+      setGuardianCandidates([]);
+      return;
+    }
+    const handle = setTimeout(() => {
+      SupabaseService.findGuardianCandidates(tenantId, { phone: cleanPhone, cpf: cleanGuardianCpf })
+        .then(setGuardianCandidates)
+        .catch(() => setGuardianCandidates([]));
+    }, 350);
+    return () => clearTimeout(handle);
+  }, [phoneOwner, phone, guardianCpf, isOpen]);
+
+  const applyGuardianCandidate = (g: { id: string; name: string; cpf?: string; phone?: string; email?: string }) => {
+    setGuardianId(g.id);
+    setGuardianName(g.name || '');
+    setGuardianCpf(g.cpf ? formatCpf(g.cpf) : '');
+    setGuardianEmail(g.email || '');
+    setGuardianCandidates([]);
+  };
 
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -107,6 +176,11 @@ export const PatientModal: React.FC<PatientModalProps> = ({
     const cleanPhone = phone.replace(/\D/g, '');
     if (!cleanPhone || !isValidPhone(cleanPhone)) {
       newErrors.phone = 'Informe o WhatsApp ou telefone do paciente.';
+    }
+
+    // 3b. Responsável (obrigatório apenas se o telefone for do responsável)
+    if (phoneOwner === 'RESPONSIBLE' && !guardianName.trim()) {
+      newErrors.guardianName = 'Informe o nome do responsável.';
     }
 
     // 4. Data de Nascimento (Obrigatório, formato civil YYYY-MM-DD, válida e não futura)
@@ -174,8 +248,18 @@ export const PatientModal: React.FC<PatientModalProps> = ({
       const cleanBirthDate = birthDate.trim();
       const cleanEmail = email.trim() || undefined;
 
-      // Verificação preventiva de conflito de número no WhatsApp para esta clínica
+      // Aviso preventivo (NÃO bloqueante) de telefone compartilhado com outro
+      // paciente/responsável nesta clínica. Telefone repetido é esperado e
+      // válido (irmãos usando o telefone da mãe) — ver CLAUDE.md "Guardian".
       const activeTenant = db.getActiveTenantId() || '';
+      let sharedPhoneNotice: string | null = null;
+      // Placeholder (ex.: 99999999999) tem formato válido mas não é um WhatsApp real —
+      // a trigger de banco (fn_is_placeholder_phone_local) já bloqueia a criação/atualização
+      // do df_wa_contact para esse número; aqui só avisamos o usuário do motivo (A23).
+      const placeholderPhoneNotice =
+        cleanPhone && isPlaceholderPhoneNumber(cleanPhone)
+          ? 'Este telefone parece ser um número de exemplo/placeholder e não terá um contato de WhatsApp criado automaticamente. Confirme se é o número real do paciente.'
+          : null;
       if (cleanPhone && activeTenant) {
         const conflictCheck = await DentalWhatsAppService.syncPatientToContact(
           { id: isEdit && patient ? patient.id : 'temp_check_id', name: cleanName, phone: cleanPhone, tenantId: activeTenant },
@@ -183,11 +267,15 @@ export const PatientModal: React.FC<PatientModalProps> = ({
           { dryRun: true }
         );
         if (!conflictCheck.success && conflictCheck.code === 'CONTACT_PHONE_CONFLICT') {
-          setErrors({ phone: conflictCheck.error || 'Número de telefone já vinculado a outro paciente nesta clínica.', form: conflictCheck.error });
-          setIsSubmitting(false);
-          return;
+          sharedPhoneNotice =
+            phoneOwner === 'PATIENT'
+              ? 'Este telefone já é utilizado por outros pacientes/responsáveis. Confirme se este número pertence realmente ao paciente.'
+              : 'Este telefone já é utilizado por outros pacientes/responsáveis.';
         }
       }
+
+      let savedPatientId: string | null = null;
+      let savedPatient: Patient | null = null;
 
       if (isEdit && patient) {
         // UPDATE REAL no PostgreSQL (df_patients)
@@ -195,6 +283,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
           name: cleanName,
           cpf: cleanCpf,
           phone: cleanPhone,
+          phoneOwner,
           birthDate: cleanBirthDate,
           email: cleanEmail,
         });
@@ -204,25 +293,23 @@ export const PatientModal: React.FC<PatientModalProps> = ({
           return;
         }
 
-        const updatedPatient: Patient = {
+        savedPatientId = patient.id;
+        savedPatient = {
           ...patient,
           name: cleanName,
           cpf: cleanCpf,
           phone: cleanPhone,
+          phoneOwner,
           birthDate: cleanBirthDate,
           email: cleanEmail,
         };
-
-        setIsDirty(false);
-        toast.success('Paciente atualizado com sucesso.');
-        if (onSave) onSave(updatedPatient);
-        onClose();
       } else {
         // CADASTRO NOVO (INSERT)
         const res = await db.addPatientAsync({
           name: cleanName,
           cpf: cleanCpf,
           phone: cleanPhone,
+          phoneOwner,
           birthDate: cleanBirthDate,
           email: cleanEmail,
         });
@@ -232,11 +319,38 @@ export const PatientModal: React.FC<PatientModalProps> = ({
           return;
         }
 
-        setIsDirty(false);
-        toast.success('Paciente cadastrado com sucesso.');
-        if (onSave) onSave(res.patient);
-        onClose();
+        savedPatientId = res.patient.id;
+        savedPatient = res.patient;
       }
+
+      // Responsável: cria/reaproveita e vincula como primário deste paciente.
+      if (phoneOwner === 'RESPONSIBLE' && savedPatientId && activeTenant && guardianName.trim()) {
+        const guardianRes = await SupabaseService.upsertGuardian(activeTenant, {
+          id: guardianId,
+          name: guardianName.trim(),
+          cpf: guardianCpf.replace(/\D/g, '') || undefined,
+          phone: cleanPhone,
+          email: guardianEmail.trim() || undefined,
+        });
+        if (guardianRes.success && guardianRes.id) {
+          await SupabaseService.linkGuardianToPatient(activeTenant, savedPatientId, guardianRes.id, {
+            relationshipType: guardianRelationship.trim() || undefined,
+            isPrimary: true,
+          });
+        }
+      } else if (phoneOwner === 'PATIENT' && savedPatientId && activeTenant) {
+        // Telefone voltou a ser do próprio paciente: remove o vínculo
+        // primário de responsável, se existia (nunca apaga o guardian nem
+        // afeta outros pacientes vinculados a ele).
+        await SupabaseService.unlinkPrimaryGuardianFromPatient(activeTenant, savedPatientId);
+      }
+
+      setIsDirty(false);
+      toast.success(isEdit ? 'Paciente atualizado com sucesso.' : 'Paciente cadastrado com sucesso.');
+      if (sharedPhoneNotice) toast.warning(sharedPhoneNotice, 8000);
+      if (placeholderPhoneNotice) toast.warning(placeholderPhoneNotice, 8000);
+      if (onSave && savedPatient) onSave(savedPatient);
+      onClose();
     } finally {
       setIsSubmitting(false);
     }
@@ -367,8 +481,15 @@ export const PatientModal: React.FC<PatientModalProps> = ({
             {/* WhatsApp / Telefone & E-mail */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  WhatsApp / Telefone <span className="text-rose-500">*</span>
+                <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 mb-1.5">
+                  <span>
+                    {getPhoneFieldLabel(phoneOwner)} <span className="text-rose-500">*</span>
+                  </span>
+                  {phoneOwner === 'RESPONSIBLE' && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[9px] font-bold uppercase tracking-wide">
+                      Responsável
+                    </span>
+                  )}
                 </label>
                 <div className="relative">
                   <input
@@ -384,12 +505,39 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                     }`}
                   />
                 </div>
+                {phoneOwner === 'RESPONSIBLE' && (
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Este será o telefone de contato do responsável informado abaixo.
+                  </p>
+                )}
                 {errors.phone && (
                   <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
                     <AlertCircle className="w-3 h-3 flex-shrink-0" />
                     {errors.phone}
                   </p>
                 )}
+
+                {/* Contexto do telefone: paciente ou responsável */}
+                <div className="mt-2 flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg w-fit">
+                  <button
+                    type="button"
+                    onClick={() => { setPhoneOwner('PATIENT'); setIsDirty(true); }}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer ${
+                      phoneOwner === 'PATIENT' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    Do paciente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setPhoneOwner('RESPONSIBLE'); setIsDirty(true); }}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer ${
+                      phoneOwner === 'RESPONSIBLE' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    Do responsável
+                  </button>
+                </div>
               </div>
 
               <div>
@@ -418,6 +566,90 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                 )}
               </div>
             </div>
+
+            {/* Dados do responsável (só quando o telefone é do responsável) */}
+            {phoneOwner === 'RESPONSIBLE' && (
+              <div className="p-3 bg-emerald-50/60 border border-emerald-200/70 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] font-bold text-emerald-800">Dados do responsável</p>
+                  {phone && (
+                    <p className="text-[11px] text-emerald-700">
+                      <span className="text-emerald-600/80">Telefone de contato:</span>{' '}
+                      <span className="font-mono font-semibold">{phone}</span>
+                    </p>
+                  )}
+                </div>
+
+                {guardianCandidates.length > 0 && !guardianId && (
+                  <div className="p-2 bg-white border border-emerald-200 rounded-lg space-y-1">
+                    <p className="text-[11px] text-slate-600">Responsável já cadastrado nesta clínica — reutilizar?</p>
+                    {guardianCandidates.map((g) => (
+                      <button
+                        key={g.id}
+                        type="button"
+                        onClick={() => applyGuardianCandidate(g)}
+                        className="w-full text-left px-2 py-1.5 rounded-md text-xs font-medium text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+                      >
+                        {g.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    Nome do responsável <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Maria da Silva (mãe)"
+                    value={guardianName}
+                    onChange={(e) => { setGuardianName(e.target.value); setGuardianId(undefined); setIsDirty(true); if (errors.guardianName) setErrors((prev) => ({ ...prev, guardianName: '' })); }}
+                    className={`w-full text-xs rounded-xl border p-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none transition-all ${
+                      errors.guardianName ? 'border-rose-500 ring-2 ring-rose-500/20' : 'border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20'
+                    }`}
+                  />
+                  {errors.guardianName && (
+                    <p className="text-[11px] font-medium text-rose-600 mt-1">{errors.guardianName}</p>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">Parentesco</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Mãe, Pai, Tutor"
+                      value={guardianRelationship}
+                      onChange={(e) => { setGuardianRelationship(e.target.value); setIsDirty(true); }}
+                      className="w-full text-xs rounded-xl border border-slate-200 p-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">CPF (Opcional)</label>
+                    <input
+                      type="text"
+                      placeholder="000.000.000-00"
+                      maxLength={14}
+                      value={guardianCpf}
+                      onChange={(e) => { setGuardianCpf(maskCpfInput(e.target.value)); setGuardianId(undefined); setIsDirty(true); }}
+                      className="w-full text-xs rounded-xl border border-slate-200 p-2.5 bg-white font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">E-mail do responsável (Opcional)</label>
+                  <input
+                    type="email"
+                    placeholder="exemplo@email.com"
+                    value={guardianEmail}
+                    onChange={(e) => { setGuardianEmail(e.target.value); setIsDirty(true); }}
+                    className="w-full text-xs rounded-xl border border-slate-200 p-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Footer Actions */}
             <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2.5">

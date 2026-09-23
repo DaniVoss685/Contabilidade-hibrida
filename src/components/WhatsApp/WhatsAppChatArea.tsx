@@ -52,6 +52,8 @@ import { supabase } from '../../lib/supabaseClient';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { formatPhoneDisplay, getContactDisplayName, getContactInitial, isWhatsAppGroup } from '../../lib/phoneUtils';
 import { resolveAttendantDisplayName, stripAttendantPrefixFromContent, formatAttendantAuthorLabel } from '../../lib/attendantIdentity';
+import { db } from '../../lib/db';
+import { hasPermission } from '../../lib/permissions';
 import { TransferModal } from './TransferModal';
 import { FinalizeModal } from './FinalizeModal';
 import { MediaViewerModal } from './MediaViewerModal';
@@ -108,6 +110,13 @@ interface WhatsAppChatAreaProps {
   onSelectConversation?: (conv: WhatsAppConversation) => void;
   realtimeMessageEvent?: RealtimeMessageEvent | null;
   onOpenCreatePatient?: () => void;
+  // Telefone compartilhado (mãe + filhos etc.): estado de seleção do
+  // paciente, elevado a WhatsAppMainView e compartilhado com
+  // WhatsAppContextDrawer (ver comentário em WhatsAppMainView.tsx).
+  relatedPatients?: Array<{ id: string; name: string; isPrimary: boolean }>;
+  selectedClinicalPatientId?: string | null;
+  onSelectClinicalPatient?: (patientId: string) => void;
+  effectiveClinicalPatientId?: string | null;
 }
 
 interface PendingAttachment {
@@ -131,6 +140,10 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   onSelectConversation,
   realtimeMessageEvent,
   onOpenCreatePatient,
+  relatedPatients: relatedPatientsProp,
+  selectedClinicalPatientId: selectedClinicalPatientIdProp,
+  onSelectClinicalPatient,
+  effectiveClinicalPatientId: effectiveClinicalPatientIdProp,
 }) => {
   const [timelineItems, setTimelineItems] = useState<WhatsAppTimelineItem[]>([]);
   const [loadingTimeline, setLoadingTimeline] = useState(true);
@@ -183,6 +196,8 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   const [mediaViewerUrl, setMediaViewerUrl] = useState<string | null>(null);
   const [mediaViewerName, setMediaViewerName] = useState('arquivo');
   const [mediaViewerMime, setMediaViewerMime] = useState('');
+  const [mediaViewerStoragePath, setMediaViewerStoragePath] = useState<string | null>(null);
+  const [mediaViewerMessageId, setMediaViewerMessageId] = useState<string | null>(null);
 
   // Signed URLs cache para mídias privadas
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
@@ -212,7 +227,14 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   }, [conversation.contact?.profile_pic_url]);
 
   useEffect(() => {
-    const patientId = conversation.contact?.patient_id || conversation.contact?.patient?.id;
+    // Telefone compartilhado: quando há >1 paciente vinculado ao contato, só
+    // mostra a "próxima consulta" do paciente explicitamente selecionado —
+    // nunca a do paciente primário por padrão (evitaria mostrar a consulta
+    // errada quando outro irmão está sendo atendido no mesmo número).
+    const hasAmbiguity = (relatedPatientsProp || []).length > 1;
+    const patientId = hasAmbiguity
+      ? selectedClinicalPatientIdProp || null
+      : conversation.contact?.patient_id || conversation.contact?.patient?.id;
     if (patientId && tenantId) {
       DentalWhatsAppService.getPatientNextAppointment(patientId, tenantId)
         .then((app) => setHeaderNextAppointment(app))
@@ -220,7 +242,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
     } else {
       setHeaderNextAppointment(null);
     }
-  }, [conversation.contact?.patient_id, conversation.contact?.patient?.id, tenantId]);
+  }, [conversation.contact?.patient_id, conversation.contact?.patient?.id, tenantId, relatedPatientsProp, selectedClinicalPatientIdProp]);
 
   const handleScrollToMessage = (targetId?: string | null) => {
     if (!targetId) return;
@@ -292,6 +314,24 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
 
   const contact = conversation.contact;
   const isAssignedToMe = conversation.assigned_to === currentUserId;
+
+  // Contexto para "Anexar ao prontuário": nunca disponível para grupos ou contatos sem paciente vinculado.
+  const isGroupConversation = isWhatsAppGroup(contact?.whatsapp_number);
+  const linkedPatientId = contact?.patient_id || contact?.patient?.id || null;
+  const linkedPatientName = contact?.patient?.name || contact?.name || 'Paciente';
+  const canAttachToRecord = useMemo(() => {
+    const currentUser = db.getUser();
+    return hasPermission(currentUser?.role, 'patients:manage', currentUser?.permissions, currentUser?.isPrimary);
+  }, []);
+
+  // Telefone compartilhado (mãe + filhos, etc.): estado de seleção elevado a
+  // WhatsAppMainView (compartilhado com WhatsAppContextDrawer) — nunca
+  // escolher automaticamente quando há >1 paciente vinculado (Fase 8/9 do
+  // modelo de responsável, ver CLAUDE.md "Guardian / telefone compartilhado").
+  const relatedPatients = relatedPatientsProp || [];
+  const selectedClinicalPatientId = selectedClinicalPatientIdProp ?? null;
+  const effectiveClinicalPatientId = effectiveClinicalPatientIdProp !== undefined ? effectiveClinicalPatientIdProp : linkedPatientId;
+  const setSelectedClinicalPatientId = onSelectClinicalPatient || (() => {});
 
   const isAttendanceActive = Boolean(
     conversation &&
@@ -867,6 +907,31 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
     };
   }, [conversation.id, tenantId]);
 
+  // Materializa a conversa real (df_wa_conversations) na primeira ação de escrita
+  // sobre um contato que ainda não tem nenhum atendimento (WhatsAppMainView.handleSelectContact
+  // monta um placeholder em memória com id `consult_${contact.id}` só para exibição —
+  // ver A19: "criar conversation quando necessário", nunca apenas para aparecer em Contatos).
+  // Reaproveita conversa ativa concorrente com segurança (getOrCreateActiveConversationForContact
+  // já trata a corrida via índice único + fallback). Atualiza o estado do pai para que as
+  // próximas ações (finalizar, transferir, notas, realtime) já usem o id real.
+  const ensureRealConversation = async (): Promise<WhatsAppConversation> => {
+    if (!conversation.id.startsWith('consult_')) return conversation;
+    if (!currentUserId) {
+      throw new Error('Sessão inválida: não foi possível identificar o atendente para iniciar a conversa.');
+    }
+
+    const contactId = conversation.contact_id || conversation.id.slice('consult_'.length);
+    const { conversation: realConv } = await DentalWhatsAppService.getOrCreateActiveConversationForContact({
+      tenantId,
+      contactId,
+      userId: currentUserId,
+      userName: currentUserName,
+    });
+
+    onSelectConversation?.(realConv);
+    return realConv;
+  };
+
   // Enviar Mensagem de Texto ou Nota Interna
   const handleSendText = async () => {
     if (!text.trim() || sending) return;
@@ -879,9 +944,11 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
     setSending(true);
 
     try {
+      const activeConversation = await ensureRealConversation();
+
       if (isInternalNote) {
         await DentalWhatsAppService.addInternalNote(
-          conversation.id,
+          activeConversation.id,
           tenantId,
           currentUserId,
           contentToSend
@@ -889,7 +956,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
         setIsInternalNote(false);
       } else {
         const sendRes = await DentalWhatsAppService.sendMessage({
-          conversationId: conversation.id,
+          conversationId: activeConversation.id,
           tenantId,
           senderId: currentUserId,
           content: contentToSend,
@@ -970,13 +1037,15 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
     const captionText = text.trim();
 
     try {
+      const activeConversation = await ensureRealConversation();
+
       // Envio sequencial preservando rigorosamente a ordem da fila
       for (let i = 0; i < attachmentQueue.length; i++) {
         const item = attachmentQueue[i];
         // Aplica a legenda digitada pelo usuário no primeiro anexo enviado
         const itemCaption = i === 0 ? captionText : '';
         await DentalWhatsAppService.sendMediaMessage({
-          conversationId: conversation.id,
+          conversationId: activeConversation.id,
           tenantId,
           senderId: currentUserId,
           file: item.file,
@@ -1030,8 +1099,9 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
         if (audioBlob.size > 0) {
           setSending(true);
           try {
+            const activeConversation = await ensureRealConversation();
             await DentalWhatsAppService.sendAudioMessage({
-              conversationId: conversation.id,
+              conversationId: activeConversation.id,
               tenantId,
               senderId: currentUserId,
               audioBlob,
@@ -1428,6 +1498,26 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                 </span>
               )}
             </div>
+            {relatedPatients.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap mt-1">
+                <span className="text-[10px] font-bold text-slate-500">Pacientes relacionados:</span>
+                {relatedPatients.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setSelectedClinicalPatientId(p.id)}
+                    title="Selecionar para ações clínicas (anexar documento, abrir prontuário)"
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-colors cursor-pointer ${
+                      selectedClinicalPatientId === p.id
+                        ? 'bg-emerald-600 border-emerald-600 text-white'
+                        : 'bg-white border-slate-200 text-slate-700 hover:border-emerald-300'
+                    }`}
+                  >
+                    {p.name}{p.isPrimary ? ' — Titular' : ''}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1894,6 +1984,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                                 setMediaViewerUrl(mediaUrl);
                                 setMediaViewerName(msg.media_file_name || 'foto.jpg');
                                 setMediaViewerMime('image/jpeg');
+                                setMediaViewerMessageId(msg.id);
                               }}
                             />
                           </div>
@@ -2007,11 +2098,11 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                       {msg.msg_type === 'document' && (
                         <div
                           onClick={() => {
-                            if (mediaUrl) {
-                              setMediaViewerUrl(mediaUrl);
-                              setMediaViewerName(msg.media_file_name || 'documento.pdf');
-                              setMediaViewerMime(msg.media_mime_type || 'application/pdf');
-                            }
+                            setMediaViewerUrl(mediaUrl || null);
+                            setMediaViewerStoragePath(msg.media_storage_path || null);
+                            setMediaViewerName(msg.media_file_name || 'documento.pdf');
+                            setMediaViewerMime(msg.media_mime_type || 'application/pdf');
+                            setMediaViewerMessageId(msg.id);
                           }}
                           className={`flex items-center gap-3 p-2.5 rounded-xl border mb-2 cursor-pointer transition-colors ${
                             isMine
@@ -2626,11 +2717,22 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
 
       {/* MODAL VISUALIZADOR DE MÍDIA */}
       <MediaViewerModal
-        isOpen={Boolean(mediaViewerUrl)}
-        onClose={() => setMediaViewerUrl(null)}
+        isOpen={Boolean(mediaViewerUrl || mediaViewerStoragePath)}
+        onClose={() => {
+          setMediaViewerUrl(null);
+          setMediaViewerStoragePath(null);
+          setMediaViewerMessageId(null);
+        }}
         mediaUrl={mediaViewerUrl}
+        storagePath={mediaViewerStoragePath}
+        tenantId={tenantId}
         fileName={mediaViewerName}
         mimeType={mediaViewerMime}
+        messageId={mediaViewerMessageId}
+        isGroup={isGroupConversation}
+        patientId={effectiveClinicalPatientId}
+        patientName={relatedPatients.find((p) => p.id === effectiveClinicalPatientId)?.name || linkedPatientName}
+        canAttachToRecord={canAttachToRecord}
       />
 
       {/* MODAL CONFIRMAÇÃO DE EXCLUSÃO LOCAL */}

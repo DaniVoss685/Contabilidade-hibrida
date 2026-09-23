@@ -75,6 +75,23 @@ export interface WhatsAppContact {
   } | null;
 }
 
+/**
+ * Enriquecimento da aba WhatsApp → Contatos (A3-A6/A32): reflete o modelo N:N já
+ * homologado (df_wa_contact_patients) e o modelo de responsável (df_patient_guardians),
+ * sem duplicar nenhuma das duas fontes canônicas. Um contato pode ser simultaneamente
+ * "telefone de um responsável" E "vinculado a N pacientes" (caso mais comum: mãe usando
+ * o próprio WhatsApp para os filhos) — os dois campos não são mutuamente exclusivos.
+ */
+export interface WhatsAppContactRelations {
+  patientCount: number;
+  patientNames: string[];
+  isGuardianPhone: boolean;
+  guardianName?: string;
+  guardianDependentCount?: number;
+  /** Responsável também é paciente cadastrado da clínica (df_patient_guardians.linked_patient_id). */
+  guardianIsAlsoPatient?: boolean;
+}
+
 export interface WhatsAppConversation {
   id: string;
   tenant_id: string;

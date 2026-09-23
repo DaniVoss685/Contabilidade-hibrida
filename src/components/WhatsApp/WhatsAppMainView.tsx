@@ -13,9 +13,11 @@ import {
   WhatsAppContact,
   WhatsAppChatStatus,
   WhatsAppMessage,
+  WhatsAppContactRelations,
 } from '../../types/whatsapp';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase, SupabaseService } from '../../lib/supabaseClient';
+import { db } from '../../lib/db';
 import { WhatsAppSidebar, WhatsAppTab } from './WhatsAppSidebar';
 import { WhatsAppChatArea } from './WhatsAppChatArea';
 import { WhatsAppContextDrawer } from './WhatsAppContextDrawer';
@@ -27,7 +29,7 @@ import { AppointmentModal } from '../Appointments/AppointmentModal';
 import { AppointmentDetailsModal } from '../Appointments/AppointmentDetailsModal';
 import { PatientModal } from '../Modals/PatientModal';
 import { Appointment, Patient } from '../../types';
-import { normalizeBrazilianNumber } from '../../lib/phoneUtils';
+import { normalizeBrazilianNumber, isWhatsAppGroup } from '../../lib/phoneUtils';
 
 export interface RealtimeMessageEvent {
   eventType: 'INSERT' | 'UPDATE' | 'DELETE';
@@ -61,6 +63,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   const [conversations, setConversations] = useState<WhatsAppConversation[]>([]);
   const [history, setHistory] = useState<WhatsAppConversation[]>([]);
   const [contacts, setContacts] = useState<WhatsAppContact[]>([]);
+  const [contactRelations, setContactRelations] = useState<Record<string, WhatsAppContactRelations>>({});
   const [selectedConversation, setSelectedConversation] = useState<WhatsAppConversation | null>(null);
   const selectedConversationRef = useRef<WhatsAppConversation | null>(null);
   selectedConversationRef.current = selectedConversation;
@@ -96,6 +99,47 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   const [scheduleRescheduleFrom, setScheduleRescheduleFrom] = useState<Appointment | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [detailsAppointment, setDetailsAppointment] = useState<Appointment | null>(null);
+
+  // Telefone compartilhado: quando o contato tem >1 paciente vinculado
+  // (df_wa_contact_patients), NENHUMA ação clínica pode escolher o paciente
+  // automaticamente. Este estado é o único ponto de verdade para "qual
+  // paciente está selecionado" e é compartilhado por WhatsAppChatArea e
+  // WhatsAppContextDrawer (irmãos, ambos filhos deste componente) — evita
+  // duplicar a lógica de seleção em cada um. Contexto é por conversa/contato,
+  // nunca persistido (Fase 11: seleção explícita por ação, sem "lembrar"
+  // silenciosamente entre pacientes diferentes do mesmo telefone).
+  const [relatedPatients, setRelatedPatients] = useState<Array<{ id: string; name: string; isPrimary: boolean }>>([]);
+  const [selectedClinicalPatientId, setSelectedClinicalPatientId] = useState<string | null>(null);
+  const contact = selectedConversation?.contact;
+  const isGroupConversation = isWhatsAppGroup(contact?.whatsapp_number);
+  const primaryLinkedPatientId = contact?.patient_id || contact?.patient?.id || null;
+  const effectiveClinicalPatientId = relatedPatients.length > 1 ? selectedClinicalPatientId : primaryLinkedPatientId;
+
+  useEffect(() => {
+    setSelectedClinicalPatientId(null);
+    if (!contact?.id || !tenantId || isGroupConversation) {
+      setRelatedPatients([]);
+      return;
+    }
+    let cancelled = false;
+    SupabaseService.getPatientsForWaContact(tenantId, contact.id).then((links) => {
+      if (cancelled) return;
+      if (links.length <= 1) {
+        setRelatedPatients([]);
+        return;
+      }
+      const allPatients = db.getPatients();
+      const resolved = links
+        .map((l) => {
+          const p = allPatients.find((pp) => pp.id === l.patientId);
+          return p ? { id: p.id, name: p.name, isPrimary: l.isPrimary } : null;
+        })
+        .filter((x): x is { id: string; name: string; isPrimary: boolean } => Boolean(x));
+      setRelatedPatients(resolved);
+    }).catch(() => setRelatedPatients([]));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contact?.id, tenantId, isGroupConversation]);
 
   // Modal de Cadastro/Vínculo de Paciente
   const [isPatientModalOpen, setIsPatientModalOpen] = useState(false);
@@ -145,15 +189,17 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
     if (showSpinner) setLoading(true);
 
     try {
-      const [convs, hist, ctcs] = await Promise.all([
+      const [convs, hist, ctcs, relations] = await Promise.all([
         DentalWhatsAppService.getConversations(tenantId),
         DentalWhatsAppService.getHistory(tenantId),
         DentalWhatsAppService.getContacts(tenantId),
+        DentalWhatsAppService.getContactRelations(tenantId),
       ]);
 
       setConversations(convs);
       setHistory(hist);
       setContacts(ctcs);
+      setContactRelations(relations);
 
       // Sincronizar conversa selecionada com dados atualizados
       if (selectedConversationRef.current) {
@@ -630,7 +676,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
           .from('df_wa_conversations')
           .select(`
             *,
-            contact:df_wa_contacts(*, patient:df_patients(id, name, cpf, phone, email)),
+            contact:df_wa_contacts(*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)),
             assigned_user:df_users!df_wa_conversations_assigned_to_fkey(id, name, email, role)
           `)
           .eq('tenant_id', tenantId)
@@ -758,6 +804,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                 conversations={conversations}
                 history={history}
                 contacts={contacts}
+                contactRelations={contactRelations}
                 selectedConversationId={selectedConversation?.id}
                 onSelectConversation={(conv) => {
                   consumedInitialConvRef.current = conv.id;
@@ -793,6 +840,10 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                   onSelectConversation={(conv) => setSelectedConversation(conv)}
                   realtimeMessageEvent={activeChatRealtimeEvent}
                   onOpenCreatePatient={handleOpenCreatePatient}
+                  relatedPatients={relatedPatients}
+                  selectedClinicalPatientId={selectedClinicalPatientId}
+                  onSelectClinicalPatient={setSelectedClinicalPatientId}
+                  effectiveClinicalPatientId={effectiveClinicalPatientId}
                 />
 
                 {/* Gaveta de Contexto do Atendimento */}
@@ -807,6 +858,10 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                   onOpenPatientModal={handleOpenCreatePatient}
                   onNoteAdded={() => loadConversations(false)}
                   onNavigateToAgenda={onNavigateToAgenda}
+                  relatedPatients={relatedPatients}
+                  selectedClinicalPatientId={selectedClinicalPatientId}
+                  onSelectClinicalPatient={setSelectedClinicalPatientId}
+                  effectiveClinicalPatientId={effectiveClinicalPatientId}
                   onOpenScheduleModal={(patId) => {
                     setSchedulePatientId(patId);
                     setScheduleRescheduleFrom(null);

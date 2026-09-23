@@ -15,10 +15,11 @@ import {
   RefreshCw,
   Archive,
 } from 'lucide-react';
-import { WhatsAppConversation, WhatsAppContact } from '../../types/whatsapp';
+import { WhatsAppConversation, WhatsAppContact, WhatsAppContactRelations } from '../../types/whatsapp';
 import { formatPhoneDisplay, getContactDisplayName, getContactInitial, isWhatsAppGroup } from '../../lib/phoneUtils';
 import { resolveAttendantDisplayName } from '../../lib/attendantIdentity';
 import { getRoleLabel, hasPermission } from '../../lib/permissions';
+import { filterContacts, getContactTags, getContactDisplayNameForList } from '../../lib/contactsFilter';
 
 function formatMessageTime(dateStr?: string | null): string {
   if (!dateStr) return '';
@@ -44,6 +45,7 @@ interface WhatsAppSidebarProps {
   conversations: WhatsAppConversation[];
   history: WhatsAppConversation[];
   contacts: WhatsAppContact[];
+  contactRelations?: Record<string, WhatsAppContactRelations>;
   selectedConversationId?: string | null;
   onSelectConversation: (conv: WhatsAppConversation) => void;
   onSelectContact: (contact: WhatsAppContact) => void;
@@ -61,6 +63,7 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
   conversations,
   history,
   contacts,
+  contactRelations = {},
   selectedConversationId,
   onSelectConversation,
   onSelectContact,
@@ -171,12 +174,7 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
     return timeB - timeA;
   });
 
-  const filteredContacts = contacts.filter((ctc) => {
-    if (!search.trim()) return true;
-    const term = search.toLowerCase();
-    const displayName = getContactDisplayName(ctc).toLowerCase();
-    return displayName.includes(term) || ctc.whatsapp_number.includes(term);
-  });
+  const filteredContacts = filterContacts(contacts, search, contactRelations);
 
   // Limpeza de Badges Redundantes:
   // - "Transferido": NUNCA renderizar (transferência é evento interno da timeline)
@@ -258,7 +256,10 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
       {/* Tabs — ORDEM OBRIGATÓRIA: Em Atendimento > Em Fila > Contatos > Histórico */}
       <div className="flex items-center border-b border-slate-200 px-3 pt-2 bg-slate-50/30 overflow-x-auto shrink-0">
         <button
-          onClick={() => onChangeTab('em_atendimento')}
+          onClick={() => {
+            setSearch('');
+            onChangeTab('em_atendimento');
+          }}
           className={`pb-2.5 px-2.5 text-xs font-semibold border-b-2 cursor-pointer transition-colors shrink-0 flex items-center gap-1 ${
             activeTab === 'em_atendimento'
               ? 'border-emerald-600 text-emerald-700'
@@ -274,7 +275,10 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
         </button>
 
         <button
-          onClick={() => onChangeTab('em_fila')}
+          onClick={() => {
+            setSearch('');
+            onChangeTab('em_fila');
+          }}
           className={`pb-2.5 px-2.5 text-xs font-semibold border-b-2 cursor-pointer transition-colors shrink-0 flex items-center gap-1 ${
             activeTab === 'em_fila'
               ? 'border-emerald-600 text-emerald-700'
@@ -290,7 +294,10 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
         </button>
 
         <button
-          onClick={() => onChangeTab('contatos')}
+          onClick={() => {
+            setSearch('');
+            onChangeTab('contatos');
+          }}
           className={`pb-2.5 px-2.5 text-xs font-semibold border-b-2 cursor-pointer transition-colors shrink-0 ${
             activeTab === 'contatos'
               ? 'border-emerald-600 text-emerald-700'
@@ -301,7 +308,10 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
         </button>
 
         <button
-          onClick={() => onChangeTab('historico')}
+          onClick={() => {
+            setSearch('');
+            onChangeTab('historico');
+          }}
           className={`pb-2.5 px-2.5 text-xs font-semibold border-b-2 cursor-pointer transition-colors shrink-0 ${
             activeTab === 'historico'
               ? 'border-emerald-600 text-emerald-700'
@@ -484,7 +494,11 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
           filteredContacts.length === 0 ? (
             <div className="p-8 text-center text-xs text-slate-400">Nenhum contato encontrado.</div>
           ) : (
-            filteredContacts.map((ctc) => (
+            filteredContacts.map((ctc) => {
+              const relation = contactRelations[ctc.id];
+              const displayName = getContactDisplayNameForList(ctc, relation);
+              const initial = displayName.replace(/[^\p{L}\p{N}]/gu, '').charAt(0).toUpperCase() || 'C';
+              return (
               <div
                 key={ctc.id}
                 onClick={() => onSelectContact(ctc)}
@@ -494,31 +508,39 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm overflow-hidden border border-slate-200 shrink-0">
                     {ctc.profile_pic_url ? (
-                      <img src={ctc.profile_pic_url} alt={getContactDisplayName(ctc)} className="w-full h-full object-cover" />
+                      <img src={ctc.profile_pic_url} alt={displayName} className="w-full h-full object-cover" />
                     ) : (
-                      <span>{getContactInitial(ctc)}</span>
+                      <span>{initial}</span>
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-xs font-semibold text-slate-800 truncate">{getContactDisplayName(ctc)}</p>
-                      {isWhatsAppGroup(ctc.whatsapp_number) ? (
-                        <span className="px-1.5 py-0.2 rounded-full bg-purple-100 text-purple-800 text-[9px] font-bold shrink-0">
-                          Grupo
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <p className="text-xs font-semibold text-slate-800 truncate">{displayName}</p>
+                      {getContactTags(ctc, relation).map((tag) => (
+                        <span
+                          key={tag.label}
+                          className={`px-1.5 py-0.2 rounded-full text-[9px] font-bold shrink-0 ${
+                            tag.variant === 'group'
+                              ? 'bg-purple-100 text-purple-800'
+                              : tag.variant === 'patient'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : tag.variant === 'guardian'
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {tag.label}
                         </span>
-                      ) : ctc.patient || ctc.patient_id ? (
-                        <span className="px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 text-[9px] font-bold shrink-0">
-                          Paciente
-                        </span>
-                      ) : (
-                        <span className="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 text-[9px] font-bold shrink-0">
-                          Não cadastrado
-                        </span>
-                      )}
+                      ))}
                     </div>
                     <p className="text-[11px] text-slate-400 font-mono truncate">
                       {formatPhoneDisplay(ctc.whatsapp_number)}
                     </p>
+                    {relation?.isGuardianPhone && relation.patientNames.length > 0 && (
+                      <p className="text-[10px] text-slate-400 truncate">
+                        Responsável por: {relation.patientNames.join(', ')}
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -526,7 +548,8 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
                   <MessageSquare className="w-3.5 h-3.5" />
                 </div>
               </div>
-            ))
+              );
+            })
           )
         ) : // ABA DE CONVERSAS (Em Atendimento, Em Fila, Histórico)
         listToDisplay.length === 0 ? (
