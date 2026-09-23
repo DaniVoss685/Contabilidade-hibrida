@@ -5,6 +5,11 @@ import {
   formatDateBr,
   isValidCivilDate,
 } from './masks';
+import { formatPaymentMethodName } from './paymentMethodFormat';
+
+// Reexportado para não quebrar imports existentes (ex.: PatientProcedureModal.tsx)
+// — a definição canônica agora vive em src/lib/paymentMethodFormat.ts.
+export { formatPaymentMethodName };
 
 export interface PatientPaymentBehavior {
   mostUsedPaymentMethod: string; // Ex: "PIX", "Cartão de Crédito" ou "—"
@@ -38,26 +43,6 @@ export interface EnhancedSaleHistoryItem {
   timelinessLabel: string;
   timelinessVariant: 'success' | 'warning' | 'danger' | 'neutral';
   nfseOrReceiptSummary: string;
-}
-
-export function formatPaymentMethodName(method?: PaymentMethod | string | null): string {
-  if (!method) return '—';
-  switch (method) {
-    case 'PIX':
-      return 'PIX';
-    case 'CARTAO_CREDITO':
-      return 'Cartão de Crédito';
-    case 'CARTAO_DEBITO':
-      return 'Cartão de Débito';
-    case 'DINHEIRO':
-      return 'Dinheiro';
-    case 'TRANSFERENCIA':
-      return 'Transferência';
-    case 'BOLETO':
-      return 'Boleto';
-    default:
-      return String(method);
-  }
 }
 
 /**

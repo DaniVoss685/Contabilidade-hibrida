@@ -1,4 +1,6 @@
 // Export utilities for CSV / spreadsheets
+import * as XLSX from 'xlsx';
+import { Patient } from '../types';
 
 export function exportToCsv(filename: string, rows: (string | number)[][]): void {
   const processRow = (row: (string | number)[]) => {
@@ -22,3 +24,57 @@ export function exportToCsv(filename: string, rows: (string | number)[][]): void
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+export function exportToXlsx(filename: string, sheetName: string, rows: (string | number)[][]): void {
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX.writeFile(wb, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`);
+}
+
+export function formatPatientsForExport(patients: Patient[]): (string | number)[][] {
+  const headers = [
+    'ID',
+    'Nome Completo',
+    'CPF',
+    'Telefone / WhatsApp',
+    'E-mail',
+    'Data de Nascimento',
+    'Cidade',
+    'UF',
+    'Alergias',
+    'Condições Médicas',
+    'Medicamentos em Uso',
+    'Observações Clínicas',
+    'Data de Cadastro',
+  ];
+
+  const rows = patients.map((p) => [
+    p.id,
+    p.name || '',
+    p.cpf || '',
+    p.phone || '',
+    p.email || '',
+    p.birthDate || '',
+    p.city || '',
+    p.state || '',
+    (p.allergies || []).join(', '),
+    (p.conditions || []).join(', '),
+    (p.medications || []).join(', '),
+    p.clinicalNotes || '',
+    p.createdAt ? p.createdAt.split('T')[0] : '',
+  ]);
+
+  return [headers, ...rows];
+}
+
+export function exportPatientsToCsv(patients: Patient[], filename: string = 'pacientes_dental_finance.csv'): void {
+  const rows = formatPatientsForExport(patients);
+  exportToCsv(filename, rows);
+}
+
+export function exportPatientsToXlsx(patients: Patient[], filename: string = 'pacientes_dental_finance.xlsx'): void {
+  const rows = formatPatientsForExport(patients);
+  exportToXlsx(filename, 'Pacientes', rows);
+}
+

@@ -24,7 +24,8 @@ import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { ProcedureModal } from '../Modals/ProcedureModal';
 import { SuppliesView } from '../Supplies/SuppliesView';
-import { CustomSelect, ConfirmDialog, useToast } from '../UI';
+import { CustomSelect, ConfirmDialog, useToast, SortableHeader } from '../UI';
+import { useSortableData } from '../../hooks/useSortableData';
 
 interface ProceduresViewProps {
   procedures: DentalProcedure[];
@@ -84,6 +85,24 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
     });
   }, [procedures, searchTerm, selectedCategory]);
 
+  const {
+    sortedItems: displayProcedures,
+    sortKey,
+    sortDirection,
+    handleSort,
+  } = useSortableData(filteredProcedures, {
+    customComparators: {
+      directCost: (a, b) => (a.totalDirectCost || 0) - (b.totalDirectCost || 0),
+      defaultPrice: (a, b) => (a.defaultPrice || 0) - (b.defaultPrice || 0),
+      netProfit: (a, b) => ((a.defaultPrice || 0) - (a.totalDirectCost || 0)) - ((b.defaultPrice || 0) - (b.totalDirectCost || 0)),
+      markupMargin: (a, b) => {
+        const mA = safeMargin(a.defaultPrice || 0, a.totalDirectCost || 0);
+        const mB = safeMargin(b.defaultPrice || 0, b.totalDirectCost || 0);
+        return (mA.status === 'OK' ? mA.marginPercent : -999) - (mB.status === 'OK' ? mB.marginPercent : -999);
+      },
+    },
+  });
+
   // Key KPI Metrics
   const metrics = useMemo(() => {
     const count = procedures.length;
@@ -105,10 +124,10 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
 
   // Bulk Selection Handlers
   const handleSelectAll = () => {
-    if (selectedIds.size === filteredProcedures.length && filteredProcedures.length > 0) {
+    if (selectedIds.size === displayProcedures.length && displayProcedures.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredProcedures.map((p) => p.id)));
+      setSelectedIds(new Set(displayProcedures.map((p) => p.id)));
     }
   };
 
@@ -459,25 +478,74 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4">Código / Procedimento</th>
-                <th className="py-3 px-4">Especialidade</th>
-                <th className="py-3 px-4 text-center">Tempo Clínico</th>
-                <th className="py-3 px-4 text-right">Custo Direto</th>
-                <th className="py-3 px-4 text-right">Preço de Tabela</th>
-                <th className="py-3 px-4 text-center">Margem Lucro</th>
-                <th className="py-3 px-4 text-right">Lucro Líquido</th>
+                <SortableHeader
+                  label="Código / Procedimento"
+                  sortKey="name"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="left"
+                />
+                <SortableHeader
+                  label="Especialidade"
+                  sortKey="category"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="left"
+                />
+                <SortableHeader
+                  label="Tempo Clínico"
+                  sortKey="estimatedTimeMinutes"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Custo Direto"
+                  sortKey="directCost"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="right"
+                />
+                <SortableHeader
+                  label="Preço de Tabela"
+                  sortKey="defaultPrice"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="right"
+                />
+                <SortableHeader
+                  label="Margem Lucro"
+                  sortKey="markupMargin"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Lucro Líquido"
+                  sortKey="netProfit"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="right"
+                />
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
-              {filteredProcedures.length === 0 ? (
+              {displayProcedures.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-8 text-center text-slate-400">
                     Nenhum procedimento encontrado. Clique em "+ NOVO PROCEDIMENTO" para cadastrar.
                   </td>
                 </tr>
               ) : (
-                filteredProcedures.map((proc) => {
+                displayProcedures.map((proc) => {
                   const isSelected = selectedIds.has(proc.id);
                   const marginInfo = safeMargin(proc.defaultPrice, proc.totalDirectCost);
                   const profitBrl = proc.defaultPrice - proc.totalDirectCost;

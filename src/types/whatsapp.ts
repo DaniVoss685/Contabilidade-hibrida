@@ -23,7 +23,7 @@ export type WhatsAppMessageType =
 
 export type WhatsAppPriority = 'baixa' | 'media' | 'alta';
 
-export type WhatsAppDeliveryStatus = 1 | 2 | 3 | 4 | 5; // 1: PENDING, 2: SERVER_ACK, 3: DELIVERY_ACK, 4: READ, 5: PLAYED
+export type WhatsAppDeliveryStatus = 0 | 1 | 2 | 3 | 4 | 5; // 0: FAILED, 1: PENDING, 2: SERVER_ACK, 3: DELIVERY_ACK, 4: READ, 5: PLAYED
 
 export interface WhatsAppReaction {
   text: string;

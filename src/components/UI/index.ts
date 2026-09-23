@@ -21,3 +21,4 @@ export * from './SuccessDialog';
 export * from './Slider';
 export * from './TimePicker';
 export * from './Switch';
+export * from './SortableHeader';

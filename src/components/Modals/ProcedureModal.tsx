@@ -71,7 +71,6 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
   initialProcedure,
 }) => {
   const toast = useToast();
-  if (!isOpen) return null;
 
   // Catalog inputs from database (reactive)
   const [catalogVersion, setCatalogVersion] = useState(0);
@@ -259,6 +258,8 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
       description: `R$ ${inp.unitCost.toFixed(inp.unitCost < 0.1 ? 3 : 2)} por ${inp.usageUnit}`,
     })),
   ];
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 backdrop-blur-xs flex items-center justify-center p-4">

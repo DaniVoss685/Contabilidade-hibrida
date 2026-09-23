@@ -478,13 +478,16 @@ function AppContent() {
   }, [filteredReceivables]);
 
   // Pending and Alert Counters
+  // documentRequested === false: paciente não solicitou recibo/documento —
+  // não é uma pendência operacional real, nunca deve contar aqui (não altera
+  // classificação fiscal, só suprime o alerta de "documento pendente").
   const pendingReceitaSaudeCount = sales
     .filter((s) => s.taxOrigin === 'CPF')
     .reduce((acc, sale) => {
       return (
         acc +
         sale.installments.filter(
-          (i) => i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO'
+          (i) => i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO' && i.documentRequested !== false
         ).length
       );
     }, 0);

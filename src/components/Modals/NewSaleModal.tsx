@@ -48,8 +48,6 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   initialPatientId,
 }) => {
   const toast = useToast();
-  if (!isOpen) return null;
-
   const isEditing = Boolean(saleToEdit);
 
   // 1. Mandatory First Field: ORIGEM TRIBUTÁRIA
@@ -575,6 +573,8 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
     { value: 'A_EMITIR', label: 'NFS-e a Emitir' },
     { value: 'CANCELADA', label: 'Cancelada' },
   ];
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">

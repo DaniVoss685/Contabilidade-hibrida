@@ -29,19 +29,18 @@ export const EditReceivableModal: React.FC<EditReceivableModalProps> = ({
   onOpenEditSale,
 }) => {
   const toast = useToast();
-  if (!isOpen || !item) return null;
 
-  const [value, setValue] = useState<number>(item.value);
-  const [dueDate, setDueDate] = useState<string>(item.dueDate);
-  const [taxOrigin, setTaxOrigin] = useState<TaxOrigin>(item.taxOrigin);
-  const [status, setStatus] = useState<InstallmentStatus>(item.status);
+  const [value, setValue] = useState<number>(item?.value || 0);
+  const [dueDate, setDueDate] = useState<string>(item?.dueDate || '');
+  const [taxOrigin, setTaxOrigin] = useState<TaxOrigin>(item?.taxOrigin || 'CPF');
+  const [status, setStatus] = useState<InstallmentStatus>(item?.status || 'A_VENCER');
   const [paymentDate, setPaymentDate] = useState<string>(
-    item.paymentDate || new Date().toISOString().split('T')[0]
+    item?.paymentDate || new Date().toISOString().split('T')[0]
   );
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(item.paymentMethod || 'PIX');
-  const [bankAccountId, setBankAccountId] = useState<string>(item.bankAccountId || 'bank_01');
-  const [receitaSaudeId, setReceitaSaudeId] = useState<string>(item.receitaSaudeId || '');
-  const [nfseNumber, setNfseNumber] = useState<string>(item.nfseNumber || '');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(item?.paymentMethod || 'PIX');
+  const [bankAccountId, setBankAccountId] = useState<string>(item?.bankAccountId || 'bank_01');
+  const [receitaSaudeId, setReceitaSaudeId] = useState<string>(item?.receitaSaudeId || '');
+  const [nfseNumber, setNfseNumber] = useState<string>(item?.nfseNumber || '');
 
   const bankAccounts = db.getBankAccounts();
 
@@ -121,6 +120,8 @@ export const EditReceivableModal: React.FC<EditReceivableModalProps> = ({
       toast.error('Não foi possível atualizar a parcela. Verifique se a receita ainda existe.');
     }
   };
+
+  if (!isOpen || !item) return null;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 backdrop-blur-xs flex items-center justify-center p-4">

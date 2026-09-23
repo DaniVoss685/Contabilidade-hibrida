@@ -586,29 +586,45 @@ Deno.serve(async (req) => {
 
         // Prioridade 2: Sem reply, mas resposta claramente afirmativa com contexto seguro (SOMENTE INDIVÍDUOS, NUNCA GRUPOS)
         if (!isGroup && !matchedAppointmentId && responseClassification === 'AFFIRMATIVE' && !isFromMe) {
-          let patId = existingContact?.patient_id;
-          if (!patId) {
+          // Telefone compartilhado: um contato WhatsApp pode ter vários
+          // pacientes vinculados (mãe + filhos no mesmo número). A regra de
+          // segurança de "exatamente 1 consulta pendente" precisa considerar
+          // TODOS os pacientes do contato, não só o patient_id primário —
+          // senão uma resposta "Sim" da mãe poderia confirmar a consulta
+          // errada quando ela e um filho têm consultas pendentes distintas.
+          const linkedPatientIds = new Set<string>();
+          if (existingContact?.patient_id) linkedPatientIds.add(existingContact.patient_id);
+          const { data: contactPatientLinks } = await supabase
+            .from('df_wa_contact_patients')
+            .select('patient_id')
+            .eq('tenant_id', tenantId)
+            .eq('contact_id', contactId);
+          for (const row of contactPatientLinks || []) {
+            if (row.patient_id) linkedPatientIds.add(row.patient_id);
+          }
+          if (linkedPatientIds.size === 0) {
             const { data: cRow } = await supabase
               .from('df_wa_contacts')
               .select('patient_id')
               .eq('id', contactId)
               .maybeSingle();
-            patId = cRow?.patient_id;
+            if (cRow?.patient_id) linkedPatientIds.add(cRow.patient_id);
           }
 
-          if (patId) {
+          if (linkedPatientIds.size > 0) {
             const todayStr = new Date().toISOString().split('T')[0];
             const { data: pendingApts } = await supabase
               .from('df_appointments')
-              .select('id, date, start_time, status')
+              .select('id, date, start_time, status, patient_id')
               .eq('tenant_id', tenantId)
-              .eq('patient_id', patId)
+              .in('patient_id', Array.from(linkedPatientIds))
               .gte('date', todayStr)
               .in('status', ['PENDENTE', 'AGENDADA', 'AGUARDANDO'])
               .order('date', { ascending: true })
               .order('start_time', { ascending: true });
 
-            // REGRA DE SEGURANÇA: Somente se houver EXATAMENTE UMA consulta pendente
+            // REGRA DE SEGURANÇA: Somente se houver EXATAMENTE UMA consulta
+            // pendente entre TODOS os pacientes vinculados a este número.
             if (pendingApts && pendingApts.length === 1) {
               const candidate = pendingApts[0];
 
@@ -639,7 +655,7 @@ Deno.serve(async (req) => {
               }
             } else if (pendingApts && pendingApts.length > 1) {
               console.log(
-                `[Dental Webhook] Ambiguidade: paciente ${patId} tem ${pendingApts.length} consultas pendentes. Automação bloqueada.`
+                `[Dental Webhook] Ambiguidade: contato ${contactId} (pacientes ${Array.from(linkedPatientIds).join(', ')}) tem ${pendingApts.length} consultas pendentes no total. Automação bloqueada — resposta não confirma nenhuma consulta automaticamente.`
               );
             }
           }
@@ -828,7 +844,13 @@ Deno.serve(async (req) => {
         // 6.5 NOTIFICAÇÃO GLOBAL IN-APP & WEB PUSH (Para mensagens recebidas que não sejam automação da agenda)
         if (!isFromMe && !isConfirmedAction) {
           const finalMsgDbId = savedMsg?.id || messageId;
-          const notifId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          // Id determinístico por tenant+evolution_msg_id (NUNCA aleatório): garante que
+          // reentregas do mesmo webhook pela Evolution (retry de rede, reconexão) colidam
+          // na mesma linha via onConflict abaixo, em vez de criar uma notificação nova a
+          // cada tentativa. Bug real encontrado nesta sessão: algumas mensagens tinham até
+          // 10 notificações duplicadas (mesmo evolution_msg_id), porque o id anterior era
+          // gerado com Date.now()+random e nunca colidia com onConflict: 'id'.
+          const notifId = `notif_${tenantId}_${evolutionMsgId}`;
           const targetUserId = activeConv?.assigned_to || null;
 
           // Formatar preview amigável do conteúdo
@@ -862,9 +884,13 @@ Deno.serve(async (req) => {
 
           const notifTitle = isGroup ? `[Grupo] ${contactDisplayName}` : contactDisplayName;
 
-          // Inserir notificação persistente em df_notifications (idempotente por message_id)
+          // Inserir notificação persistente em df_notifications (idempotente por
+          // tenant+evolution_msg_id via id determinístico). .select() + ignoreDuplicates
+          // faz o Postgres devolver 0 linhas quando já existia (reentrega de webhook) —
+          // usado abaixo para NUNCA disparar Web Push duplicado para a mesma mensagem.
+          let notificationIsNew = true;
           try {
-            await supabase
+            const { data: insertedNotif, error: notifErr } = await supabase
               .from('df_notifications')
               .upsert(
                 {
@@ -894,41 +920,51 @@ Deno.serve(async (req) => {
                   onConflict: 'id',
                   ignoreDuplicates: true,
                 }
-              );
+              )
+              .select('id');
+
+            if (notifErr) {
+              console.warn('[Dental Webhook] Aviso ao persistir notificação:', notifErr.message);
+            } else {
+              notificationIsNew = Array.isArray(insertedNotif) && insertedNotif.length > 0;
+            }
           } catch (notifErr: any) {
             console.warn('[Dental Webhook] Aviso ao persistir notificação:', notifErr.message);
           }
 
           // Disparo assíncrono de Web Push para os dispositivos registrados
-          try {
-            fetch(`${supabaseUrl}/functions/v1/dental-whatsapp-api`, {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${supabaseServiceKey}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                action: 'send_push_notification',
-                tenant_id: tenantId,
-                user_id: targetUserId,
-                title: notifTitle,
-                body: notificationPreview,
-                icon: existingContact?.profile_pic_url || '/icon-192.png',
-                badge: '/favicon-32x32.png',
-                tag: `wa_${tenantId}_${conversationId || whatsappNumber}`,
-                data: {
-                  url: `/whatsapp?conversationId=${conversationId || ''}&contactId=${contactId}&tenantId=${tenantId}`,
-                  conversationId: conversationId,
-                  contactId: contactId,
-                  tenantId: tenantId,
-                  messageId: finalMsgDbId,
+          // (só na primeira entrega real do webhook para esta mensagem — nunca em reentregas)
+          if (notificationIsNew) {
+            try {
+              fetch(`${supabaseUrl}/functions/v1/dental-whatsapp-api`, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${supabaseServiceKey}`,
+                  'Content-Type': 'application/json',
                 },
-              }),
-            }).catch((pErr: any) => {
-              console.warn('[Dental Webhook] Falha silenciosa no envio do push:', pErr.message);
-            });
-          } catch (pushEx) {
-            // Não interrompe o processamento do webhook
+                body: JSON.stringify({
+                  action: 'send_push_notification',
+                  tenant_id: tenantId,
+                  user_id: targetUserId,
+                  title: notifTitle,
+                  body: notificationPreview,
+                  icon: existingContact?.profile_pic_url || '/icon-192.png',
+                  badge: '/favicon-32x32.png',
+                  tag: `wa_${tenantId}_${conversationId || whatsappNumber}`,
+                  data: {
+                    url: `/whatsapp?conversationId=${conversationId || ''}&contactId=${contactId}&tenantId=${tenantId}`,
+                    conversationId: conversationId,
+                    contactId: contactId,
+                    tenantId: tenantId,
+                    messageId: finalMsgDbId,
+                  },
+                }),
+              }).catch((pErr: any) => {
+                console.warn('[Dental Webhook] Falha silenciosa no envio do push:', pErr.message);
+              });
+            } catch (pushEx) {
+              // Não interrompe o processamento do webhook
+            }
           }
         }
 

@@ -34,6 +34,11 @@ import {
   FiscalSourceType,
   FiscalTotalSnapshot,
   TenantAuthStatus,
+  ClinicalRecord,
+  ClinicalAttachment,
+  ClinicalBeforeAfterPair,
+  ClinicalRecordAmendment,
+  FiscalClassification,
 } from '../types';
 import {
   DEMO_ORGANIZATION,
@@ -48,6 +53,11 @@ import {
   DEMO_CLINICAL_INPUTS,
   DEMO_APPOINTMENTS,
 } from './demoData';
+import {
+  DEMO_CLINICAL_RECORDS,
+  DEMO_CLINICAL_ATTACHMENTS,
+  DEMO_BEFORE_AFTER_PAIRS,
+} from './demoClinicalData';
 import { INITIAL_CHART_OF_ACCOUNTS } from './chartOfAccountsData';
 import {
   DEFAULT_TAX_RULES_PF,
@@ -62,6 +72,7 @@ import { augmentYearlyDataset } from './annualFinanceData';
 import { hashPassword, verifyPassword, generateSalt } from './authCrypto';
 import { isValidEmail } from './masks';
 import { getTodayCivilDate, getEffectiveReceivableStatus, getEffectivePayableStatus } from './statusHelper';
+import { validateFiscalClassificationChange } from './fiscalClassification';
 import { SupabaseService, supabase, getRecoveryRedirectUrl } from './supabaseClient';
 
 export const GLOBAL_STORAGE_KEYS = {
@@ -123,6 +134,9 @@ const STORAGE_KEYS = {
   FISCAL_SCENARIOS: 'df_fiscal_scenarios_v1',
   APPOINTMENTS: 'df_appointments_v1',
   SYSTEM_PREFERENCES: 'df_preferences_v1',
+  CLINICAL_RECORDS: 'df_clinical_records_v1',
+  CLINICAL_ATTACHMENTS: 'df_clinical_attachments_v1',
+  CLINICAL_BEFORE_AFTER: 'df_clinical_before_after_v1',
 };
 
 let globalActiveTenantId = 'tenant_demo';
@@ -508,6 +522,9 @@ export class DentalFinanceDB {
   private clinicalInputs!: ClinicalInput[];
   private fiscalScenarios!: SavedFiscalScenario[];
   private appointments!: Appointment[];
+  private clinicalRecords!: ClinicalRecord[];
+  private clinicalAttachments!: ClinicalAttachment[];
+  private beforeAfterPairs!: ClinicalBeforeAfterPair[];
   private preferences!: SystemPreferences;
   private fiscalParameters!: FiscalParameter[];
   private listeners: (() => void)[] = [];
@@ -832,6 +849,26 @@ export class DentalFinanceDB {
           this.appointments = res.appointments;
           saveItem(STORAGE_KEYS.APPOINTMENTS, this.appointments, tenantId);
         }
+        // Hidratação clínica assíncrona
+        try {
+          const dbClinical = await SupabaseService.getClinicalRecords(tenantId);
+          if (dbClinical.data) {
+            this.clinicalRecords = dbClinical.data;
+            saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, tenantId);
+          }
+          const dbAtts = await SupabaseService.getClinicalAttachments(tenantId);
+          if (dbAtts.data) {
+            this.clinicalAttachments = dbAtts.data;
+            saveItem(STORAGE_KEYS.CLINICAL_ATTACHMENTS, this.clinicalAttachments, tenantId);
+          }
+          const dbPairs = await SupabaseService.getBeforeAfterPairs(tenantId);
+          if (dbPairs.data) {
+            this.beforeAfterPairs = dbPairs.data;
+            saveItem(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, this.beforeAfterPairs, tenantId);
+          }
+        } catch (clinicalHydrateErr) {
+          console.warn('[Clinical] Erro ao carregar registros clínicos do Supabase:', clinicalHydrateErr);
+        }
         if (res.preferences) {
           this.preferences = res.preferences;
           saveItem(STORAGE_KEYS.SYSTEM_PREFERENCES, this.preferences, tenantId);
@@ -896,6 +933,9 @@ export class DentalFinanceDB {
       this.clinicalInputs = loadItem<ClinicalInput[]>(STORAGE_KEYS.CLINICAL_INPUTS, DEMO_CLINICAL_INPUTS, tenantId);
       this.fiscalScenarios = loadItem<SavedFiscalScenario[]>(STORAGE_KEYS.FISCAL_SCENARIOS, DEFAULT_FISCAL_SCENARIOS, tenantId);
       this.appointments = loadItem<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, DEMO_APPOINTMENTS, tenantId);
+      this.clinicalRecords = loadItem<ClinicalRecord[]>(STORAGE_KEYS.CLINICAL_RECORDS, DEMO_CLINICAL_RECORDS, tenantId);
+      this.clinicalAttachments = loadItem<ClinicalAttachment[]>(STORAGE_KEYS.CLINICAL_ATTACHMENTS, DEMO_CLINICAL_ATTACHMENTS, tenantId);
+      this.beforeAfterPairs = loadItem<ClinicalBeforeAfterPair[]>(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, DEMO_BEFORE_AFTER_PAIRS, tenantId);
       this.auditLogs = loadItem<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, [
         {
           id: 'log_01',
@@ -981,6 +1021,9 @@ export class DentalFinanceDB {
       this.clinicalInputs = loadItem<ClinicalInput[]>(STORAGE_KEYS.CLINICAL_INPUTS, [], tenantId);
       this.fiscalScenarios = loadItem<SavedFiscalScenario[]>(STORAGE_KEYS.FISCAL_SCENARIOS, [], tenantId);
       this.appointments = loadItem<Appointment[]>(STORAGE_KEYS.APPOINTMENTS, [], tenantId);
+      this.clinicalRecords = loadItem<ClinicalRecord[]>(STORAGE_KEYS.CLINICAL_RECORDS, [], tenantId);
+      this.clinicalAttachments = loadItem<ClinicalAttachment[]>(STORAGE_KEYS.CLINICAL_ATTACHMENTS, [], tenantId);
+      this.beforeAfterPairs = loadItem<ClinicalBeforeAfterPair[]>(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, [], tenantId);
       this.preferences = loadItem<SystemPreferences>(
         STORAGE_KEYS.SYSTEM_PREFERENCES,
         { hideCpf: false, alertFatorR: true, alertDueDates: true, operationalReminders: true },
@@ -2212,6 +2255,9 @@ export class DentalFinanceDB {
     saveItem(STORAGE_KEYS.PAYROLL_HISTORY, [], tenantId);
     saveItem(STORAGE_KEYS.FISCAL_SCENARIOS, [], tenantId);
     saveItem(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, [], tenantId);
+    saveItem(STORAGE_KEYS.CLINICAL_ATTACHMENTS, [], tenantId);
+    saveItem(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, [], tenantId);
 
     if (this.activeTenantId === tenantId) {
       this.loadTenant(tenantId, false);
@@ -2594,12 +2640,19 @@ export class DentalFinanceDB {
           todayStr
         );
 
+        // documentRequested === false: paciente não solicitou recibo/documento
+        // (hoje só usado para DINHEIRO) — nenhum alerta operacional de
+        // "documento pendente" deve aparecer. O valor permanece integralmente
+        // em Receitas Efetivadas/faturamento; isto NUNCA altera
+        // fiscalClassification (campo separado, sem acoplamento).
         const docSummary =
           sale.taxOrigin === 'CPF'
             ? inst.status !== 'RECEBIDO'
               ? 'Receita Saúde (A Emitir)'
               : inst.receitaSaudeId
               ? `Receita Saúde #${inst.receitaSaudeId}`
+              : inst.documentRequested === false
+              ? 'Documento não solicitado'
               : `Receita Saúde (Pendente de Emissão)`
             : sale.nfseNumber
             ? `NFS-e #${sale.nfseNumber}`
@@ -2647,6 +2700,13 @@ export class DentalFinanceDB {
           bankAccountId: inst.bankAccountId || sale.bankAccountId,
           originalEstimatedValue: sale.originalEstimatedValue,
           priceHistory: sale.priceHistory,
+          documentRequested: inst.documentRequested,
+          fiscalClassification: inst.fiscalClassification,
+          fiscalClassificationReason: inst.fiscalClassificationReason,
+          fiscalClassificationCategory: inst.fiscalClassificationCategory,
+          fiscalClassificationBy: inst.fiscalClassificationBy,
+          fiscalClassificationByName: inst.fiscalClassificationByName,
+          fiscalClassificationAt: inst.fiscalClassificationAt,
         });
       }
     }
@@ -2807,6 +2867,610 @@ export class DentalFinanceDB {
     saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
     this.notify();
     return true;
+  }
+
+  // ==========================================
+  // PRONTUÁRIO CLÍNICO (CLINICAL RECORDS) CRUD
+  // ==========================================
+
+  public getClinicalRecords(patientId?: string): ClinicalRecord[] {
+    const list = this.clinicalRecords || [];
+    if (!patientId) {
+      return [...list].sort((a, b) => b.recordDate.localeCompare(a.recordDate));
+    }
+    return list
+      .filter((r) => r.patientId === patientId)
+      .sort((a, b) => b.recordDate.localeCompare(a.recordDate));
+  }
+
+  public getClinicalRecordById(id: string): ClinicalRecord | undefined {
+    return (this.clinicalRecords || []).find((r) => r.id === id);
+  }
+
+  public async addClinicalRecord(
+    recordData: Omit<ClinicalRecord, 'id' | 'createdAt' | 'updatedAt' | 'amendments' | 'tenantId'> & { tenantId?: string }
+  ): Promise<{ success: boolean; record?: ClinicalRecord; error?: string }> {
+    const id = `rec_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+    const newRecord: ClinicalRecord = {
+      ...recordData,
+      id,
+      tenantId: this.activeTenantId,
+      createdAt: now,
+      updatedAt: now,
+      amendments: [],
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveClinicalRecord(newRecord, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao salvar registro clínico no servidor.' };
+      }
+    }
+
+    this.clinicalRecords = [newRecord, ...(this.clinicalRecords || [])];
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, this.activeTenantId);
+
+    // Auditoria canônica com ações padronizadas
+    if (newRecord.continuationOfRecordId) {
+      this.log(
+        'FOLLOWUP_CREATED',
+        'CLINICAL_RECORD',
+        id,
+        `Nova evolução registrada como continuação do atendimento de ${newRecord.continuationDate || 'data anterior'} para o paciente ${newRecord.patientId}.`
+      );
+    } else if (newRecord.status === 'DRAFT') {
+      this.log(
+        'DRAFT_CREATED',
+        'CLINICAL_RECORD',
+        id,
+        `Rascunho de evolução clínica criado para o paciente ${newRecord.patientId}.`
+      );
+    } else {
+      this.log(
+        'RECORD_FINALIZED',
+        'CLINICAL_RECORD',
+        id,
+        `Evolução clínica finalizada e assinada (${newRecord.recordType}) para o paciente ${newRecord.patientId}.`
+      );
+    }
+
+    this.notify();
+    return { success: true, record: newRecord };
+  }
+
+  public async updateClinicalRecord(
+    id: string,
+    updates: Partial<ClinicalRecord>
+  ): Promise<{ success: boolean; error?: string }> {
+    const existing = (this.clinicalRecords || []).find((r) => r.id === id);
+    if (!existing) {
+      return { success: false, error: 'Registro clínico não encontrado.' };
+    }
+
+    // Se estiver finalizado, retificado ou invalidado, bloquear edição direta
+    if (existing.status === 'FINALIZED' || existing.status === 'AMENDED' || existing.status === 'VOIDED') {
+      return {
+        success: false,
+        error: 'Registros clínicos finalizados são imutáveis por exigência do CFO. Para realizar correções, utilize a ação Retificar Registro.',
+      };
+    }
+
+    const updated: ClinicalRecord = {
+      ...existing,
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveClinicalRecord(updated, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao atualizar registro no servidor.' };
+      }
+    }
+
+    this.clinicalRecords = (this.clinicalRecords || []).map((r) => (r.id === id ? updated : r));
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, this.activeTenantId);
+    this.log('DRAFT_UPDATED', 'CLINICAL_RECORD', id, `Rascunho de evolução clínica atualizado.`);
+    this.notify();
+    return { success: true };
+  }
+
+  public async finalizeClinicalRecord(id: string): Promise<{ success: boolean; error?: string }> {
+    const existing = (this.clinicalRecords || []).find((r) => r.id === id);
+    if (!existing) {
+      return { success: false, error: 'Registro clínico não encontrado.' };
+    }
+    if (existing.status === 'VOIDED') {
+      return { success: false, error: 'Registros invalidados não podem ser finalizados.' };
+    }
+    if (existing.status === 'FINALIZED' || existing.status === 'AMENDED') {
+      return { success: true };
+    }
+
+    const now = new Date().toISOString();
+    const finalizedBy = this.currentSession?.user?.id || 'usr_dentist';
+    const finalizedByName = this.currentSession?.user?.name || this.professional?.name || 'Cirurgião-Dentista';
+
+    const updated: ClinicalRecord = {
+      ...existing,
+      status: 'FINALIZED',
+      finalizedBy,
+      finalizedByName,
+      finalizedAt: now,
+      updatedAt: now,
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.finalizeClinicalRecord(id, finalizedBy, finalizedByName, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao finalizar registro clínico no servidor.' };
+      }
+    }
+
+    this.clinicalRecords = (this.clinicalRecords || []).map((r) => (r.id === id ? updated : r));
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, this.activeTenantId);
+    this.log(
+      'RECORD_FINALIZED',
+      'CLINICAL_RECORD',
+      id,
+      `Evolução clínica finalizada e tornada imutável para o paciente ${existing.patientId}.`
+    );
+    this.notify();
+    return { success: true };
+  }
+
+  public async deleteClinicalRecord(id: string): Promise<{ success: boolean; error?: string }> {
+    const existing = (this.clinicalRecords || []).find((r) => r.id === id);
+    if (!existing) {
+      return { success: false, error: 'Registro clínico não encontrado.' };
+    }
+
+    if (existing.status !== 'DRAFT') {
+      return {
+        success: false,
+        error: 'Registros clínicos finalizados ou com retificação são imutáveis e não podem ser excluídos permanentemente. Caso tenham sido lançados por engano, utilize a ação Invalidar Registro.',
+      };
+    }
+
+    // Tratar anexos relacionados a este rascunho para não deixar órfãos
+    const relatedAttachments = (this.clinicalAttachments || []).filter((a) => a.clinicalRecordId === id);
+    for (const att of relatedAttachments) {
+      await this.deleteClinicalAttachment(att.id);
+    }
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const { error } = await supabase
+        .from('df_clinical_records')
+        .delete()
+        .eq('id', id)
+        .eq('tenant_id', this.activeTenantId);
+      if (error) {
+        return { success: false, error: error.message };
+      }
+    }
+
+    this.clinicalRecords = (this.clinicalRecords || []).filter((r) => r.id !== id);
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, this.activeTenantId);
+    this.log('DRAFT_DELETED', 'CLINICAL_RECORD', id, `Rascunho de evolução clínica excluído permanentemente.`);
+    this.notify();
+    return { success: true };
+  }
+
+  public async addClinicalRecordAmendment(
+    recordId: string,
+    content: string,
+    reason: string
+  ): Promise<{ success: boolean; amendment?: ClinicalRecordAmendment; error?: string }> {
+    const existing = (this.clinicalRecords || []).find((r) => r.id === recordId);
+    if (!existing) {
+      return { success: false, error: 'Registro clínico não encontrado.' };
+    }
+
+    if (existing.status === 'VOIDED') {
+      return { success: false, error: 'Registros clínicos invalidados não podem receber retificações.' };
+    }
+
+    if (!reason || !reason.trim()) {
+      return { success: false, error: 'O motivo da retificação é obrigatório.' };
+    }
+
+    if (!content || !content.trim()) {
+      return { success: false, error: 'O conteúdo retificado / complementar é obrigatório.' };
+    }
+
+    const amendmentId = `amend_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const now = new Date().toISOString();
+    const amendment: ClinicalRecordAmendment = {
+      id: amendmentId,
+      tenantId: this.activeTenantId,
+      clinicalRecordId: recordId,
+      createdBy: this.currentSession?.user?.id || 'usr_dentist',
+      createdByName: this.currentSession?.user?.name || this.professional?.name || 'Cirurgião-Dentista',
+      createdAt: now,
+      content: content.trim(),
+      reason: reason.trim(),
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.addClinicalRecordAmendment(amendment, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao registrar retificação no servidor.' };
+      }
+    }
+
+    const updatedAmendments = [...(existing.amendments || []), amendment];
+    const updatedRecord: ClinicalRecord = {
+      ...existing,
+      status: 'AMENDED',
+      amendments: updatedAmendments,
+      updatedAt: now,
+    };
+
+    this.clinicalRecords = (this.clinicalRecords || []).map((r) => (r.id === recordId ? updatedRecord : r));
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, this.activeTenantId);
+    this.log(
+      'AMENDMENT_CREATED',
+      'CLINICAL_RECORD',
+      recordId,
+      `Retificação registrada para o registro ${recordId}. Motivo: ${reason}.`
+    );
+    this.notify();
+    return { success: true, amendment };
+  }
+
+  public async voidClinicalRecord(
+    id: string,
+    reason: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const existing = (this.clinicalRecords || []).find((r) => r.id === id);
+    if (!existing) {
+      return { success: false, error: 'Registro clínico não encontrado.' };
+    }
+
+    if (existing.status === 'VOIDED') {
+      return { success: false, error: 'Este registro clínico já foi invalidado anteriormente.' };
+    }
+
+    if (existing.status === 'DRAFT') {
+      return {
+        success: false,
+        error: 'Rascunhos devem ser excluídos diretamente em vez de invalidados.',
+      };
+    }
+
+    if (!reason || !reason.trim()) {
+      return { success: false, error: 'O motivo da invalidação é obrigatório.' };
+    }
+
+    const now = new Date().toISOString();
+    const voidedBy = this.currentSession?.user?.id || 'usr_dentist';
+    const voidedByName = this.currentSession?.user?.name || this.professional?.name || 'Cirurgião-Dentista';
+
+    const updated: ClinicalRecord = {
+      ...existing,
+      status: 'VOIDED',
+      voidedBy,
+      voidedByName,
+      voidedAt: now,
+      voidReason: reason.trim(),
+      updatedAt: now,
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.voidClinicalRecord(id, voidedBy, voidedByName, reason.trim(), this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao invalidar registro no servidor.' };
+      }
+    }
+
+    this.clinicalRecords = (this.clinicalRecords || []).map((r) => (r.id === id ? updated : r));
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, this.activeTenantId);
+    this.log(
+      'RECORD_VOIDED',
+      'CLINICAL_RECORD',
+      id,
+      `Registro clínico marcado como inválido para o paciente ${existing.patientId}. Motivo: ${reason.trim()}`
+    );
+    this.notify();
+    return { success: true };
+  }
+
+  // ==========================================
+  // ANEXOS CLÍNICOS (CLINICAL ATTACHMENTS) CRUD
+  // ==========================================
+
+  public getClinicalAttachments(patientId?: string, recordId?: string): ClinicalAttachment[] {
+    let list = this.clinicalAttachments || [];
+    if (patientId) {
+      list = list.filter((a) => a.patientId === patientId);
+    }
+    if (recordId) {
+      list = list.filter((a) => a.clinicalRecordId === recordId);
+    }
+    return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  /**
+   * Recarrega o cache local de anexos clínicos direto do Supabase.
+   * Necessário após escritas que não passam por este client (ex.: a Edge Function
+   * dental-whatsapp-attach-document, que insere via service_role no servidor) —
+   * sem isso, o anexo só aparecia em Pacientes > Documentos depois de um F5/login.
+   */
+  public async refreshClinicalAttachments(): Promise<void> {
+    if (this.isDemoMode || this.activeTenantId === 'tenant_demo') return;
+    const res = await SupabaseService.getClinicalAttachments(this.activeTenantId);
+    if (res.data) {
+      this.clinicalAttachments = res.data;
+      saveItem(STORAGE_KEYS.CLINICAL_ATTACHMENTS, this.clinicalAttachments, this.activeTenantId);
+      this.notify();
+    }
+  }
+
+  public async addClinicalAttachment(
+    attachmentData: Omit<ClinicalAttachment, 'id' | 'createdAt' | 'tenantId'> & { tenantId?: string }
+  ): Promise<{ success: boolean; attachment?: ClinicalAttachment; error?: string }> {
+    const id = `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+    const newAtt: ClinicalAttachment = {
+      ...attachmentData,
+      id,
+      tenantId: attachmentData.tenantId || this.activeTenantId,
+      createdAt: now,
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveClinicalAttachment(newAtt, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao salvar anexo no servidor.' };
+      }
+    }
+
+    this.clinicalAttachments = [newAtt, ...(this.clinicalAttachments || [])];
+    saveItem(STORAGE_KEYS.CLINICAL_ATTACHMENTS, this.clinicalAttachments, this.activeTenantId);
+    this.log(
+      'UPLOAD_ANEXO_CLINICO',
+      'CLINICAL_ATTACHMENT',
+      id,
+      `Anexo clínico "${newAtt.originalFilename}" (${newAtt.attachmentType}) vinculado ao paciente ${newAtt.patientId}.`
+    );
+    this.notify();
+    return { success: true, attachment: newAtt };
+  }
+
+  public async deleteClinicalAttachment(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.deleteClinicalAttachment(id, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao excluir anexo no servidor.' };
+      }
+    }
+
+    this.clinicalAttachments = (this.clinicalAttachments || []).filter((a) => a.id !== id);
+    saveItem(STORAGE_KEYS.CLINICAL_ATTACHMENTS, this.clinicalAttachments, this.activeTenantId);
+    this.log('EXCLUSAO_ANEXO_CLINICO', 'CLINICAL_ATTACHMENT', id, `Anexo clínico removido.`);
+    this.notify();
+    return { success: true };
+  }
+
+  // ==========================================
+  // COMPARATIVO ANTES / DEPOIS (BEFORE/AFTER)
+  // ==========================================
+
+  public getBeforeAfterPairs(patientId?: string): ClinicalBeforeAfterPair[] {
+    let list = this.beforeAfterPairs || [];
+    if (patientId) {
+      list = list.filter((p) => p.patientId === patientId);
+    }
+    return list.map((p) => {
+      const before = p.beforeAttachment || (this.clinicalAttachments || []).find((a) => a.id === p.beforeAttachmentId);
+      const after = p.afterAttachment || (this.clinicalAttachments || []).find((a) => a.id === p.afterAttachmentId);
+      return {
+        ...p,
+        beforeAttachment: before,
+        afterAttachment: after,
+      };
+    }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  public async addBeforeAfterPair(
+    pairData: Omit<ClinicalBeforeAfterPair, 'id' | 'createdAt' | 'tenantId'> & { tenantId?: string }
+  ): Promise<{ success: boolean; pair?: ClinicalBeforeAfterPair; error?: string }> {
+    const id = `pair_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const now = new Date().toISOString();
+    const newPair: ClinicalBeforeAfterPair = {
+      ...pairData,
+      id,
+      tenantId: pairData.tenantId || this.activeTenantId,
+      createdAt: now,
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveBeforeAfterPair(newPair, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao salvar par de Antes e Depois no servidor.' };
+      }
+    }
+
+    this.beforeAfterPairs = [newPair, ...(this.beforeAfterPairs || [])];
+    saveItem(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, this.beforeAfterPairs, this.activeTenantId);
+    this.log(
+      'CRIACAO_COMPARATIVO_FOTOS',
+      'BEFORE_AFTER',
+      id,
+      `Novo comparativo Antes/Depois "${newPair.title}" criado para o paciente ${newPair.patientId}.`
+    );
+    this.notify();
+    return { success: true, pair: newPair };
+  }
+
+  public async deleteBeforeAfterPair(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.deleteBeforeAfterPair(id, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao excluir par no servidor.' };
+      }
+    }
+
+    this.beforeAfterPairs = (this.beforeAfterPairs || []).filter((p) => p.id !== id);
+    saveItem(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, this.beforeAfterPairs, this.activeTenantId);
+    this.log('EXCLUSAO_COMPARATIVO_FOTOS', 'BEFORE_AFTER', id, `Comparativo Antes/Depois removido.`);
+    this.notify();
+    return { success: true };
+  }
+
+  public async updateBeforeAfterPair(
+    id: string,
+    updates: Partial<ClinicalBeforeAfterPair>
+  ): Promise<{ success: boolean; pair?: ClinicalBeforeAfterPair; error?: string }> {
+    const existing = (this.beforeAfterPairs || []).find((p) => p.id === id);
+    if (!existing) {
+      return { success: false, error: 'Comparativo não encontrado.' };
+    }
+
+    const updatedPair: ClinicalBeforeAfterPair = {
+      ...existing,
+      ...updates,
+      id,
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveBeforeAfterPair(updatedPair, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, error: res.error || 'Erro ao atualizar comparativo no servidor.' };
+      }
+    }
+
+    this.beforeAfterPairs = (this.beforeAfterPairs || []).map((p) => (p.id === id ? updatedPair : p));
+    saveItem(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, this.beforeAfterPairs, this.activeTenantId);
+    this.notify();
+    return { success: true, pair: updatedPair };
+  }
+
+  // ==========================================
+  // FOTOS DO PACIENTE VIA WHATSAPP / PERFIL
+  // ==========================================
+
+  private patientWhatsAppPhotosCache: Record<string, string> = {};
+
+  public async loadPatientWhatsAppPhotos(): Promise<Record<string, string>> {
+    if (this.isDemoMode || this.activeTenantId === 'tenant_demo') {
+      return this.patientWhatsAppPhotosCache;
+    }
+    try {
+      const { data, error } = await supabase
+        .from('df_wa_contacts')
+        .select('patient_id, whatsapp_number, profile_pic_url')
+        .eq('tenant_id', this.activeTenantId)
+        .not('profile_pic_url', 'is', null);
+
+      if (error) {
+        console.warn('[DentalFinanceDB] Erro ao carregar fotos do WhatsApp:', error.message);
+        return this.patientWhatsAppPhotosCache;
+      }
+
+      const map: Record<string, string> = {};
+      (data || []).forEach((c: any) => {
+        if (c.profile_pic_url && typeof c.profile_pic_url === 'string' && c.profile_pic_url.trim()) {
+          const url = c.profile_pic_url.trim();
+          if (c.patient_id) {
+            map[c.patient_id] = url;
+          }
+          if (c.whatsapp_number) {
+            const clean = c.whatsapp_number.replace(/\D/g, '');
+            map[clean] = url;
+            if (clean.startsWith('55')) {
+              map[clean.substring(2)] = url;
+            }
+          }
+        }
+      });
+      this.patientWhatsAppPhotosCache = map;
+      return map;
+    } catch (e) {
+      console.warn('[DentalFinanceDB] Falha ao sincronizar fotos do WhatsApp:', e);
+      return this.patientWhatsAppPhotosCache;
+    }
+  }
+
+  public getPatientWhatsAppPhotos(): Record<string, string> {
+    return this.patientWhatsAppPhotosCache;
+  }
+
+  public getEffectivePatientPhotoUrl(patient: Patient): string | undefined {
+    // 1ª Prioridade: Foto manual enviada no sistema
+    if (patient.photoUrl && patient.photoUrl.trim()) {
+      return patient.photoUrl.trim();
+    }
+    // 2ª Prioridade: Foto de WhatsApp cadastrada no próprio registro do paciente
+    if (patient.whatsappPhotoUrl && patient.whatsappPhotoUrl.trim()) {
+      return patient.whatsappPhotoUrl.trim();
+    }
+    // 3ª Prioridade: Foto do WhatsApp mapeada em df_wa_contacts
+    if (patient.id && this.patientWhatsAppPhotosCache[patient.id]) {
+      return this.patientWhatsAppPhotosCache[patient.id];
+    }
+    if (patient.phone) {
+      const clean = patient.phone.replace(/\D/g, '');
+      if (this.patientWhatsAppPhotosCache[clean]) {
+        return this.patientWhatsAppPhotosCache[clean];
+      }
+      if (clean.startsWith('55') && this.patientWhatsAppPhotosCache[clean.substring(2)]) {
+        return this.patientWhatsAppPhotosCache[clean.substring(2)];
+      }
+    }
+    return undefined;
+  }
+
+  // ==========================================
+  // IMPORTAÇÃO EM LOTE DE PACIENTES
+  // ==========================================
+
+  public async importPatientsBulk(
+    patientList: (Omit<Patient, 'id' | 'orgId' | 'createdAt'> & { id?: string; createdAt?: string })[]
+  ): Promise<{ importedCount: number; errors: string[] }> {
+    const errors: string[] = [];
+    let count = 0;
+    const now = new Date().toISOString();
+
+    const preparedPatients: Patient[] = patientList.map((p, idx) => ({
+      ...p,
+      id: p.id || `pat_imp_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+      orgId: this.org.id,
+      createdAt: p.createdAt || now,
+    }));
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.savePatientsBulk(preparedPatients, this.activeTenantId);
+      if (!res.success) {
+        errors.push(res.error || 'Erro ao sincronizar pacientes importados no servidor.');
+      }
+    }
+
+    const currentPatients = [...(this.patients || [])];
+    preparedPatients.forEach((newP) => {
+      const existingIdx = currentPatients.findIndex(
+        (cp) => cp.id === newP.id || (newP.cpf && cp.cpf && cp.cpf.replace(/\D/g, '') === newP.cpf.replace(/\D/g, ''))
+      );
+      if (existingIdx >= 0) {
+        currentPatients[existingIdx] = { ...currentPatients[existingIdx], ...newP };
+      } else {
+        currentPatients.unshift(newP);
+      }
+      count++;
+    });
+
+    this.patients = currentPatients;
+    saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
+    this.log(
+      'IMPORTACAO_PACIENTES_LOTE',
+      'PATIENT',
+      this.org.id,
+      `Importação em lote de ${count} pacientes realizada com sucesso.`
+    );
+    this.notify();
+
+    return { importedCount: count, errors };
   }
 
   public async addSaleAsync(saleData: Omit<Sale, 'id' | 'orgId' | 'createdAt'> & { orgId?: string }): Promise<{ success: boolean; sale?: Sale; error?: string }> {
@@ -2979,7 +3643,8 @@ export class DentalFinanceDB {
     paymentMethod: PaymentMethod,
     bankAccountId?: string,
     receitaSaudeId?: string,
-    receitaSaudeStatus?: ReceitaSaudeStatus
+    receitaSaudeStatus?: ReceitaSaudeStatus,
+    documentRequested?: boolean
   ) {
     let affectedSale: Sale | null = null;
     this.sales = this.sales.map((sale) => {
@@ -3003,6 +3668,11 @@ export class DentalFinanceDB {
           receitaSaudeId: receitaSaudeId || inst.receitaSaudeId,
           receitaSaudeStatus: finalReceitaStatus,
           receitaSaudeEmittedAt: receitaSaudeId ? new Date().toISOString() : inst.receitaSaudeEmittedAt,
+          // "O paciente solicitou recibo/documento?" — dimensão independente
+          // da forma de pagamento e da classificação fiscal (nunca altera
+          // fiscalClassification). Só sobrescreve quando explicitamente
+          // informado nesta baixa; caso contrário preserva o valor anterior.
+          documentRequested: documentRequested !== undefined ? documentRequested : inst.documentRequested,
         };
       });
 
@@ -3055,6 +3725,98 @@ export class DentalFinanceDB {
       this.log('EMISSAO_RECEITA_SAUDE', 'INSTALLMENT', installmentId, `Status Receita Saúde atualizado para ${status} (ID: ${identifier}).`);
       this.notify();
     }
+  }
+
+  // "O paciente solicitou recibo/documento?" — edição isolada, fora do
+  // momento da baixa (ex.: corrigir depois de liquidado). Nunca toca em
+  // fiscalClassification.
+  public updateDocumentRequested(saleId: string, installmentId: string, documentRequested: boolean): { success: boolean; error?: string } {
+    let affectedSale: Sale | null = null;
+    this.sales = this.sales.map((sale) => {
+      if (sale.id !== saleId) return sale;
+      const updated = sale.installments.map((inst) =>
+        inst.id === installmentId ? { ...inst, documentRequested } : inst
+      );
+      affectedSale = { ...sale, installments: updated };
+      return affectedSale;
+    });
+    if (!affectedSale) return { success: false, error: 'Parcela não encontrada.' };
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveSale(affectedSale, this.activeTenantId).catch(console.warn);
+    }
+    this.log(
+      'DOCUMENTO_SOLICITADO_ALTERADO',
+      'INSTALLMENT',
+      installmentId,
+      documentRequested ? 'Paciente passou a constar como tendo solicitado documento/recibo.' : 'Paciente passou a constar como NÃO tendo solicitado documento/recibo.'
+    );
+    this.notify();
+    return { success: true };
+  }
+
+  // Classificação fiscal explícita do recebimento — dimensão totalmente
+  // independente da forma de pagamento e de documentRequested (nunca
+  // derivada automaticamente de nenhum dos dois). Alterar para
+  // NAO_TRIBUTAVEL/EXCLUIDO_DA_BASE exige motivo + fundamento/categoria;
+  // "paciente não pediu recibo" NUNCA é aceito como motivo automático — a
+  // UI (FiscalClassificationModal) sempre exige texto explícito do usuário
+  // aqui, nunca preenche a partir de documentRequested.
+  public updateFiscalClassification(
+    saleId: string,
+    installmentId: string,
+    classification: FiscalClassification,
+    opts?: { reason?: string; category?: string }
+  ): { success: boolean; error?: string } {
+    const requiresJustification = classification !== 'TRIBUTAVEL';
+    const reason = (opts?.reason || '').trim();
+    const category = (opts?.category || '').trim();
+    const validation = validateFiscalClassificationChange(classification, reason, category);
+    if (!validation.valid) {
+      return { success: false, error: validation.error };
+    }
+
+    const userId = this.currentSession?.user?.id || (this.user ? this.user.id : 'sys');
+    const userName = this.currentSession?.user?.name || (this.user ? this.user.name : 'Sistema');
+    const now = new Date().toISOString();
+
+    let affectedSale: Sale | null = null;
+    let previousClassification: FiscalClassification = 'TRIBUTAVEL';
+    this.sales = this.sales.map((sale) => {
+      if (sale.id !== saleId) return sale;
+      const updated = sale.installments.map((inst) => {
+        if (inst.id !== installmentId) return inst;
+        previousClassification = inst.fiscalClassification || 'TRIBUTAVEL';
+        return {
+          ...inst,
+          fiscalClassification: classification,
+          fiscalClassificationReason: requiresJustification ? reason : undefined,
+          fiscalClassificationCategory: requiresJustification ? category : undefined,
+          fiscalClassificationBy: userId,
+          fiscalClassificationByName: userName,
+          fiscalClassificationAt: now,
+        };
+      });
+      affectedSale = { ...sale, installments: updated };
+      return affectedSale;
+    });
+
+    if (!affectedSale) return { success: false, error: 'Parcela não encontrada.' };
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.saveSale(affectedSale, this.activeTenantId).catch(console.warn);
+    }
+    // Rastreabilidade: log de auditoria completo (quem/quando/de-para/motivo),
+    // além do snapshot inline nos campos fiscalClassification* acima.
+    this.log(
+      'CLASSIFICACAO_FISCAL_ALTERADA',
+      'INSTALLMENT',
+      installmentId,
+      `Classificação fiscal alterada de ${previousClassification} para ${classification}.` +
+        (requiresJustification ? ` Motivo: ${reason}. Fundamento/categoria: ${category}.` : '')
+    );
+    this.notify();
+    return { success: true };
   }
 
   public updateNfse(saleId: string, status: Sale['nfseStatus'], number: string, code?: string) {

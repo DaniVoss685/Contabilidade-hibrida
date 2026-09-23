@@ -231,8 +231,6 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
   initialExpenseType,
 }) => {
   const toast = useToast();
-  if (!isOpen) return null;
-
   const isEditing = Boolean(expenseToEdit);
 
   // Active categories only
@@ -816,6 +814,8 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
       setIsSubmitting(false);
     }
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 backdrop-blur-xs flex items-center justify-center p-4">

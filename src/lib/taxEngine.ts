@@ -18,10 +18,22 @@ import {
   INITIAL_OFFICIAL_FISCAL_PARAMETERS,
 } from './fiscalParameters';
 
+import {
+  calculateDashboardProjection,
+  DashboardProjectionParams,
+  DashboardProjectionResult,
+  getCompetenceDateBounds,
+} from './dashboardProjection';
+
+import { isTaxableForCarneLeao } from './fiscalClassification';
+
 export {
   getMinimumWageParameter,
   checkUpcomingYearWageReview,
+  calculateDashboardProjection,
+  getCompetenceDateBounds,
 };
+export type { DashboardProjectionParams, DashboardProjectionResult };
 
 // ==========================================
 // 0. OFFICIAL MINIMUM WAGE & ROLLING WINDOW
@@ -226,6 +238,13 @@ export function calculateMonthlyPfTax(
   for (const sale of sales) {
     if (sale.taxOrigin !== 'CPF') continue;
     for (const inst of sale.installments) {
+      // Classificação fiscal explícita (default TRIBUTAVEL quando ausente —
+      // comportamento idêntico a antes deste campo existir). Só
+      // NAO_TRIBUTAVEL/EXCLUIDO_DA_BASE, sempre com motivo+fundamento
+      // obrigatórios (ver db.updateFiscalClassification), saem da base do
+      // Carnê-Leão — documentRequested NUNCA influencia esta decisão.
+      if (!isTaxableForCarneLeao(inst.fiscalClassification)) continue;
+
       // Realized: received in this month
       if (inst.status === 'RECEBIDO' && inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
         receivedGrossCpf += inst.amountReceived || inst.value;
@@ -540,6 +559,10 @@ export function calculateCpfMonthlyTax(
   for (const sale of sales) {
     if (sale.taxOrigin !== 'CPF') continue;
     for (const inst of sale.installments) {
+      // Ver calculateMonthlyPfTax acima — mesma regra, duplicada aqui
+      // porque as duas funções mantêm loops de agregação independentes.
+      if (!isTaxableForCarneLeao(inst.fiscalClassification)) continue;
+
       if (inst.status === 'RECEBIDO' && inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
         grossRevenueReceived += inst.amountReceived || inst.value;
       }
@@ -974,101 +997,62 @@ export function calculateSimplesNacionalMonthlyTax(
 }
 
 export function getMonthlyReceivablesSummary(sales: Sale[], yearMonth: string) {
-  let totalReceived = 0;
-  let cpfReceived = 0;
-  let cnpjReceived = 0;
-  let totalPending = 0;
-  let totalOverdue = 0;
-  let installmentsCount = 0;
-  const salesInPeriod = new Set<string>();
-
-  const todayStr = new Date().toISOString().split('T')[0];
-
-  for (const s of sales) {
-    let hasPeriodInstallment = false;
-    for (const inst of s.installments) {
-      if (inst.status === 'RECEBIDO') {
-        if (inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
-          const val = inst.amountReceived || inst.value;
-          totalReceived += val;
-          if (s.taxOrigin === 'CPF') cpfReceived += val;
-          else cnpjReceived += val;
-          hasPeriodInstallment = true;
-          installmentsCount++;
-        }
-      } else if (inst.status !== 'CANCELADO') {
-        if (inst.dueDate.startsWith(yearMonth)) {
-          totalPending += inst.value;
-          if (inst.dueDate < todayStr) {
-            totalOverdue += inst.value;
-          }
-          hasPeriodInstallment = true;
-          installmentsCount++;
-        }
-      }
-    }
-    if (hasPeriodInstallment || (s.serviceDate && s.serviceDate.startsWith(yearMonth))) {
-      salesInPeriod.add(s.id);
-    }
-  }
-
-  const countTotal = salesInPeriod.size;
+  const proj = calculateDashboardProjection({
+    sales,
+    expenses: [],
+    competence: yearMonth,
+    viewMode: 'PROJETADO',
+  });
 
   return {
-    totalReceived,
-    cpfReceived,
-    cnpjReceived,
-    totalPending,
-    totalOverdue,
-    countTotal,
-    salesCount: countTotal,
-    installmentsCount,
+    totalReceived: proj.realizedRevenue.total,
+    cpfReceived: proj.realizedRevenue.cpf,
+    cnpjReceived: proj.realizedRevenue.cnpj,
+    totalToReceive: proj.openReceivables.total,
+    totalPending: proj.openReceivables.total,
+    totalOverdue: proj.openReceivables.overdue,
+    overdueAmount: proj.openReceivables.overdue,
+    overdueItemsCount: proj.openReceivables.overdueCount,
+    totalUpcoming: proj.openReceivables.upcoming,
+    upcomingAmount: proj.openReceivables.upcoming,
+    upcomingItemsCount: proj.openReceivables.upcomingCount,
+    cpfToReceive: proj.openReceivables.cpf,
+    cnpjToReceive: proj.openReceivables.cnpj,
+    cpfProjected: proj.projectedRevenue.cpf,
+    cnpjProjected: proj.projectedRevenue.cnpj,
+    totalProjected: proj.projectedRevenue.total,
+    countTotal: proj.activeRevenue.salesCount,
+    salesCount: proj.activeRevenue.salesCount,
+    installmentsCount: proj.projectedRevenue.count,
   };
 }
 
 export function getMonthlyExpensesSummary(expenses: Expense[], yearMonth: string) {
-  let totalPaid = 0;
-  let cpfDeductiblePaid = 0;
-  let cpfDeductiblePending = 0;
-  let cnpjOperationalPaid = 0;
-  let totalPending = 0;
-  let totalOverdue = 0;
-
-  const todayStr = new Date().toISOString().split('T')[0];
-
-  for (const exp of expenses) {
-    if (exp.status === 'PAGO') {
-      if (exp.paymentDate && exp.paymentDate.startsWith(yearMonth)) {
-        totalPaid += exp.value;
-        if (exp.entity === 'CPF' && (exp.dedutivelLivroCaixaPf === 'SIM' || exp.dedutivelLivroCaixaPf === 'CONDICIONAL')) {
-          cpfDeductiblePaid += exp.value;
-        }
-
-        if (exp.entity === 'CNPJ' && exp.despesaOperacionalPj) {
-          cnpjOperationalPaid += exp.value;
-        }
-      }
-    } else if (exp.status !== 'CANCELADO') {
-      if (exp.dueDate && exp.dueDate.startsWith(yearMonth)) {
-        totalPending += exp.value;
-        if (exp.entity === 'CPF' && (exp.dedutivelLivroCaixaPf === 'SIM' || exp.dedutivelLivroCaixaPf === 'CONDICIONAL')) {
-          cpfDeductiblePending += exp.value;
-        }
-        if (exp.dueDate < todayStr) {
-          totalOverdue += exp.value;
-        }
-      }
-    }
-  }
+  const proj = calculateDashboardProjection({
+    sales: [],
+    expenses,
+    competence: yearMonth,
+    viewMode: 'PROJETADO',
+  });
 
   return {
-    totalPaid,
-    totalToPay: totalPending,
-    cpfDeductiblePaid,
-    cpfDeductiblePending,
-    cnpjOperationalPaid,
-    totalPending,
-    totalOverdue,
+    totalPaid: proj.realizedExpenses.total,
+    totalToPay: proj.openPayables.total,
+    totalPending: proj.openPayables.total,
+    totalOverdue: proj.openPayables.overdue,
+    overdueAmount: proj.openPayables.overdue,
+    overdueItemsCount: proj.openPayables.overdueCount,
+    totalUpcoming: proj.openPayables.upcoming,
+    upcomingAmount: proj.openPayables.upcoming,
+    upcomingItemsCount: proj.openPayables.upcomingCount,
+    cpfDeductiblePaid: proj.realizedExpenses.cpfDeductible,
+    cpfDeductiblePending: proj.openPayables.cpfDeductible,
+    cpfDeductibleProjected: proj.projectedExpenses.cpfDeductible,
+    cnpjOperationalPaid: proj.realizedExpenses.cnpjOperational,
+    cnpjOperationalPending: proj.openPayables.cnpjOperational,
+    cnpjOperationalProjected: proj.projectedExpenses.cnpjOperational,
+    totalCount: proj.realizedExpenses.count + proj.openPayables.count,
+    totalExpensesProjected: proj.projectedExpenses.total,
   };
 }
 

@@ -20,15 +20,19 @@ import {
   RotateCcw,
   MessageSquareText,
   Eye,
+  FileCheck2,
+  FileX2,
 } from 'lucide-react';
 import { AccountReceivableItem, TaxOrigin, PaymentMethod, InstallmentStatus, Sale } from '../../types';
 import { formatCurrency, formatDateBr, normalizeSearchText } from '../../lib/masks';
+import { formatPaymentMethodName, formatPaymentMethodWithInstallments } from '../../lib/paymentMethodFormat';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { getEffectiveReceivableStatus } from '../../lib/statusHelper';
 import { EditReceivableModal } from '../Modals/EditReceivableModal';
 import { NewSaleModal } from '../Modals/NewSaleModal';
-import { CustomSelect, DatePicker, ConfirmDialog, useToast } from '../UI';
+import { CustomSelect, DatePicker, ConfirmDialog, useToast, SortableHeader } from '../UI';
+import { useSortableData } from '../../hooks/useSortableData';
 
 const MONTH_NAMES = [
   '',
@@ -78,6 +82,19 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     notes: string;
   } | null>(null);
   const [viewingSale, setViewingSale] = useState<Sale | null>(null);
+  const [togglingDocId, setTogglingDocId] = useState<string | null>(null);
+
+  const handleToggleDocumentRequested = async (item: AccountReceivableItem, next: boolean) => {
+    setTogglingDocId(item.installmentId);
+    try {
+      const res = db.updateDocumentRequested(item.saleId, item.installmentId, next);
+      if (!res.success) {
+        toast.error(res.error || 'Erro ao atualizar solicitação de documento.');
+      }
+    } finally {
+      setTogglingDocId(null);
+    }
+  };
 
   // Batch Edit Modal State
   const [isBatchEditOpen, setIsBatchEditOpen] = useState(false);
@@ -165,12 +182,24 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     });
   }, [items, searchTerm, taxOriginFilter, statusFilter, procedureFilter, paymentMethodFilter]);
 
+  const {
+    sortedItems: displayItems,
+    sortKey,
+    sortDirection,
+    handleSort,
+  } = useSortableData(filteredItems, {
+    customComparators: {
+      paymentMethod: (a, b) =>
+        formatPaymentMethodName(a.paymentMethod).localeCompare(formatPaymentMethodName(b.paymentMethod), 'pt-BR'),
+    },
+  });
+
   // Bulk Selection Handlers
   const handleSelectAll = () => {
-    if (selectedIds.size === filteredItems.length && filteredItems.length > 0) {
+    if (selectedIds.size === displayItems.length && displayItems.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredItems.map((i) => i.installmentId)));
+      setSelectedIds(new Set(displayItems.map((i) => i.installmentId)));
     }
   };
 
@@ -282,6 +311,19 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     .filter((i) => i.status === 'RECEBIDO' || i.amountReceived > 0)
     .reduce((sum, i) => sum + i.amountReceived, 0);
 
+  // Relatório gerencial: Dinheiro recebido total = Documento solicitado +
+  // Documento não solicitado (X = Y + Z), sem perder nenhum centavo do
+  // faturamento — a soma nunca diverge de totalReceived restrito a DINHEIRO,
+  // porque documentRequested nunca remove um item de Receitas Efetivadas.
+  const dinheiroReceivedItems = originScopedItems.filter(
+    (i) => i.paymentMethod === 'DINHEIRO' && (i.status === 'RECEBIDO' || i.amountReceived > 0)
+  );
+  const dinheiroTotal = dinheiroReceivedItems.reduce((sum, i) => sum + i.amountReceived, 0);
+  const dinheiroComDocumento = dinheiroReceivedItems
+    .filter((i) => i.documentRequested === true)
+    .reduce((sum, i) => sum + i.amountReceived, 0);
+  const dinheiroSemDocumento = dinheiroTotal - dinheiroComDocumento;
+
   const totalCardFees = originScopedItems.reduce(
     (sum, i) => sum + (i.cardFeeAmount || 0),
     0
@@ -293,8 +335,11 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     ? ((totalCardFees / totalWithCardFees) * 100).toFixed(1)
     : '0.0';
 
+  // documentRequested === false (só relevante para DINHEIRO): paciente não
+  // solicitou recibo/documento — não é pendência operacional, nunca conta
+  // aqui. Não altera fiscalClassification (dimensão independente).
   const pendingReceitaSaudeItems = originScopedItems.filter(
-    (i) => i.taxOrigin === 'CPF' && i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO'
+    (i) => i.taxOrigin === 'CPF' && i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO' && i.documentRequested !== false
   );
 
   const handleExport = () => {
@@ -358,6 +403,25 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
           </div>
           <div className="text-xl font-bold text-emerald-700">{formatCurrency(totalReceived)}</div>
           <div className="text-[11px] text-emerald-600/80 mt-1">Baixado e conciliado no período</div>
+          {dinheiroTotal > 0 && (
+            <div
+              className="mt-2 pt-2 border-t border-emerald-100 text-[10px] text-emerald-700/90 space-y-0.5"
+              title="Dinheiro recebido = Documento solicitado + Documento não solicitado (o faturamento gerencial não é afetado pela solicitação de documento)"
+            >
+              <div className="flex justify-between font-semibold">
+                <span>Dinheiro recebido:</span>
+                <span className="font-mono">{formatCurrency(dinheiroTotal)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Documento solicitado:</span>
+                <span className="font-mono">{formatCurrency(dinheiroComDocumento)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Documento não solicitado:</span>
+                <span className="font-mono">{formatCurrency(dinheiroSemDocumento)}</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 2. A Vencer */}
@@ -589,34 +653,86 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                     type="button"
                     onClick={handleSelectAll}
                     className="cursor-pointer text-slate-600 hover:text-slate-900"
-                    title={selectedIds.size === filteredItems.length && filteredItems.length > 0 ? "Desmarcar todas" : "Selecionar todas"}
+                    title={selectedIds.size === displayItems.length && displayItems.length > 0 ? "Desmarcar todas" : "Selecionar todas"}
                   >
-                    {filteredItems.length > 0 && selectedIds.size === filteredItems.length ? (
+                    {displayItems.length > 0 && selectedIds.size === displayItems.length ? (
                       <CheckSquare className="w-4 h-4 text-teal-600" />
                     ) : (
                       <Square className="w-4 h-4 text-slate-400" />
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4 text-center">Procedimento</th>
-                <th className="py-3 px-4 text-center">Paciente</th>
-                <th className="py-3 px-4 text-center">Valor</th>
-                <th className="py-3 px-4 text-center">Data de Pagamento</th>
-                <th className="py-3 px-4 text-center">Data de Vencimento</th>
-                <th className="py-3 px-4 text-center min-w-[110px] whitespace-nowrap">Status</th>
+                <SortableHeader
+                  label="Procedimento"
+                  sortKey="procedureName"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Paciente"
+                  sortKey="patientName"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Valor"
+                  sortKey="value"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Forma de Pagamento"
+                  sortKey="paymentMethod"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="min-w-[130px] whitespace-nowrap"
+                />
+                <SortableHeader
+                  label="Data de Pagamento"
+                  sortKey="paymentDate"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Data de Vencimento"
+                  sortKey="dueDate"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Status"
+                  sortKey="status"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="min-w-[110px] whitespace-nowrap"
+                />
                 <th className="py-3 px-4 text-center">Atributos Fiscais</th>
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
-              {filteredItems.length === 0 ? (
+              {displayItems.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-400">
+                  <td colSpan={10} className="py-8 text-center text-slate-400">
                     Nenhuma parcela encontrada.
                   </td>
                 </tr>
               ) : (
-                filteredItems.map((item) => {
+                displayItems.map((item) => {
                   const isSelected = selectedIds.has(item.installmentId);
                   const effectiveStatus = getEffectiveReceivableStatus(item);
                   const isOverdue =
@@ -630,12 +746,26 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                   const isCpfPendingReceita =
                     item.taxOrigin === 'CPF' &&
                     isReceived &&
-                    item.receitaSaudeStatus !== 'EMITIDO';
+                    item.receitaSaudeStatus !== 'EMITIDO' &&
+                    item.documentRequested !== false;
+
+                  const openDetails = () => {
+                    const s = db.getSales().find((x) => x.id === item.saleId);
+                    if (s) setViewingSale(s);
+                  };
 
                   return (
                     <tr
                       key={item.installmentId}
-                      className={`transition-colors ${
+                      onClick={openDetails}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') openDetails();
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Ver detalhes de ${item.procedureName} — ${item.patientName}`}
+                      title="Clique para ver detalhes"
+                      className={`transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/40 focus-visible:ring-inset ${
                         isSelected
                           ? 'bg-teal-50/60'
                           : isOverdue
@@ -644,7 +774,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                       }`}
                     >
                       {/* Checkbox */}
-                      <td className="py-3.5 px-4 text-center">
+                      <td className="py-3.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
                           onClick={() => handleToggleSelect(item.installmentId)}
@@ -660,25 +790,18 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
 
                       {/* 1. Procedimento */}
                       <td className="py-3.5 px-4">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const s = db.getSales().find((x) => x.id === item.saleId);
-                            if (s) setViewingSale(s);
-                          }}
-                          className="font-semibold text-slate-900 hover:text-teal-600 transition-colors text-left flex items-center gap-1.5 cursor-pointer group"
-                          title="Clique para ver detalhes completos da venda"
+                        <div
+                          className="font-semibold text-slate-900 flex items-center gap-1.5 group"
                         >
                           <span>{item.procedureName}</span>
                           <Eye className="w-3.5 h-3.5 opacity-30 group-hover:opacity-100 transition-opacity text-teal-600 shrink-0" />
-                        </button>
+                        </div>
                       </td>
 
                       {/* 2. Paciente & Parcela */}
-                      <td className="py-3.5 px-4">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-bold text-slate-900">{item.patientName}</span>
-
+                      <td className="py-3.5 px-4 min-w-[170px]">
+                        <div className="font-bold text-slate-900 leading-snug">{item.patientName}</div>
+                        <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
                           {/* Icon to view observation if notes exists */}
                           {(() => {
                             const note = item.notes?.trim();
@@ -691,13 +814,14 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                             return (
                               <button
                                 type="button"
-                                onClick={() =>
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   setViewingObservation({
                                     patientName: item.patientName,
                                     procedureName: item.procedureName,
                                     notes: note,
-                                  })
-                                }
+                                  });
+                                }}
                                 title="Ver observação da venda"
                                 className="inline-flex items-center justify-center p-1 rounded-md bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 transition-colors cursor-pointer"
                               >
@@ -772,6 +896,52 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                         ) : null}
                       </td>
 
+                      {/* Forma de Pagamento + Documento (dinheiro) + Classificação Fiscal — três
+                          dimensões independentes, nenhuma altera as outras. */}
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex flex-col items-center gap-1">
+                          <span className={`text-[11px] font-semibold ${item.paymentMethod ? 'text-slate-700' : 'text-slate-400'}`}>
+                            {item.paymentMethod
+                              ? formatPaymentMethodWithInstallments(item.paymentMethod, item.totalInstallments > 1 ? item.totalInstallments : undefined)
+                              : 'Não informado'}
+                          </span>
+
+                          {/* Documento: só relevante para DINHEIRO */}
+                          {item.paymentMethod === 'DINHEIRO' && (
+                            <button
+                              type="button"
+                              disabled={togglingDocId === item.installmentId}
+                              onClick={() => handleToggleDocumentRequested(item, item.documentRequested !== true)}
+                              title={
+                                item.documentRequested === false
+                                  ? 'Documento não solicitado — clique para marcar como solicitado'
+                                  : item.documentRequested === true
+                                  ? 'Documento solicitado — clique para marcar como não solicitado'
+                                  : 'Ainda não informado — clique para marcar se o paciente solicitou documento'
+                              }
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9.5px] font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
+                                item.documentRequested === true
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                                  : item.documentRequested === false
+                                  ? 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                                  : 'bg-white text-slate-400 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {item.documentRequested === true ? (
+                                <FileCheck2 className="w-2.5 h-2.5" />
+                              ) : (
+                                <FileX2 className="w-2.5 h-2.5" />
+                              )}
+                              {item.documentRequested === true
+                                ? 'Documento solicitado'
+                                : item.documentRequested === false
+                                ? 'Documento não solicitado'
+                                : 'Documento: definir'}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+
                       {/* 4. Data de Pagamento (Recebimento) */}
                       <td className="py-3.5 px-4 font-mono text-slate-600 text-center">
                         {item.paymentDate ? (
@@ -818,7 +988,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                       </td>
 
                       {/* 8. Ações */}
-                      <td className="py-3.5 px-4 text-center">
+                      <td className="py-3.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-center gap-2">
                           {!isReceived ? (
                             <button
@@ -1090,17 +1260,6 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
           viewingSale.netValue ??
           (viewingSale.totalValue - viewingFeeAmount);
 
-        const formatPaymentMethodModal = (pm?: string) => {
-          if (!pm) return 'NÃO INFORMADO';
-          if (pm === 'CARTAO_CREDITO') return 'CARTÃO-DE-CRÉDITO';
-          if (pm === 'CARTAO_DEBITO') return 'CARTÃO-DE-DÉBITO';
-          if (pm === 'PIX') return 'PIX';
-          if (pm === 'BOLETO') return 'BOLETO';
-          if (pm === 'DINHEIRO') return 'DINHEIRO';
-          if (pm === 'TRANSFERENCIA') return 'TRANSFERÊNCIA';
-          return pm.replace(/_/g, '-').toUpperCase();
-        };
-
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
             <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-150">
@@ -1152,8 +1311,8 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                   </div>
 
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                    <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Forma Pagto</div>
-                    <div className="text-sm font-bold text-slate-800 mt-0.5">{formatPaymentMethodModal(viewingSale.paymentMethod)}</div>
+                    <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Forma Pagto (Prevista)</div>
+                    <div className="text-sm font-bold text-slate-800 mt-0.5">{formatPaymentMethodName(viewingSale.paymentMethod)}</div>
                     <div className="text-[10px] text-slate-500">{viewingSale.installmentsCount}x parcela(s)</div>
                   </div>
 
@@ -1224,6 +1383,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                           <th className="py-2.5 px-3">Vencimento</th>
                           <th className="py-2.5 px-3">Pagamento</th>
                           <th className="py-2.5 px-3 text-right">Valor</th>
+                          <th className="py-2.5 px-3 text-center">Forma</th>
                           <th className="py-2.5 px-3 text-center">Status</th>
                           <th className="py-2.5 px-3 text-center">Documento Fiscal</th>
                         </tr>
@@ -1249,6 +1409,38 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                               <td className="py-2 px-3 text-right font-bold text-slate-900">
                                 {formatCurrency(inst.value)}
                               </td>
+                              <td className="py-2 px-3 text-center text-[10.5px]">
+                                {isPaid ? (
+                                  inst.paymentMethod && inst.paymentMethod !== viewingSale.paymentMethod ? (
+                                    <span title={`Previsto: ${formatPaymentMethodName(viewingSale.paymentMethod)}`}>
+                                      <span className="text-emerald-700 font-semibold">{formatPaymentMethodName(inst.paymentMethod)}</span>
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-700 font-medium">
+                                      {formatPaymentMethodName(inst.paymentMethod || viewingSale.paymentMethod)}
+                                    </span>
+                                  )
+                                ) : (
+                                  <span className="text-slate-400" title="Forma prevista, ainda não recebida">
+                                    Previsto: {formatPaymentMethodName(viewingSale.paymentMethod)}
+                                  </span>
+                                )}
+                                {isPaid && inst.paymentMethod === 'DINHEIRO' && (
+                                  <div
+                                    className={`mt-0.5 text-[9px] font-semibold ${inst.documentRequested === true ? 'text-blue-600' : 'text-slate-400'}`}
+                                  >
+                                    {inst.documentRequested === true ? 'Documento solicitado' : inst.documentRequested === false ? 'Documento não solicitado' : ''}
+                                  </div>
+                                )}
+                                {inst.fiscalClassification && inst.fiscalClassification !== 'TRIBUTAVEL' && (
+                                  <div
+                                    className="mt-0.5 text-[9px] font-bold text-amber-700"
+                                    title={`Classificação fiscal: ${inst.fiscalClassification === 'NAO_TRIBUTAVEL' ? 'Não Tributável' : 'Excluído da Base'} — ${inst.fiscalClassificationReason || ''}`}
+                                  >
+                                    {inst.fiscalClassification === 'NAO_TRIBUTAVEL' ? 'Não Tributável' : 'Excluído da Base'}
+                                  </div>
+                                )}
+                              </td>
                               <td className="py-2 px-3 text-center">
                                 <span
                                   className={`inline-flex items-center px-2 py-0.5 rounded-full font-bold text-[9.5px] ${
@@ -1269,7 +1461,11 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                                   </span>
                                 ) : viewingSale.taxOrigin === 'CPF' ? (
                                   <span className="text-slate-400">
-                                    {isPaid ? 'Receita Saúde Pendente' : 'Aguardando Recebimento'}
+                                    {!isPaid
+                                      ? 'Aguardando Recebimento'
+                                      : inst.documentRequested === false
+                                      ? 'Documento não solicitado'
+                                      : 'Receita Saúde Pendente'}
                                   </span>
                                 ) : (
                                   <span className="text-slate-500">

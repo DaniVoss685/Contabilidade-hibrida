@@ -34,27 +34,42 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
   onSettled,
 }) => {
   const toast = useToast();
-  if (!isOpen || !item) return null;
 
   const [paymentDate, setPaymentDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
-  const [amountReceived, setAmountReceived] = useState<number>(item.balance || item.value);
+  const [amountReceived, setAmountReceived] = useState<number>(item?.balance || item?.value || 0);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
   const [bankAccountId, setBankAccountId] = useState<string>(() => {
     const preferred = bankAccounts.find((b) => b.isPreferred && b.isActive !== false);
     if (preferred) return preferred.id;
-    return item.taxOrigin === 'CPF'
+    return item?.taxOrigin === 'CPF'
       ? bankAccounts.find((b) => b.accountType === 'CORRENTE_PF' && b.isActive !== false)?.id || bankAccounts[0]?.id || ''
       : bankAccounts.find((b) => b.accountType === 'CORRENTE_PJ' && b.isActive !== false)?.id || bankAccounts[0]?.id || '';
   });
 
   // CPF Receita Saúde handling
-  const isCpf = item.taxOrigin === 'CPF';
+  const isCpf = item?.taxOrigin === 'CPF';
   const [receitaSaudeId, setReceitaSaudeId] = useState<string>(
-    item.receitaSaudeId || `RS-${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${Math.floor(1000 + Math.random() * 9000)}`
+    item?.receitaSaudeId || `RS-${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${Math.floor(1000 + Math.random() * 9000)}`
   );
   const [markAsEmitted, setMarkAsEmitted] = useState<boolean>(true);
+
+  // "O paciente solicitou recibo/documento?" — dimensão independente da
+  // forma de pagamento e da classificação fiscal (nunca deriva uma da
+  // outra). Só relevante para DINHEIRO; para as demais formas o
+  // comportamento de alerta de Receita Saúde não muda.
+  const [documentRequested, setDocumentRequested] = useState<boolean>(true);
+
+  React.useEffect(() => {
+    if (item) {
+      setAmountReceived(item.balance || item.value);
+      setPaymentDate(new Date().toISOString().split('T')[0]);
+      if (item.receitaSaudeId) {
+        setReceitaSaudeId(item.receitaSaudeId);
+      }
+    }
+  }, [item]);
 
   const paymentOptions = [
     { value: 'PIX', label: 'PIX' },
@@ -103,13 +118,16 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
       paymentMethod,
       bankAccountId,
       isCpf && markAsEmitted ? receitaSaudeId.trim() : undefined,
-      receitaStatus
+      receitaStatus,
+      paymentMethod === 'DINHEIRO' ? documentRequested : undefined
     );
 
     toast.success('Parcela liquidada com sucesso.');
     if (onSettled) onSettled();
     onClose();
   };
+
+  if (!isOpen || !item) return null;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 backdrop-blur-xs flex items-center justify-center p-4">
@@ -203,6 +221,42 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
               placeholder={bankAccounts.length === 0 ? "Nenhuma conta cadastrada" : "Selecione..."}
             />
           </div>
+
+          {/* Dinheiro: o paciente solicitou recibo/documento? — dimensão
+              independente da forma de pagamento e da classificação fiscal.
+              NÃO SIM/NÃO deixa o valor 100% em Receitas Efetivadas e no
+              faturamento gerencial; só evita alertas operacionais de
+              "documento pendente" quando não houver solicitação. */}
+          {paymentMethod === 'DINHEIRO' && (
+            <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-2">
+              <p className="text-xs font-bold text-slate-800">O paciente solicitou recibo/documento?</p>
+              <div className="flex items-center gap-1 p-0.5 bg-white rounded-lg border border-slate-200 w-fit">
+                <button
+                  type="button"
+                  onClick={() => setDocumentRequested(true)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                    documentRequested ? 'bg-emerald-600 text-white shadow-2xs' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Sim
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDocumentRequested(false)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                    !documentRequested ? 'bg-slate-700 text-white shadow-2xs' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Não
+                </button>
+              </div>
+              <p className="text-[10.5px] text-slate-500 leading-relaxed">
+                {documentRequested
+                  ? 'O valor continua no faturamento e a pendência de emissão do documento (quando aplicável) será exibida normalmente até ser emitida.'
+                  : 'O valor continua integralmente em Receitas Efetivadas e no faturamento gerencial — apenas os alertas de "documento pendente" ficam ocultos. Isto NÃO altera a classificação fiscal deste recebimento.'}
+              </p>
+            </div>
+          )}
 
           {/* If CPF: Receita Saúde Document details */}
           {isCpf && (

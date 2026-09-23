@@ -24,12 +24,14 @@ import {
 } from 'lucide-react';
 import { Expense, ExpenseCategory, ExpenseEntity } from '../../types';
 import { formatCurrency, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
+import { formatPaymentMethodName, formatPaymentMethodWithInstallments } from '../../lib/paymentMethodFormat';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { getEffectivePayableStatus } from '../../lib/statusHelper';
 import { BatchEditExpensesModal } from '../Modals/BatchEditExpensesModal';
 import { NewExpenseModal } from '../Modals/NewExpenseModal';
-import { CustomSelect, ConfirmDialog, useToast, ReceiptViewerModal } from '../UI';
+import { CustomSelect, ConfirmDialog, useToast, ReceiptViewerModal, SortableHeader } from '../UI';
+import { useSortableData } from '../../hooks/useSortableData';
 
 const MONTH_NAMES = [
   '',
@@ -94,6 +96,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     file?: any;
     name: string;
   } | null>(null);
+  const [viewingExpense, setViewingExpense] = useState<Expense | null>(null);
 
   // Confirm dialog state
   const [confirmState, setConfirmState] = useState<{
@@ -230,6 +233,20 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     });
   }, [expenses, searchTerm, entityFilter, statusFilter, categoryFilter, typeFilter, paymentMethodFilter, viewMode]);
 
+  const {
+    sortedItems: displayExpenses,
+    sortKey,
+    sortDirection,
+    handleSort,
+  } = useSortableData(filteredExpenses, {
+    customComparators: {
+      category: (a, b) => (a.categoryName || a.category || '').localeCompare(b.categoryName || b.category || '', 'pt-BR'),
+      description: (a, b) => (a.description || a.supplierName || '').localeCompare(b.description || b.supplierName || '', 'pt-BR'),
+      paymentMethod: (a, b) =>
+        formatPaymentMethodName(a.paymentMethod).localeCompare(formatPaymentMethodName(b.paymentMethod), 'pt-BR'),
+    },
+  });
+
   // Handle single pay
   const handlePayExpense = (id: string) => {
     const todayStr = new Date().toISOString().split('T')[0];
@@ -285,10 +302,10 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
   // Bulk selection handlers
   const handleSelectAll = () => {
-    if (selectedIds.size === filteredExpenses.length && filteredExpenses.length > 0) {
+    if (selectedIds.size === displayExpenses.length && displayExpenses.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredExpenses.map((e) => e.id)));
+      setSelectedIds(new Set(displayExpenses.map((e) => e.id)));
     }
   };
 
@@ -795,20 +812,77 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4 text-center min-w-[130px]">Categoria</th>
-                <th className="py-3 px-4 text-center min-w-[200px] max-w-[280px]">Descrição</th>
-                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[100px]">Valor</th>
-                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[110px]">Data de Pagamento</th>
-                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[110px]">Data de Vencimento</th>
-                <th className="py-3 px-4 text-center min-w-[110px] whitespace-nowrap">Status</th>
+                <SortableHeader
+                  label="Categoria"
+                  sortKey="category"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="min-w-[130px]"
+                />
+                <SortableHeader
+                  label="Descrição"
+                  sortKey="description"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="min-w-[200px] max-w-[280px]"
+                />
+                <SortableHeader
+                  label="Valor"
+                  sortKey="value"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="whitespace-nowrap min-w-[100px]"
+                />
+                <SortableHeader
+                  label="Forma de Pagamento"
+                  sortKey="paymentMethod"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="whitespace-nowrap min-w-[130px]"
+                />
+                <SortableHeader
+                  label="Data de Pagamento"
+                  sortKey="paymentDate"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="whitespace-nowrap min-w-[110px]"
+                />
+                <SortableHeader
+                  label="Data de Vencimento"
+                  sortKey="dueDate"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="whitespace-nowrap min-w-[110px]"
+                />
+                <SortableHeader
+                  label="Status"
+                  sortKey="status"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                  className="min-w-[110px] whitespace-nowrap"
+                />
                 <th className="py-3 px-4 text-center whitespace-nowrap min-w-[120px]">Atributos Fiscais</th>
                 <th className="py-3 px-4 text-center whitespace-nowrap min-w-[130px]">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
-              {filteredExpenses.length === 0 ? (
+              {displayExpenses.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
+                  <td colSpan={10} className="py-12 text-center text-slate-400">
                     {viewMode === 'recurrent' || typeFilter === 'RECORRENTE' ? (
                       <div className="flex flex-col items-center justify-center gap-2">
                         <Repeat className="w-8 h-8 text-indigo-300" />
@@ -823,19 +897,27 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                   </td>
                 </tr>
               ) : (
-                filteredExpenses.map((exp) => {
+                displayExpenses.map((exp) => {
                   const isPaid = exp.status === 'PAGO';
                   const isSelected = selectedIds.has(exp.id);
 
                   return (
                     <tr
                       key={exp.id}
-                      className={`transition-colors ${
+                      onClick={() => setViewingExpense(exp)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') setViewingExpense(exp);
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Ver detalhes de ${exp.description || exp.supplierName}`}
+                      title="Clique para ver detalhes"
+                      className={`transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/40 focus-visible:ring-inset ${
                         isSelected ? 'bg-teal-50/50' : 'hover:bg-slate-50/80'
                       }`}
                     >
                       {/* Checkbox Column */}
-                      <td className="py-3.5 px-4 text-center">
+                      <td className="py-3.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
                           onClick={() => handleToggleSelect(exp.id)}
@@ -919,6 +1001,15 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                         </div>
                       </td>
 
+                      {/* Forma de Pagamento */}
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        <span className={`text-[11px] font-semibold ${exp.paymentMethod ? 'text-slate-700' : 'text-slate-400'}`}>
+                          {exp.paymentMethod
+                            ? formatPaymentMethodWithInstallments(exp.paymentMethod, exp.totalInstallments && exp.totalInstallments > 1 ? exp.totalInstallments : undefined)
+                            : 'Não informado'}
+                        </span>
+                      </td>
+
                       {/* 4. Data de Pagamento */}
                       <td className="py-3.5 px-4 font-mono text-slate-600 text-center">
                         {isPaid && exp.paymentDate ? (
@@ -995,7 +1086,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                       </td>
 
                       {/* 8. Ações */}
-                      <td className="py-3.5 px-4 text-center whitespace-nowrap min-w-[130px]">
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap min-w-[130px]" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-center gap-1.5">
                           {!isPaid ? (
                             <button
@@ -1154,6 +1245,187 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
         file={viewingAttachment?.file}
         fallbackName={viewingAttachment?.name}
       />
+
+      {/* Expense Details Modal — aberto pelo clique na linha (consulta, não edição) */}
+      {viewingExpense && (() => {
+        const exp = viewingExpense;
+        const effectiveStatus = getEffectivePayableStatus(exp);
+        const isPaid = effectiveStatus === 'PAGO';
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden max-h-[90vh] flex flex-col animate-in zoom-in-95 duration-150">
+              {/* Header */}
+              <div className="bg-slate-900 px-6 py-4 flex items-center justify-between text-white shrink-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-rose-500/20 border border-rose-400/30 flex items-center justify-center text-rose-300 shrink-0">
+                    <TrendingDown className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-base font-bold text-white truncate">{exp.description || exp.supplierName}</h3>
+                      {exp.entity === 'CPF' ? (
+                        <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
+                          <User className="w-3 h-3" /> CPF
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30 shrink-0">
+                          <Building className="w-3 h-3" /> CNPJ
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-300 mt-0.5">
+                      {exp.supplierName}{exp.supplierCpfCnpj ? ` • ${exp.supplierCpfCnpj}` : ''}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewingExpense(null)}
+                  className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-6 space-y-5 overflow-y-auto">
+                {/* Summary cards */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                    <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Valor</div>
+                    <div className="text-base font-bold text-slate-900 mt-0.5">{formatCurrency(exp.value)}</div>
+                  </div>
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                    <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Forma de Pagamento</div>
+                    <div className="text-sm font-bold text-slate-800 mt-0.5">
+                      {exp.paymentMethod ? formatPaymentMethodName(exp.paymentMethod) : 'Não informado'}
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                    <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Categoria</div>
+                    <div className="text-sm font-bold text-slate-800 mt-0.5">{exp.categoryName}</div>
+                    <div className="text-[10px] font-mono text-slate-400">{exp.categoryCode}</div>
+                  </div>
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                    <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Status</div>
+                    <div
+                      className={`text-sm font-bold mt-0.5 ${
+                        isPaid ? 'text-emerald-700' : effectiveStatus === 'EM_ATRASO' ? 'text-rose-700' : 'text-amber-700'
+                      }`}
+                    >
+                      {isPaid ? 'Pago' : effectiveStatus === 'EM_ATRASO' ? 'Em Atraso' : 'A Pagar'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Parcelamento / Recorrência, só quando real */}
+                {(exp.expenseType === 'PARCELADA' && exp.totalInstallments && exp.totalInstallments > 1) && (
+                  <div className="flex items-center gap-1.5 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                    <Layers className="w-3.5 h-3.5 text-amber-600" />
+                    Parcelamento: parcela {exp.installmentNumber || 1} de {exp.totalInstallments}
+                  </div>
+                )}
+                {(exp.expenseType === 'RECORRENTE' || exp.recurrenceId) && (
+                  <div className="flex items-center gap-1.5 text-xs text-purple-800 bg-purple-50 border border-purple-200 rounded-xl px-3 py-2">
+                    <Repeat className="w-3.5 h-3.5 text-purple-600" />
+                    Despesa recorrente ({exp.recurrenceFrequency || 'MENSAL'})
+                  </div>
+                )}
+
+                {/* Datas */}
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <div className="text-slate-500 font-semibold">Data de Vencimento</div>
+                    <div className="font-mono text-slate-900 mt-0.5">{formatDateBr(exp.dueDate)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500 font-semibold">Data de Pagamento (Baixa)</div>
+                    <div className="font-mono text-slate-900 mt-0.5">
+                      {exp.paymentDate ? formatDateBr(exp.paymentDate) : '—'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500 font-semibold">Data de Criação</div>
+                    <div className="font-mono text-slate-900 mt-0.5">{formatDateBr(exp.createdAt)}</div>
+                  </div>
+                </div>
+
+                {/* Atributos fiscais */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`px-1.5 py-0.5 rounded font-bold text-[10px] ${
+                      exp.dedutivelLivroCaixaPf === 'SIM'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : exp.dedutivelLivroCaixaPf === 'CONDICIONAL'
+                        ? 'bg-amber-100 text-amber-800'
+                        : 'bg-rose-100 text-rose-800'
+                    }`}
+                  >
+                    Livro Caixa: {exp.dedutivelLivroCaixaPf}
+                  </span>
+                  {exp.impactaFatorRPj && (
+                    <span className="px-1.5 py-0.5 rounded font-bold text-[10px] bg-indigo-100 text-indigo-800">
+                      Fator R
+                    </span>
+                  )}
+                  {exp.isOverridden && (
+                    <span className="text-[10px] text-amber-700 font-semibold" title={exp.overrideJustification}>
+                      (Alteração manual)
+                    </span>
+                  )}
+                </div>
+
+                {/* Observações */}
+                {exp.notes && (
+                  <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3.5 text-xs text-amber-900 space-y-1">
+                    <div className="font-bold flex items-center gap-1.5 text-amber-950">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                      Observações
+                    </div>
+                    <p className="text-slate-700 whitespace-pre-wrap">{exp.notes}</p>
+                  </div>
+                )}
+
+                {/* Anexo / comprovante — reutiliza o mesmo ReceiptViewerModal da tabela */}
+                {exp.attachmentName && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setViewingAttachment({ file: exp.attachment, name: exp.attachmentName || 'Comprovante' })
+                    }
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-700 hover:text-teal-900 bg-teal-50 hover:bg-teal-100/90 px-3 py-1.5 rounded-lg border border-teal-200/80 transition-colors cursor-pointer"
+                  >
+                    <Paperclip className="w-3.5 h-3.5" />
+                    {exp.attachmentName}
+                  </button>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="bg-slate-50 px-6 py-3 border-t border-slate-200 flex items-center justify-between shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingExpense(exp);
+                    setViewingExpense(null);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-700 hover:text-teal-800 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  <Edit className="w-3.5 h-3.5" />
+                  Editar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewingExpense(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer shadow-xs"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

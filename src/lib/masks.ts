@@ -37,16 +37,10 @@ export function formatCnpj(cnpj: string): string {
   return `${clean.slice(0, 2)}.${clean.slice(2, 5)}.${clean.slice(5, 8)}/${clean.slice(8, 12)}-${clean.slice(12, 14)}`;
 }
 
-export function formatPhone(phone: string | undefined | null): string {
-  if (!phone) return '';
-  const clean = phone.replace(/\D/g, '');
-  if (clean.length === 11) {
-    return `(${clean.slice(0, 2)}) ${clean.slice(2, 7)}-${clean.slice(7)}`;
-  }
-  if (clean.length === 10) {
-    return `(${clean.slice(0, 2)}) ${clean.slice(2, 6)}-${clean.slice(6)}`;
-  }
-  return phone;
+import { formatPhoneDisplay } from './phoneUtils';
+
+export function formatPhone(phone: string | undefined | null, options?: { includeCountryCode?: boolean }): string {
+  return formatPhoneDisplay(phone, options);
 }
 
 export function formatCpfOrCnpj(doc: string, masked = false): string {

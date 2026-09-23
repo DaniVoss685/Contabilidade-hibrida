@@ -27,58 +27,85 @@ function formatToPtBrComplete(val: number): string {
 }
 
 /**
- * Converte string bruta (com dígitos, pontos ou vírgulas) em número e string formatada suavemente
+ * Formata parte inteira com separadores de milhar pt-BR (ex: "1500" -> "1.500")
+ */
+function formatIntPtBr(intStr: string): string {
+  if (!intStr) return '';
+  const num = parseInt(intStr, 10);
+  if (isNaN(num)) return '';
+  return num.toLocaleString('pt-BR');
+}
+
+/**
+ * Converte string de digitação natural em número BRL e string formatada suavemente
  */
 export function parseAndFormatTyping(rawInput: string): { display: string; numeric: number } {
   if (!rawInput) {
     return { display: '', numeric: 0 };
   }
 
-  // Remove caracteres que não sejam dígitos, vírgula ou ponto
-  const sanitized = rawInput.replace(/[^\d,\.]/g, '');
-  if (!sanitized) {
+  // Remove R$ e espaços
+  const cleaned = rawInput.replace(/R\$/g, '').trim();
+  if (!cleaned) {
     return { display: '', numeric: 0 };
   }
 
-  let integerPartRaw = '';
-  let decimalPartRaw: string | null = null;
+  // Se tem vírgula, a vírgula é o separador decimal oficial
+  if (cleaned.includes(',')) {
+    const parts = cleaned.split(',');
+    const integerPart = parts[0].replace(/\D/g, '');
+    const decimalPart = parts.slice(1).join('').replace(/\D/g, '').slice(0, 2);
 
-  if (sanitized.includes(',')) {
-    const parts = sanitized.split(',');
-    integerPartRaw = parts[0].replace(/\D/g, '');
-    decimalPartRaw = parts.slice(1).join('').replace(/\D/g, '').slice(0, 2);
-  } else if (sanitized.includes('.')) {
-    const dotParts = sanitized.split('.');
-    if (dotParts.length === 2 && dotParts[1].length <= 2 && !dotParts[0].includes('.')) {
-      integerPartRaw = dotParts[0].replace(/\D/g, '');
-      decimalPartRaw = dotParts[1].replace(/\D/g, '').slice(0, 2);
+    const formattedInt = integerPart ? formatIntPtBr(integerPart) : '';
+    const display = `${formattedInt},${decimalPart}`;
+    const num = parseFloat(`${integerPart || '0'}.${decimalPart || '0'}`);
+    const rounded = Math.round((isNaN(num) ? 0 : num) * 100) / 100;
+    return { display, numeric: rounded };
+  }
+
+  // Se não tem vírgula, todos os pontos são considerados separadores de milhar na digitação
+  const integerPart = cleaned.replace(/\D/g, '');
+  if (!integerPart) {
+    return { display: '', numeric: 0 };
+  }
+
+  const formattedInt = formatIntPtBr(integerPart);
+  const num = parseInt(integerPart, 10);
+  return {
+    display: formattedInt,
+    numeric: isNaN(num) ? 0 : num,
+  };
+}
+
+/**
+ * Normaliza valores colados (ex: "R$ 2.500,50", "2500.50", "2.500,50")
+ */
+export function normalizePaste(pastedText: string): string {
+  if (!pastedText) return '';
+  let cleaned = pastedText.replace(/R\$/g, '').trim();
+
+  // Se contém ponto e vírgula (ex: "2.500,50" ou "2,500.50")
+  if (cleaned.includes(',') && cleaned.includes('.')) {
+    const lastComma = cleaned.lastIndexOf(',');
+    const lastDot = cleaned.lastIndexOf('.');
+    if (lastComma > lastDot) {
+      // Formato BRL: 2.500,50 -> remove os pontos de milhar
+      cleaned = cleaned.replace(/\./g, '');
     } else {
-      integerPartRaw = sanitized.replace(/\D/g, '');
+      // Formato US: 2,500.50 -> remove vírgulas e troca ponto por vírgula
+      cleaned = cleaned.replace(/,/g, '').replace('.', ',');
     }
-  } else {
-    integerPartRaw = sanitized.replace(/\D/g, '');
+  } else if (cleaned.includes('.')) {
+    // Apenas ponto: pode ser decimal americano (ex: "2500.50" ou "1.5") ou milhar ("2.500")
+    const dotParts = cleaned.split('.');
+    if (dotParts.length === 2 && dotParts[1].length <= 2) {
+      cleaned = `${dotParts[0].replace(/\D/g, '')},${dotParts[1].replace(/\D/g, '')}`;
+    } else {
+      cleaned = cleaned.replace(/\./g, '');
+    }
   }
 
-  if (!integerPartRaw && decimalPartRaw === null) {
-    return { display: '', numeric: 0 };
-  }
-
-  const intNum = parseInt(integerPartRaw || '0', 10);
-  const formattedInt = integerPartRaw ? intNum.toLocaleString('pt-BR') : '0';
-
-  let display = '';
-  let numeric = 0;
-
-  if (decimalPartRaw !== null) {
-    display = `${formattedInt},${decimalPartRaw}`;
-    const decimalNum = parseFloat(`${intNum}.${decimalPartRaw || '0'}`);
-    numeric = isNaN(decimalNum) ? 0 : decimalNum;
-  } else {
-    display = formattedInt;
-    numeric = intNum;
-  }
-
-  return { display, numeric };
+  return cleaned;
 }
 
 export const CurrencyInput: React.FC<CurrencyInputProps> = ({
@@ -112,7 +139,7 @@ export const CurrencyInput: React.FC<CurrencyInputProps> = ({
       try {
         inputRef.current.setSelectionRange(pos, pos);
       } catch {
-        // Ignora caso elemento não suporte
+        // Ignora caso elemento não suporte seleção
       }
       nextCursorPosRef.current = null;
     }
@@ -141,6 +168,61 @@ export const CurrencyInput: React.FC<CurrencyInputProps> = ({
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const input = inputRef.current;
+    if (!input) return;
+
+    // Se o usuário digitou '.' no teclado (ex: teclado numérico), converter para vírgula decimal
+    if (e.key === '.') {
+      e.preventDefault();
+      const { selectionStart, selectionEnd, value: currentVal } = input;
+      if (selectionStart !== null && selectionEnd !== null) {
+        if (!currentVal.includes(',')) {
+          const newVal = currentVal.slice(0, selectionStart) + ',' + currentVal.slice(selectionEnd);
+          const { display, numeric } = parseAndFormatTyping(newVal);
+          setTextValue(display);
+          onChange(numeric);
+          nextCursorPosRef.current = display.indexOf(',') + 1;
+        }
+      }
+      return;
+    }
+
+    // Interceptar Backspace sobre ponto separador de milhar (ex: "1.|500" -> apaga '1')
+    if (e.key === 'Backspace') {
+      const { selectionStart, selectionEnd, value: currentVal } = input;
+      if (selectionStart !== null && selectionStart === selectionEnd && selectionStart > 0) {
+        const charBefore = currentVal[selectionStart - 1];
+        if (charBefore === '.') {
+          e.preventDefault();
+          const newVal = currentVal.slice(0, selectionStart - 2) + currentVal.slice(selectionStart);
+          const { display, numeric } = parseAndFormatTyping(newVal);
+          setTextValue(display);
+          onChange(numeric);
+          nextCursorPosRef.current = Math.max(0, selectionStart - 2);
+          return;
+        }
+      }
+    }
+
+    // Interceptar Delete sobre ponto separador de milhar (ex: "1|.500" -> apaga '5')
+    if (e.key === 'Delete') {
+      const { selectionStart, selectionEnd, value: currentVal } = input;
+      if (selectionStart !== null && selectionStart === selectionEnd && selectionStart < currentVal.length) {
+        const charAfter = currentVal[selectionStart];
+        if (charAfter === '.') {
+          e.preventDefault();
+          const newVal = currentVal.slice(0, selectionStart) + currentVal.slice(selectionStart + 2);
+          const { display, numeric } = parseAndFormatTyping(newVal);
+          setTextValue(display);
+          onChange(numeric);
+          nextCursorPosRef.current = selectionStart;
+          return;
+        }
+      }
+    }
+  };
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const rawValue = e.target.value;
     const oldCursor = e.target.selectionStart ?? rawValue.length;
@@ -153,12 +235,12 @@ export const CurrencyInput: React.FC<CurrencyInputProps> = ({
       return;
     }
 
-    // Contar dígitos antes do cursor no texto anterior para preservar a posição
+    // Rastreamento preciso de dígitos antes do cursor
     const charsBeforeCursor = rawValue.slice(0, oldCursor);
     const digitsBeforeCursor = charsBeforeCursor.replace(/\D/g, '').length;
     const hasCommaBeforeCursor = charsBeforeCursor.includes(',');
 
-    // Parser suave
+    // Parser suave sem mutação indevida
     const { display, numeric } = parseAndFormatTyping(rawValue);
 
     // Calcular nova posição do cursor no texto formatado
@@ -172,18 +254,22 @@ export const CurrencyInput: React.FC<CurrencyInputProps> = ({
         targetPos = display.length;
       }
     } else {
-      let foundDigits = 0;
-      for (let i = 0; i < display.length; i++) {
-        if (display[i] >= '0' && display[i] <= '9') {
-          foundDigits++;
+      if (digitsBeforeCursor === 0) {
+        targetPos = 0;
+      } else {
+        let foundDigits = 0;
+        for (let i = 0; i < display.length; i++) {
+          if (display[i] >= '0' && display[i] <= '9') {
+            foundDigits++;
+          }
+          if (foundDigits === digitsBeforeCursor) {
+            targetPos = i + 1;
+            break;
+          }
         }
-        if (foundDigits === digitsBeforeCursor) {
-          targetPos = i + 1;
-          break;
+        if (foundDigits < digitsBeforeCursor) {
+          targetPos = display.indexOf(',') !== -1 ? display.indexOf(',') : display.length;
         }
-      }
-      if (foundDigits < digitsBeforeCursor) {
-        targetPos = display.indexOf(',') !== -1 ? display.indexOf(',') : display.length;
       }
     }
 
@@ -192,15 +278,15 @@ export const CurrencyInput: React.FC<CurrencyInputProps> = ({
     onChange(numeric);
   };
 
-  // Suporte a Paste limpo
+  // Suporte a Paste limpo e normalizado
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     const pasted = e.clipboardData.getData('text');
     if (!pasted) return;
 
-    const cleaned = pasted.replace(/[^\d,\.]/g, '');
-    if (cleaned) {
+    const normalized = normalizePaste(pasted);
+    if (normalized) {
       e.preventDefault();
-      const { display, numeric } = parseAndFormatTyping(cleaned);
+      const { display, numeric } = parseAndFormatTyping(normalized);
       setTextValue(display);
       onChange(numeric);
       nextCursorPosRef.current = display.length;
@@ -235,6 +321,7 @@ export const CurrencyInput: React.FC<CurrencyInputProps> = ({
           inputMode="decimal"
           value={textValue}
           onChange={handleChange}
+          onKeyDown={handleKeyDown}
           onFocus={handleFocus}
           onBlur={handleBlur}
           onPaste={handlePaste}

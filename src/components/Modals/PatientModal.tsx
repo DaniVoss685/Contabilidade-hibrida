@@ -4,14 +4,18 @@ import { Patient } from '../../types';
 import { db } from '../../lib/db';
 import { SupabaseService } from '../../lib/supabaseClient';
 import { getPhoneFieldLabel } from '../../lib/patientGuardianDisplay';
+import { getNameFieldLabel, getDocumentFieldLabel, isBirthDateRequired } from '../../lib/patientDocumentType';
 import { isPlaceholderPhoneNumber } from '../../lib/phoneUtils';
 import {
   formatCpf,
+  formatCnpj,
   isValidCpf,
+  isValidCnpj,
   isValidEmail,
   maskPhoneInput,
   isValidPhone,
   maskCpfInput,
+  maskCnpjInput,
   isValidCivilDate,
   isFutureCivilDate,
   getTodayCivilDate,
@@ -45,6 +49,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
 }) => {
   const toast = useToast();
   const [name, setName] = useState('');
+  const [documentType, setDocumentType] = useState<'CPF' | 'CNPJ'>('CPF');
   const [cpf, setCpf] = useState('');
   const [phone, setPhone] = useState('');
   const [birthDate, setBirthDate] = useState('');
@@ -71,7 +76,9 @@ export const PatientModal: React.FC<PatientModalProps> = ({
     if (isOpen) {
       if (isEdit && patient) {
         setName(patient.name || '');
-        setCpf(patient.cpf ? formatCpf(patient.cpf) : '');
+        const docType = patient.documentType === 'CNPJ' ? 'CNPJ' : 'CPF';
+        setDocumentType(docType);
+        setCpf(patient.cpf ? (docType === 'CNPJ' ? formatCnpj(patient.cpf) : formatCpf(patient.cpf)) : '');
         setPhone(patient.phone ? maskPhoneInput(patient.phone) : '');
         setBirthDate(patient.birthDate || '');
         setEmail(patient.email || '');
@@ -97,6 +104,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
         }
       } else {
         setName(initialData?.name || '');
+        setDocumentType('CPF');
         setCpf(initialData?.cpf ? formatCpf(initialData.cpf) : '');
         setPhone(initialData?.phone ? maskPhoneInput(initialData.phone) : '');
         setBirthDate(initialData?.birthDate || '');
@@ -155,12 +163,14 @@ export const PatientModal: React.FC<PatientModalProps> = ({
       newErrors.name = 'Informe o nome completo do paciente.';
     }
 
-    // 2. CPF (Obrigatório, algoritmo oficial e unicidade no tenant)
+    // 2. CPF ou CNPJ (Obrigatório, algoritmo oficial e unicidade no tenant) —
+    // depende de documentType (Pessoa Física / Pessoa Jurídica).
     const cleanCpf = cpf.replace(/\D/g, '');
+    const isCnpj = documentType === 'CNPJ';
     if (!cleanCpf) {
-      newErrors.cpf = 'Informe o CPF do paciente.';
-    } else if (cleanCpf.length !== 11 || !isValidCpf(cleanCpf)) {
-      newErrors.cpf = 'Informe um CPF válido.';
+      newErrors.cpf = isCnpj ? 'Informe o CNPJ da empresa.' : 'Informe o CPF do paciente.';
+    } else if (isCnpj ? cleanCpf.length !== 14 || !isValidCnpj(cleanCpf) : cleanCpf.length !== 11 || !isValidCpf(cleanCpf)) {
+      newErrors.cpf = isCnpj ? 'Informe um CNPJ válido.' : 'Informe um CPF válido.';
     } else {
       // Checar duplicidade no tenant
       const existing = db.getPatients().find((p) => {
@@ -168,7 +178,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
         return p.cpf.replace(/\D/g, '') === cleanCpf;
       });
       if (existing) {
-        newErrors.cpf = 'Já existe um paciente cadastrado com este CPF.';
+        newErrors.cpf = isCnpj ? 'Já existe um cliente cadastrado com este CNPJ.' : 'Já existe um paciente cadastrado com este CPF.';
       }
     }
 
@@ -183,14 +193,17 @@ export const PatientModal: React.FC<PatientModalProps> = ({
       newErrors.guardianName = 'Informe o nome do responsável.';
     }
 
-    // 4. Data de Nascimento (Obrigatório, formato civil YYYY-MM-DD, válida e não futura)
+    // 4. Data de Nascimento — obrigatória apenas para Pessoa Física (CPF).
+    // Empresas (CNPJ) não têm data de nascimento.
     const cleanBirthDate = birthDate.trim();
-    if (!cleanBirthDate) {
-      newErrors.birthDate = 'Informe a data de nascimento do paciente.';
-    } else if (!isValidCivilDate(cleanBirthDate)) {
-      newErrors.birthDate = 'Informe uma data de nascimento válida.';
-    } else if (isFutureCivilDate(cleanBirthDate)) {
-      newErrors.birthDate = 'A data de nascimento não pode ser futura.';
+    if (isBirthDateRequired(documentType)) {
+      if (!cleanBirthDate) {
+        newErrors.birthDate = 'Informe a data de nascimento do paciente.';
+      } else if (!isValidCivilDate(cleanBirthDate)) {
+        newErrors.birthDate = 'Informe uma data de nascimento válida.';
+      } else if (isFutureCivilDate(cleanBirthDate)) {
+        newErrors.birthDate = 'A data de nascimento não pode ser futura.';
+      }
     }
 
     // 5. E-mail (Opcional, mas se preenchido deve ser válido)
@@ -203,11 +216,22 @@ export const PatientModal: React.FC<PatientModalProps> = ({
   };
 
   const handleCpfChange = (val: string) => {
-    setCpf(maskCpfInput(val));
+    setCpf(documentType === 'CNPJ' ? maskCnpjInput(val) : maskCpfInput(val));
     setIsDirty(true);
     if (errors.cpf) {
       setErrors((prev) => ({ ...prev, cpf: '' }));
     }
+  };
+
+  const handleDocumentTypeChange = (next: 'CPF' | 'CNPJ') => {
+    setDocumentType(next);
+    setIsDirty(true);
+    // Reaplica a máscara correta sobre os dígitos já digitados, em vez de
+    // limpar o campo — evita perder o que o usuário já tinha começado a digitar.
+    const digits = cpf.replace(/\D/g, '');
+    setCpf(next === 'CNPJ' ? maskCnpjInput(digits) : maskCpfInput(digits));
+    if (errors.cpf) setErrors((prev) => ({ ...prev, cpf: '' }));
+    if (next === 'CNPJ' && errors.birthDate) setErrors((prev) => ({ ...prev, birthDate: '' }));
   };
 
   const handlePhoneChange = (val: string) => {
@@ -245,7 +269,9 @@ export const PatientModal: React.FC<PatientModalProps> = ({
       const cleanName = name.trim().replace(/\s+/g, ' ');
       const cleanCpf = cpf.replace(/\D/g, '');
       const cleanPhone = phone.trim();
-      const cleanBirthDate = birthDate.trim();
+      // Pessoa Jurídica (CNPJ) não tem data de nascimento — nunca gravar um
+      // valor residual se o usuário trocou de CPF para CNPJ depois de digitar.
+      const cleanBirthDate = isBirthDateRequired(documentType) ? birthDate.trim() : '';
       const cleanEmail = email.trim() || undefined;
 
       // Aviso preventivo (NÃO bloqueante) de telefone compartilhado com outro
@@ -281,6 +307,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
         // UPDATE REAL no PostgreSQL (df_patients)
         const res = await db.updatePatientAsync(patient.id, {
           name: cleanName,
+          documentType,
           cpf: cleanCpf,
           phone: cleanPhone,
           phoneOwner,
@@ -297,6 +324,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
         savedPatient = {
           ...patient,
           name: cleanName,
+          documentType,
           cpf: cleanCpf,
           phone: cleanPhone,
           phoneOwner,
@@ -307,6 +335,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
         // CADASTRO NOVO (INSERT)
         const res = await db.addPatientAsync({
           name: cleanName,
+          documentType,
           cpf: cleanCpf,
           phone: cleanPhone,
           phoneOwner,
@@ -406,14 +435,39 @@ export const PatientModal: React.FC<PatientModalProps> = ({
               </div>
             )}
 
-            {/* Nome Completo */}
+            {/* Tipo de cadastro: Pessoa Física (CPF) ou Pessoa Jurídica (CNPJ) */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">Tipo de cadastro</label>
+              <div className="flex items-center gap-1 p-0.5 bg-slate-100 rounded-lg w-fit">
+                <button
+                  type="button"
+                  onClick={() => handleDocumentTypeChange('CPF')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer ${
+                    documentType === 'CPF' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Pessoa Física (CPF)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDocumentTypeChange('CNPJ')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer ${
+                    documentType === 'CNPJ' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Pessoa Jurídica (CNPJ)
+                </button>
+              </div>
+            </div>
+
+            {/* Nome Completo / Razão Social */}
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                Nome Completo <span className="text-rose-500">*</span>
+                {getNameFieldLabel(documentType)} <span className="text-rose-500">*</span>
               </label>
               <input
                 type="text"
-                placeholder="Ex: Maria da Silva"
+                placeholder={documentType === 'CNPJ' ? 'Ex: Clínica Exemplo LTDA' : 'Ex: Maria da Silva'}
                 value={name}
                 onChange={(e) => {
                   setName(e.target.value);
@@ -434,16 +488,16 @@ export const PatientModal: React.FC<PatientModalProps> = ({
               )}
             </div>
 
-            {/* Grid: CPF & Data de Nascimento */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Grid: CPF/CNPJ & Data de Nascimento (Pessoa Física apenas) */}
+            <div className={`grid grid-cols-1 gap-3 ${isBirthDateRequired(documentType) ? 'sm:grid-cols-2' : ''}`}>
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  CPF <span className="text-rose-500">*</span>
+                  {getDocumentFieldLabel(documentType)} <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
-                  placeholder="000.000.000-00"
-                  maxLength={14}
+                  placeholder={documentType === 'CNPJ' ? '00.000.000/0000-00' : '000.000.000-00'}
+                  maxLength={documentType === 'CNPJ' ? 18 : 14}
                   value={cpf}
                   onChange={(e) => handleCpfChange(e.target.value)}
                   className={`w-full text-xs rounded-xl border p-2.5 bg-white font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none transition-all ${
@@ -460,22 +514,24 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                 )}
               </div>
 
-              <div>
-                <DatePicker
-                  label="Data de Nascimento"
-                  required
-                  value={birthDate}
-                  onChange={handleBirthDateChange}
-                  placeholder="DD/MM/AAAA"
-                  maxDate={getTodayCivilDate()}
-                />
-                {errors.birthDate && (
-                  <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
-                    <AlertCircle className="w-3 h-3 flex-shrink-0" />
-                    {errors.birthDate}
-                  </p>
-                )}
-              </div>
+              {isBirthDateRequired(documentType) && (
+                <div>
+                  <DatePicker
+                    label="Data de Nascimento"
+                    required
+                    value={birthDate}
+                    onChange={handleBirthDateChange}
+                    placeholder="DD/MM/AAAA"
+                    maxDate={getTodayCivilDate()}
+                  />
+                  {errors.birthDate && (
+                    <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                      {errors.birthDate}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* WhatsApp / Telefone & E-mail */}

@@ -28,6 +28,7 @@ import {
   calculateSimplesNacionalMonthlyTax,
   getMonthlyReceivablesSummary,
   getMonthlyExpensesSummary,
+  calculateDashboardProjection,
 } from '../../lib/taxEngine';
 import { formatCurrency, formatPercent } from '../../lib/masks';
 import { db } from '../../lib/db';
@@ -131,7 +132,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     );
   }, [sales, competenceStr, effectiveYear, taxRulesSimples, payrollHistory, professional]);
 
-  // Cash flow summaries
+  // Cash flow summaries and unified projection
+  const totalTaxesEstimated = cpfTax.carneLeaoEstimated + cnpjTax.dasEstimated;
+
+  const projection = useMemo(() => {
+    return calculateDashboardProjection({
+      sales,
+      expenses,
+      competence: competenceStr,
+      viewMode,
+      taxesEstimated: totalTaxesEstimated,
+    });
+  }, [sales, expenses, competenceStr, viewMode, totalTaxesEstimated]);
+
   const receivablesSummary = useMemo(() => {
     return getMonthlyReceivablesSummary(sales, competenceStr);
   }, [sales, competenceStr]);
@@ -141,19 +154,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [expenses, competenceStr]);
 
   // General Totals
-  const totalRevenue =
-    viewMode === 'REALIZADO'
-      ? receivablesSummary.totalReceived
-      : receivablesSummary.totalReceived + receivablesSummary.totalToReceive;
-
-  const totalExpenses =
-    viewMode === 'REALIZADO'
-      ? expensesSummary.totalPaid
-      : expensesSummary.totalPaid + expensesSummary.totalToPay;
-
-  const operatingResult = totalRevenue - totalExpenses;
-  const totalTaxesEstimated = cpfTax.carneLeaoEstimated + cnpjTax.dasEstimated;
-  const netResultAfterTax = operatingResult - totalTaxesEstimated;
+  const totalRevenue = projection.activeRevenue.total;
+  const totalExpenses = projection.activeExpenses.total;
+  const operatingResult = projection.operatingResult;
+  const netResultAfterTax = projection.netResult;
 
   // Month names in Portuguese
   const months = [
@@ -248,7 +252,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
                 Margem Líquida Real:{' '}
                 {totalRevenue > 0
-                  ? formatPercent((netResultAfterTax / totalRevenue) * 100)
+                  ? formatPercent(projection.netMarginPercent)
                   : '0%'}
               </span>
             </div>
@@ -270,7 +274,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 Receitas {viewMode === 'REALIZADO' ? 'Efetivadas' : 'Totais'}
               </span>
               <span className="text-emerald-700 font-bold font-mono text-[11px] bg-white px-2 py-0.5 rounded-full border border-emerald-200/80 shadow-2xs">
-                {receivablesSummary.countTotal ?? 0} {receivablesSummary.countTotal === 1 ? 'venda' : 'vendas'}
+                {projection.activeRevenue.salesCount} {projection.activeRevenue.salesCount === 1 ? 'venda' : 'vendas'}
               </span>
             </div>
             <div className="text-2xl font-black text-slate-900 font-mono tracking-tight tabular-nums">
@@ -278,11 +282,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="flex items-center gap-2 text-[11px] text-slate-500 pt-1 border-t border-emerald-100/70">
               <span>
-                CPF: <strong className="text-slate-800 font-mono">{formatCurrency(receivablesSummary.cpfReceived)}</strong>
+                CPF: <strong className="text-slate-800 font-mono">{formatCurrency(projection.activeRevenue.cpf)}</strong>
               </span>
               <span className="text-emerald-300">•</span>
               <span>
-                PJ: <strong className="text-slate-800 font-mono">{formatCurrency(receivablesSummary.cnpjReceived)}</strong>
+                PJ: <strong className="text-slate-800 font-mono">{formatCurrency(projection.activeRevenue.cnpj)}</strong>
               </span>
             </div>
           </div>
@@ -295,7 +299,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 Despesas {viewMode === 'REALIZADO' ? 'Pagas' : 'Totais'}
               </span>
               <span className="text-rose-700 font-bold font-mono text-[11px] bg-white px-2 py-0.5 rounded-full border border-rose-200/80 shadow-2xs">
-                {expensesSummary.totalCount} {expensesSummary.totalCount === 1 ? 'lançamento' : 'lançamentos'}
+                {projection.activeExpenses.count} {projection.activeExpenses.count === 1 ? 'lançamento' : 'lançamentos'}
               </span>
             </div>
             <div className="text-2xl font-black text-slate-900 font-mono tracking-tight tabular-nums">
@@ -303,11 +307,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="flex items-center gap-2 text-[11px] text-slate-500 pt-1 border-t border-rose-100/70">
               <span>
-                Dedutível PF: <strong className="text-slate-800 font-mono">{formatCurrency(expensesSummary.cpfDeductiblePaid)}</strong>
+                Dedutível PF: <strong className="text-slate-800 font-mono">{formatCurrency(projection.activeExpenses.cpfDeductible)}</strong>
               </span>
               <span className="text-rose-300">•</span>
               <span>
-                PJ: <strong className="text-slate-800 font-mono">{formatCurrency(expensesSummary.cnpjOperationalPaid)}</strong>
+                PJ: <strong className="text-slate-800 font-mono">{formatCurrency(projection.activeExpenses.cnpjOperational)}</strong>
               </span>
             </div>
           </div>

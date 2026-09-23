@@ -737,7 +737,7 @@ export const DentalWhatsAppService = {
       content: content.trim(),
       msg_type: 'text',
       is_read: true,
-      delivery_status: evolutionMsgId ? 2 : -1, // 2: Enviado ao servidor; -1: Falha no envio
+      delivery_status: evolutionMsgId ? 2 : 0, // 2: Enviado ao servidor; 0: Falha no envio
       reply_to_id: replyToId || null,
       remote_jid: `${recipientNumber}@s.whatsapp.net`,
       created_at: new Date().toISOString(),
@@ -880,7 +880,7 @@ export const DentalWhatsAppService = {
       media_file_name: file.name,
       media_mime_type: file.type,
       is_read: true,
-      delivery_status: evolutionMsgId ? 2 : -1, // 2: Enviado; -1: Falha
+      delivery_status: evolutionMsgId ? 2 : 0, // 2: Enviado; 0: Falha
       reply_to_id: replyToId || null,
       remote_jid: `${recipientNumber}@s.whatsapp.net`,
       created_at: new Date().toISOString(),
@@ -1004,7 +1004,7 @@ export const DentalWhatsAppService = {
       media_file_name: 'audio.ogg',
       media_mime_type: audioBlob.type || 'audio/ogg',
       is_read: true,
-      delivery_status: evolutionMsgId ? 2 : -1, // 2: Enviado; -1: Falha
+      delivery_status: evolutionMsgId ? 2 : 0, // 2: Enviado; 0: Falha
       reply_to_id: replyToId || null,
       remote_jid: `${recipientNumber}@s.whatsapp.net`,
       created_at: new Date().toISOString(),
@@ -1023,7 +1023,7 @@ export const DentalWhatsAppService = {
   },
 
   /**
-   * Reenvia uma mensagem que falhou no envio anterior (delivery_status === -1)
+   * Reenvia uma mensagem que falhou no envio anterior (delivery_status === 0)
    */
   async retryFailedMessage(params: {
     messageId: string;

@@ -313,6 +313,7 @@ export function mapDbPatientToApp(db: any): Patient {
     tenantId: db.tenant_id,
     orgId: db.org_id,
     name: db.name,
+    documentType: db.document_type === 'CNPJ' ? 'CNPJ' : 'CPF',
     cpf: db.cpf || '',
     email: db.email || '',
     phone: db.phone || '',
@@ -334,6 +335,7 @@ export function mapAppPatientToDb(app: Patient, tenantId: string): any {
     tenant_id: tenantId,
     org_id: app.orgId || `org_${tenantId}`,
     name: app.name,
+    document_type: app.documentType === 'CNPJ' ? 'CNPJ' : 'CPF',
     cpf: app.cpf || '',
     email: app.email || '',
     phone: app.phone || '',
@@ -1536,6 +1538,7 @@ export const SupabaseService = {
     await this.ensureTenantExists(tenantId);
     const payload = {
       name: patient.name,
+      document_type: patient.documentType === 'CNPJ' ? 'CNPJ' : 'CPF',
       cpf: patient.cpf || '',
       email: patient.email || '',
       phone: patient.phone || '',

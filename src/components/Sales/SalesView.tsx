@@ -27,7 +27,8 @@ import { formatCurrency, formatCpf, formatDateBr, normalizeSearchText, matchDocu
 import { exportToCsv } from '../../lib/exportUtils';
 import { db, getSalePaymentSummary } from '../../lib/db';
 import { NewSaleModal } from '../Modals/NewSaleModal';
-import { CustomSelect, ConfirmDialog, useToast } from '../UI';
+import { CustomSelect, ConfirmDialog, useToast, SortableHeader } from '../UI';
+import { useSortableData } from '../../hooks/useSortableData';
 
 const MONTH_NAMES = [
   '',
@@ -196,8 +197,10 @@ export const SalesView: React.FC<SalesViewProps> = ({
       let matchesDoc = true;
       if (docFilter === 'PENDING') {
         if (sale.taxOrigin === 'CPF') {
+          // documentRequested === false: paciente não solicitou documento —
+          // não é pendência operacional, nunca conta no filtro/badge.
           matchesDoc = sale.installments.some(
-            (i) => i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO'
+            (i) => i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO' && i.documentRequested !== false
           );
         } else {
           matchesDoc = sale.nfseStatus !== 'EMITIDA';
@@ -215,6 +218,13 @@ export const SalesView: React.FC<SalesViewProps> = ({
       return matchesSearch && matchesOrigin && matchesProcedure && matchesPaymentMethod && matchesDoc;
     });
   }, [sales, searchTerm, taxOriginFilter, procedureFilter, paymentMethodFilter, docFilter]);
+
+  const {
+    sortedItems: displaySales,
+    sortKey,
+    sortDirection,
+    handleSort,
+  } = useSortableData(filteredSales);
 
   const handleExportCsv = () => {
     const headers = [
@@ -241,7 +251,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
       s.installmentsCount,
       s.taxOrigin === 'CPF' ? 'Receita Saúde' : `NFS-e ${s.nfseNumber || ''}`,
       s.taxOrigin === 'CPF'
-        ? s.installments.some((i) => i.receitaSaudeStatus === 'A_EMITIR')
+        ? s.installments.some((i) => i.receitaSaudeStatus === 'A_EMITIR' && i.documentRequested !== false)
           ? 'Pendente'
           : 'Emitido'
         : s.nfseStatus || 'A_EMITIR',
@@ -460,35 +470,84 @@ export const SalesView: React.FC<SalesViewProps> = ({
                 <th className="py-3 px-4 w-10 text-center">
                   <button
                     type="button"
-                    onClick={() => handleSelectAll(filteredSales)}
+                    onClick={() => handleSelectAll(displaySales)}
                     className="cursor-pointer text-slate-400 hover:text-slate-700"
                   >
-                    {filteredSales.length > 0 && selectedIds.size === filteredSales.length ? (
+                    {displaySales.length > 0 && selectedIds.size === displaySales.length ? (
                       <CheckSquare className="w-4 h-4 text-teal-600" />
                     ) : (
                       <Square className="w-4 h-4 text-slate-300" />
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4 text-center">Data da Venda</th>
-                <th className="py-3 px-4 text-center">Origem</th>
-                <th className="py-3 px-4 text-center">Paciente (Beneficiário)</th>
-                <th className="py-3 px-4 text-center">Procedimento</th>
-                <th className="py-3 px-4 text-center">Documento Fiscal</th>
-                <th className="py-3 px-4 text-center">Valor Total</th>
-                <th className="py-3 px-4 text-center">Parcelas</th>
+                <SortableHeader
+                  label="Data da Venda"
+                  sortKey="serviceDate"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Origem"
+                  sortKey="taxOrigin"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Paciente (Beneficiário)"
+                  sortKey="patientName"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Procedimento"
+                  sortKey="procedureName"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Documento Fiscal"
+                  sortKey="nfseStatus"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Valor Total"
+                  sortKey="totalValue"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Parcelas"
+                  sortKey="installmentsCount"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
-              {filteredSales.length === 0 ? (
+              {displaySales.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-8 text-center text-slate-400">
                     Nenhuma receita encontrada com os filtros selecionados.
                   </td>
                 </tr>
               ) : (
-                filteredSales.map((sale) => {
+                displaySales.map((sale) => {
                   const isExpanded = expandedSaleId === sale.id;
                   const isSelected = selectedIds.has(sale.id);
                   const summary = getSalePaymentSummary(sale);
@@ -496,7 +555,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
                   const isTotallyUnreceived = receivedInstallments.length === 0;
                   const hasPendingReceitaSaude =
                     sale.taxOrigin === 'CPF' &&
-                    receivedInstallments.some((i) => i.receitaSaudeStatus !== 'EMITIDO');
+                    receivedInstallments.some((i) => i.receitaSaudeStatus !== 'EMITIDO' && i.documentRequested !== false);
 
                   return (
                     <React.Fragment key={sale.id}>

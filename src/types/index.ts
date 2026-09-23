@@ -270,12 +270,120 @@ export interface Patient {
   tenantId?: string;
   orgId: string;
   name: string;
+  // 'CPF' (default, pessoa física) ou 'CNPJ' (pessoa jurídica — empresa que
+  // paga a clínica, ex.: convênio/escritório). Quando CNPJ: `cpf` guarda o
+  // CNPJ (14 dígitos) e `birthDate` não se aplica (nunca obrigatória nem
+  // gravada). Independente de Sale.taxOrigin, que já existia antes e
+  // continua sendo escolhido por venda, não derivado deste campo.
+  documentType?: 'CPF' | 'CNPJ';
   cpf: string;
   email?: string;
   phone?: string;
+  // Contexto do telefone acima: se pertence ao próprio paciente ou a um
+  // responsável (mãe/pai/tutor). Telefone repetido entre pacientes é válido
+  // (irmãos compartilhando o telefone do responsável) — ver df_patient_guardians.
+  phoneOwner?: 'PATIENT' | 'RESPONSIBLE';
   birthDate?: string;
   notes?: string;
+  city?: string;
+  state?: string;
+  allergies?: string[];
+  conditions?: string[];
+  medications?: string[];
+  clinicalNotes?: string;
+  photoUrl?: string; // Foto manual cadastrada no paciente
+  whatsappPhotoUrl?: string; // Foto obtida da integração autorizada do WhatsApp
+  legacyMetadata?: LegacyPatientMetadata; // Dados de migração de sistema anterior ainda não promovidos a campo de UI (somente leitura — não editável pelo formulário manual)
   createdAt: string;
+}
+
+// Dados capturados de uma migração de sistema anterior (ver
+// src/lib/legacyImportMatching.ts e o plano em .claude/plans) que ainda não
+// têm campo próprio no cadastro do Dental. Nunca gravado pelo formulário
+// manual de paciente — só pela importação legada.
+export interface LegacyPatientMetadata {
+  sourceSystem?: string;
+  legacyClientUuid?: string; // Clientes.identificador
+  legacyClientId?: string; // Clientes.id_cliente
+  rg?: string;
+  sexo?: string;
+  profissao?: string;
+  phone2?: string;
+  phone3?: string;
+  rawCpfOriginal?: string; // preservado quando o CPF informado era inválido/placeholder
+  cpfClassification?: 'VALID' | 'BLANK' | 'PLACEHOLDER' | 'INVALID';
+  address?: {
+    logradouro?: string;
+    numero?: string;
+    complemento?: string;
+    bairro?: string;
+    cidade?: string;
+    uf?: string;
+    cep?: string;
+  };
+  responsavel?: {
+    nome?: string;
+    nascimento?: string;
+    grauParentesco?: string;
+    profissao?: string;
+    sexo?: string;
+    rg?: string;
+    cpf?: string;
+    telefone?: string;
+    email?: string;
+    endereco?: {
+      logradouro?: string;
+      numero?: string;
+      complemento?: string;
+      bairro?: string;
+      cidade?: string;
+      uf?: string;
+      cep?: string;
+    };
+  };
+  reviewFlags?: string[];
+  // Campos adicionais do arquivo de origem sem lugar próprio na estrutura acima,
+  // preservados por completude (não descartar silenciosamente), ver relatório
+  // final da importação para a lista exata do que cada chave contém.
+  extra?: Record<string, string>;
+}
+
+// Linha de df_legacy_import_map — idempotência da migração de sistema anterior
+// (ver supabase/migrations/20260922180000_legacy_import_infrastructure.sql).
+export interface LegacyImportMapEntry {
+  entityType: 'patient' | 'clinical_record';
+  legacyId: string;
+  targetId: string;
+  importSessionId?: string;
+  importedAt: string;
+}
+
+export type LegacyImportSessionStatus =
+  | 'DRY_RUN_PENDING'
+  | 'DRY_RUN_COMPLETE'
+  | 'IMPORT_IN_PROGRESS'
+  | 'IMPORT_COMPLETE'
+  | 'INVALIDATED';
+
+// Espelha df_legacy_import_sessions — retornado pela Edge Function
+// dental-legacy-patient-import (action=create_session).
+export interface LegacyImportSession {
+  id: string;
+  tenantId: string;
+  targetTenantName: string | null;
+  sourceSystem: string;
+  status: LegacyImportSessionStatus;
+  clientsFileName?: string | null;
+  clientsFileChecksum?: string | null;
+  recordsFileName?: string | null;
+  recordsFileChecksum?: string | null;
+  drySummary?: Record<string, any> | null;
+  professionalMapping?: Record<string, any> | null;
+  procedureMapping?: Record<string, any> | null;
+  createdBy?: string | null;
+  createdByName?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Payer {
@@ -356,6 +464,15 @@ export interface DentalProcedure {
   notes?: string;
 }
 
+// Classificação fiscal do recebimento — dimensão INDEPENDENTE da forma de
+// pagamento e da solicitação de documento. Default TRIBUTAVEL (ausência do
+// campo = TRIBUTAVEL, comportamento idêntico ao anterior a este campo
+// existir). NAO_TRIBUTAVEL/EXCLUIDO_DA_BASE exigem motivo + fundamento +
+// responsável + data/hora (ver SaleInstallment.fiscalClassification* abaixo
+// e db.updateFiscalClassification). NUNCA derivar automaticamente de
+// documentRequested — são campos sem nenhum acoplamento entre si.
+export type FiscalClassification = 'TRIBUTAVEL' | 'NAO_TRIBUTAVEL' | 'EXCLUIDO_DA_BASE';
+
 // 5. Sales & Installments
 export interface SaleInstallment {
   id: string;
@@ -367,11 +484,30 @@ export interface SaleInstallment {
   paymentDate?: string; // Data de recebimento YYYY-MM-DD
   amountReceived?: number;
   status: InstallmentStatus;
-  
+
   // Receita Saúde (per payment for CPF)
   receitaSaudeStatus?: ReceitaSaudeStatus;
   receitaSaudeId?: string; // External identifier / registration
   receitaSaudeEmittedAt?: string;
+
+  // O paciente solicitou recibo/documento para este recebimento? Relevante
+  // principalmente para DINHEIRO (nas demais formas o comportamento de
+  // alerta de Receita Saúde não muda). true = solicitou (alertas normais de
+  // pendência de emissão continuam); false = não solicitou (nenhum alerta
+  // operacional de "documento pendente" deve aparecer — o valor continua
+  // integralmente em Receitas Efetivadas e no faturamento gerencial);
+  // undefined = não aplicável / registro legado (comportamento inalterado,
+  // idêntico a antes deste campo existir — nunca inferir/inventar).
+  // NUNCA usar isoladamente para alterar fiscalClassification.
+  documentRequested?: boolean;
+
+  // Classificação fiscal explícita — ver FiscalClassification acima.
+  fiscalClassification?: FiscalClassification;
+  fiscalClassificationReason?: string; // motivo (obrigatório se != TRIBUTAVEL)
+  fiscalClassificationCategory?: string; // fundamento/categoria (obrigatório se != TRIBUTAVEL)
+  fiscalClassificationBy?: string; // userId responsável pela última alteração
+  fiscalClassificationByName?: string;
+  fiscalClassificationAt?: string; // ISO timestamp da última alteração
 
   paymentMethod?: PaymentMethod;
   bankAccountId?: string;
@@ -452,6 +588,16 @@ export interface AccountReceivableItem {
   bankAccountId?: string;
   originalEstimatedValue?: number;
   priceHistory?: Array<{ date: string; from: number; to: number; note?: string }>;
+
+  // Ver SaleInstallment acima — mesmas três dimensões independentes,
+  // propagadas em db.getAccountsReceivable().
+  documentRequested?: boolean;
+  fiscalClassification?: FiscalClassification;
+  fiscalClassificationReason?: string;
+  fiscalClassificationCategory?: string;
+  fiscalClassificationBy?: string;
+  fiscalClassificationByName?: string;
+  fiscalClassificationAt?: string;
 }
 
 // 7. Chart of Accounts (Plano de Contas)
@@ -831,3 +977,171 @@ export type NavTab =
   | 'settings';
 
 export * from './whatsapp';
+
+// 19. Prontuário Clínico Odontológico (Clinical Records, Attachments, Before/After & Import/Export)
+export type ClinicalRecordType =
+  | 'CONSULTA_INICIAL'
+  | 'AVALIACAO'
+  | 'EVOLUCAO'
+  | 'PROCEDIMENTO'
+  | 'RETORNO'
+  | 'INTERCORRENCIA'
+  | 'OBSERVACAO'
+  | 'CONCLUSAO'
+  | 'PLANO_TRATAMENTO'
+  | 'OUTRO';
+
+export type ClinicalRecordStatus = 'DRAFT' | 'FINALIZED' | 'AMENDED' | 'VOIDED';
+
+export interface ClinicalRecordAmendment {
+  id: string;
+  tenantId: string;
+  clinicalRecordId: string;
+  reason: string;
+  content: string;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+}
+
+export type ClinicalAttachmentType =
+  | 'PHOTO_BEFORE'
+  | 'PHOTO_AFTER'
+  | 'RADIOGRAPHY'
+  | 'EXAM'
+  | 'DOCUMENT'
+  | 'CONSENT_FORM'
+  | 'REPORT'
+  | 'OTHER';
+
+export interface ClinicalAttachment {
+  id: string;
+  tenantId: string;
+  patientId: string;
+  clinicalRecordId?: string;
+  storagePath: string;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+  attachmentType: ClinicalAttachmentType;
+  caption?: string;
+  date?: string;
+  procedureId?: string;
+  procedureName?: string;
+  beforeAfterPairId?: string;
+  createdBy: string;
+  createdAt: string;
+  signedUrl?: string;
+  source?: 'whatsapp' | null;
+  sourceMessageId?: string | null;
+  sourceContactId?: string | null;
+  sourceConversationId?: string | null;
+}
+
+export interface ClinicalRecord {
+  id: string;
+  tenantId: string;
+  patientId: string;
+  professionalId: string;
+  professionalName?: string;
+  professionalCro?: string;
+  recordType: ClinicalRecordType;
+  procedureId?: string;
+  procedureName?: string;
+  recordDate: string; // YYYY-MM-DD
+  recordTime?: string; // HH:mm
+  complaint?: string; // Queixa / Motivo
+  assessment?: string; // Avaliação / Situação encontrada
+  conduct?: string; // Conduta / Procedimento realizado (legado ou incorporado na evolução)
+  evolution: string; // Evolução principal (concentra conduta, técnicas, materiais e desfecho)
+  conclusion?: string; // Conclusão do atendimento / tratamento (quando tipo Conclusão)
+  guidance?: string; // Orientações ao paciente
+  returnDate?: string; // Retorno recomendado (data ou prazo)
+  status: ClinicalRecordStatus;
+  attachmentsCount?: number;
+  attachments?: ClinicalAttachment[];
+  amendments?: ClinicalRecordAmendment[];
+  origin?: 'MANUAL' | 'IMPORT';
+  importMetadata?: {
+    filename?: string;
+    importedAt?: string;
+    importedBy?: string;
+    [key: string]: any; // migração legada preserva campos adicionais (data_abertura, guia, etc.)
+  };
+  // Campos de histórico de procedimento legado (migração de sistema anterior) —
+  // só preenchidos quando origin='IMPORT'. legacyStatus preserva o status original
+  // do sistema anterior ("Finalizado"/"Em Execução"); o status técnico continua
+  // sempre FINALIZED (ver regra de exibição em PatientClinicalTimeline.tsx).
+  toothNumber?: string;
+  toothFace?: string;
+  legacyTussCode?: string;
+  legacyProcedureName?: string;
+  legacyDentistName?: string;
+  legacyStatus?: string;
+  continuationOfRecordId?: string; // Referência a registro clínico anterior quando nova evolução
+  continuationDate?: string;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt?: string;
+  finalizedBy?: string;
+  finalizedByName?: string;
+  finalizedAt?: string;
+  voidedBy?: string;
+  voidedByName?: string;
+  voidedAt?: string;
+  voidReason?: string; // Motivo obrigatório da invalidação
+}
+
+export interface ClinicalBeforeAfterPair {
+  id: string;
+  tenantId: string;
+  patientId: string;
+  title: string;
+  procedureId?: string;
+  procedureName?: string;
+  observation?: string;
+  beforeAttachmentId: string;
+  afterAttachmentId: string;
+  beforeAttachment?: ClinicalAttachment;
+  afterAttachment?: ClinicalAttachment;
+  beforeDate?: string;
+  afterDate?: string;
+  beforePositionX?: number;
+  beforePositionY?: number;
+  beforeZoom?: number;
+  afterPositionX?: number;
+  afterPositionY?: number;
+  afterZoom?: number;
+  dividerPosition?: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ColumnMapping {
+  sourceColumn: string;
+  targetField: string;
+}
+
+export interface ImportPreviewRow {
+  rowNumber: number;
+  data: Record<string, string>;
+  mappedPatient: Partial<Patient>;
+  mappedRecord?: Partial<ClinicalRecord>;
+  status: 'VALID' | 'WARNING' | 'ERROR';
+  messages: string[];
+  duplicateAction?: 'IGNORE' | 'UPDATE' | 'MERGE';
+  existingPatientId?: string;
+}
+
+export interface ImportReportSummary {
+  totalRows: number;
+  validRows: number;
+  warningRows: number;
+  errorRows: number;
+  importedCount: number;
+  updatedCount: number;
+  ignoredCount: number;
+  errorCount: number;
+  errors: Array<{ rowNumber: number; reason: string; dataSample: string }>;
+}

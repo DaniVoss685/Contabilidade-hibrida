@@ -1287,7 +1287,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
 
   // Renderizador de Status de Entrega
   const renderDeliveryStatus = (status: number, msg?: WhatsAppMessage) => {
-    if (status === -1) {
+    if (status === 0) {
       const isRetrying = msg && retryingMsgId === msg.id;
       return (
         <span className="flex items-center gap-1 text-rose-300 font-semibold" title="Falha no envio da mensagem">

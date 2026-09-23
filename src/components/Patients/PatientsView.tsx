@@ -23,14 +23,18 @@ import {
   Layers,
   ExternalLink,
   ChevronRight,
+  Sparkles,
+  Paperclip,
+  UploadCloud,
+  Download,
 } from 'lucide-react';
-import { Patient, Sale } from '../../types';
+import { Patient, Sale, ClinicalRecord, ClinicalAttachment, ClinicalBeforeAfterPair } from '../../types';
 import {
   formatCpf,
+  formatCpfOrCnpj,
+  formatPhone,
   formatCurrency,
   formatDateBr,
-  normalizeSearchText,
-  matchDocumentSearch,
   calculateAge,
   calculateNextBirthday,
 } from '../../lib/masks';
@@ -40,9 +44,23 @@ import {
   EnhancedSaleHistoryItem,
 } from '../../lib/patientHistory';
 import { db } from '../../lib/db';
-import { useToast } from '../UI';
+import { SupabaseService } from '../../lib/supabaseClient';
+import { filterPatientsByGuardian, searchPatientsWithGuardian, GuardianFilter } from '../../lib/patientGuardianDisplay';
+import { useToast, SortableHeader } from '../UI';
+import { useSortableData } from '../../hooks/useSortableData';
 import { PatientModal } from '../Modals/PatientModal';
 import { PatientProcedureModal } from './PatientProcedureModal';
+import { PatientSummaryTab } from './Clinical/PatientSummaryTab';
+import { PatientClinicalTimeline } from './Clinical/PatientClinicalTimeline';
+import { ClinicalRecordModal } from './Clinical/ClinicalRecordModal';
+import { ClinicalRecordDetailsModal } from './Clinical/ClinicalRecordDetailsModal';
+import { ClinicalAmendmentModal } from './Clinical/ClinicalAmendmentModal';
+import { ClinicalVoidModal } from './Clinical/ClinicalVoidModal';
+import { ClinicalDeleteDraftModal } from './Clinical/ClinicalDeleteDraftModal';
+import { ClinicalBeforeAfterView } from './Clinical/ClinicalBeforeAfterView';
+import { ClinicalDocumentsView } from './Clinical/ClinicalDocumentsView';
+import { PatientImportModal } from './Import/PatientImportModal';
+import { PatientExportModal } from './Export/PatientExportModal';
 
 interface PatientsViewProps {
   patients: Patient[];
@@ -70,6 +88,24 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
   const [selectedPatientId, setSelectedPatientId] = useState<string>(
     initialSelectedPatientId || patients[0]?.id || ''
   );
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Aba ativa na Ficha do Paciente
+  type PatientTab = 'RESUMO' | 'CLINICAL' | 'FINANCIAL' | 'DOCUMENTS' | 'BEFORE_AFTER';
+  const [patientTab, setPatientTab] = useState<PatientTab>('RESUMO');
+
+  // Modais Clínicos
+  const [isClinicalRecordModalOpen, setIsClinicalRecordModalOpen] = useState(false);
+  const [editingClinicalRecord, setEditingClinicalRecord] = useState<ClinicalRecord | null>(null);
+  const [continuationClinicalRecord, setContinuationClinicalRecord] = useState<ClinicalRecord | null>(null);
+  const [selectedRecordForDetails, setSelectedRecordForDetails] = useState<ClinicalRecord | null>(null);
+  const [recordForAmendment, setRecordForAmendment] = useState<ClinicalRecord | null>(null);
+  const [recordForVoid, setRecordForVoid] = useState<ClinicalRecord | null>(null);
+  const [recordForDeleteDraft, setRecordForDeleteDraft] = useState<ClinicalRecord | null>(null);
+
+  // Modais de Importação e Exportação
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   // Sync with external selection (e.g. from Ctrl+K global search)
   React.useEffect(() => {
@@ -94,30 +130,80 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
     }
   }, [initialOpenNewModal, onClearAction]);
 
-  const filteredPatients = useMemo(() => {
-    const trimmed = searchTerm.trim();
-    if (!trimmed) return patients;
-
-    const normQuery = normalizeSearchText(trimmed);
-
-    return patients.filter((p) => {
-      const nameMatch = normalizeSearchText(p.name).includes(normQuery);
-      const cpfMatch = matchDocumentSearch(p.cpf, trimmed);
-      const phoneDigits = (p.phone || '').replace(/\D/g, '');
-      const searchDigits = trimmed.replace(/\D/g, '');
-      const phoneMatch = searchDigits.length >= 3 && phoneDigits.includes(searchDigits);
-
-      return nameMatch || cpfMatch || phoneMatch;
+  const [, setWaPhotosTick] = useState(0);
+  React.useEffect(() => {
+    db.loadPatientWhatsAppPhotos().then(() => {
+      setWaPhotosTick((t) => t + 1);
     });
-  }, [patients, searchTerm]);
+  }, [refreshKey]);
+
+  // Resumo de responsável (guardian) para todos os pacientes — 1 query,
+  // alimenta badge na listagem, ficha, filtros e busca por nome do
+  // responsável. Recarrega ao trocar de tenant/refresh (ex.: após salvar
+  // paciente com novo responsável).
+  const [guardianSummaries, setGuardianSummaries] = useState<{
+    byPatientId: Record<string, { guardianId: string; guardianName: string; guardianPhone?: string; relationshipType?: string }>;
+    guardianOfPatientId: Record<string, { dependents: Array<{ patientId: string; relationshipType?: string }> }>;
+  }>({ byPatientId: {}, guardianOfPatientId: {} });
+
+  React.useEffect(() => {
+    const tenantId = db.getActiveTenantId();
+    if (!tenantId) return;
+    SupabaseService.getPatientGuardianSummaries(tenantId)
+      .then(setGuardianSummaries)
+      .catch(() => {});
+  }, [refreshKey, patients.length]);
+
+  const [guardianFilter, setGuardianFilter] = useState<GuardianFilter>('ALL');
+
+  const filteredPatients = useMemo(() => {
+    const searched = searchPatientsWithGuardian(patients, guardianSummaries, searchTerm);
+    return filterPatientsByGuardian(searched, guardianSummaries, guardianFilter);
+  }, [patients, searchTerm, guardianFilter, guardianSummaries]);
+
+  const [patientSort, setPatientSort] = useState<'AZ' | 'ZA' | 'RECENT'>('AZ');
+
+  const sortedPatients = useMemo(() => {
+    return [...filteredPatients].sort((a, b) => {
+      if (patientSort === 'AZ') {
+        return (a.name || '').localeCompare(b.name || '', 'pt-BR');
+      }
+      if (patientSort === 'ZA') {
+        return (b.name || '').localeCompare(a.name || '', 'pt-BR');
+      }
+      return (b.createdAt || b.id || '').localeCompare(a.createdAt || a.id || '');
+    });
+  }, [filteredPatients, patientSort]);
 
   // Paciente Ativo
   const activePatient = useMemo(() => {
-    if (!selectedPatientId && filteredPatients.length > 0) {
-      return filteredPatients[0];
+    if (!selectedPatientId && sortedPatients.length > 0) {
+      return sortedPatients[0];
     }
-    return patients.find((p) => p.id === selectedPatientId) || filteredPatients[0] || null;
-  }, [patients, filteredPatients, selectedPatientId]);
+    return patients.find((p) => p.id === selectedPatientId) || sortedPatients[0] || null;
+  }, [patients, sortedPatients, selectedPatientId]);
+
+  // Responsável do paciente ativo e pacientes dos quais ele é responsável —
+  // derivados da MESMA guardianSummaries usada na listagem/filtros/busca
+  // (fonte única de verdade, ver PatientSummaryTab.tsx). Nomes dos
+  // dependentes resolvidos localmente contra `patients`, sem query extra.
+  const activeGuardianInfo = useMemo(() => {
+    if (!activePatient) return null;
+    const g = guardianSummaries.byPatientId[activePatient.id];
+    if (!g) return null;
+    return { name: g.guardianName, phone: g.guardianPhone, email: g.guardianEmail, relationshipType: g.relationshipType };
+  }, [activePatient, guardianSummaries]);
+
+  const activeDependents = useMemo(() => {
+    if (!activePatient) return [];
+    const entry = guardianSummaries.guardianOfPatientId[activePatient.id];
+    if (!entry) return [];
+    return entry.dependents.map((dep) => ({
+      patientId: dep.patientId,
+      name: patients.find((p) => p.id === dep.patientId)?.name || '—',
+      relationshipType: dep.relationshipType,
+    }));
+  }, [activePatient, guardianSummaries, patients]);
 
   // Vendas do Paciente Ativo
   const patientSales = useMemo(() => {
@@ -163,62 +249,211 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
     }
   }, [enhancedHistoryItems, historyFilter]);
 
+  const {
+    sortedItems: displayHistoryItems,
+    sortKey: historySortKey,
+    sortDirection: historySortDirection,
+    handleSort: handleHistorySort,
+  } = useSortableData(filteredHistoryItems, {
+    customComparators: {
+      punctuality: (a, b) => (a.punctuality?.label || '').localeCompare(b.punctuality?.label || '', 'pt-BR'),
+      totalValue: (a, b) => a.totalValue - b.totalValue,
+    },
+  });
+
   const handleOpenDetailsModal = (item: EnhancedSaleHistoryItem) => {
     setSelectedItemForDetails(item);
     setIsDetailsModalOpen(true);
   };
 
+  // Carregamento dos dados clínicos do paciente ativo
+  const patientClinicalRecords = useMemo(() => {
+    if (!activePatient) return [];
+    return db.getClinicalRecords(activePatient.id);
+  }, [activePatient, refreshKey]);
+
+  const patientAttachments = useMemo(() => {
+    if (!activePatient) return [];
+    return db.getClinicalAttachments(activePatient.id);
+  }, [activePatient, refreshKey]);
+
+  const patientBeforeAfterPairs = useMemo(() => {
+    if (!activePatient) return [];
+    return db.getBeforeAfterPairs(activePatient.id);
+  }, [activePatient, refreshKey]);
+
+  const handleFinalizeRecord = async (recordId: string) => {
+    if (
+      confirm(
+        'Deseja realmente finalizar esta evolução clínica? Conforme exigência do CFO, após finalizado o registro torna-se imutável e correções deverão ser feitas via Adendo / Retificação.'
+      )
+    ) {
+      const res = await db.finalizeClinicalRecord(recordId);
+      if (!res.success) {
+        toast.error(res.error || 'Erro ao finalizar evolução.');
+      } else {
+        toast.success('Evolução clínica finalizada e assinada com sucesso!');
+        setRefreshKey((k) => k + 1);
+      }
+    }
+  };
+
+  const handleDeleteDraftRecord = async (recordId: string) => {
+    if (confirm('Deseja realmente excluir este rascunho de evolução clínica?')) {
+      const res = await db.deleteClinicalRecord(recordId);
+      if (!res.success) {
+        toast.error(res.error || 'Erro ao excluir rascunho.');
+      } else {
+        toast.success('Rascunho excluído com sucesso.');
+        setRefreshKey((k) => k + 1);
+      }
+    }
+  };
+
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header com Ações Globais */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
             <Users className="w-5 h-5 text-emerald-600" />
-            Cadastro e Prontuário Financeiro de Pacientes
+            Gestão Integrada de Pacientes & Prontuário
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Histórico consolidado por paciente com segregação de documentos emitidos em CPF e CNPJ
+            Prontuário clínico odontológico, anamnese, linha do tempo, antes/depois e controle financeiro
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setEditingPatient(null);
-            setIsModalOpen(true);
-          }}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs transition-all cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Cadastrar Paciente</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Importar Planilha */}
+          <button
+            type="button"
+            onClick={() => setIsImportModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 shadow-2xs transition-all cursor-pointer"
+            title="Importar pacientes e prontuários via planilha CSV ou Excel"
+          >
+            <UploadCloud className="w-4 h-4 text-teal-600" />
+            <span>Importar Planilha</span>
+          </button>
+
+          {/* Exportar Base */}
+          <button
+            type="button"
+            onClick={() => setIsExportModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-2xs transition-all cursor-pointer"
+            title="Exportar base de pacientes em CSV ou Excel"
+          >
+            <Download className="w-4 h-4 text-slate-500" />
+            <span>Exportar</span>
+          </button>
+
+          {/* Cadastrar Paciente */}
+          <button
+            type="button"
+            onClick={() => {
+              setEditingPatient(null);
+              setIsModalOpen(true);
+            }}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs transition-all cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Cadastrar Paciente</span>
+          </button>
+        </div>
       </div>
 
       {/* Main Grid: List on Left, Detail on Right */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Patient List (4 cols) */}
         <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200/80 shadow-xs flex flex-col h-[680px] overflow-hidden">
-          <div className="p-3.5 border-b border-slate-100 bg-slate-50/50">
+          <div className="p-3.5 border-b border-slate-100 bg-slate-50/50 space-y-2">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                placeholder="Buscar por nome, CPF ou tel..."
+                placeholder="Buscar por nome, CPF, tel. ou responsável..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
               />
             </div>
+            <div className="flex items-center justify-between text-[11px] px-0.5">
+              <span className="text-slate-400 font-medium">Ordem:</span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setPatientSort('AZ')}
+                  className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
+                    patientSort === 'AZ'
+                      ? 'bg-emerald-600 text-white shadow-2xs'
+                      : 'text-slate-500 hover:text-slate-800 bg-white border border-slate-200'
+                  }`}
+                  title="Ordenar Alfabeticamente A a Z"
+                >
+                  A → Z
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPatientSort('ZA')}
+                  className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
+                    patientSort === 'ZA'
+                      ? 'bg-emerald-600 text-white shadow-2xs'
+                      : 'text-slate-500 hover:text-slate-800 bg-white border border-slate-200'
+                  }`}
+                  title="Ordenar Alfabeticamente Z a A"
+                >
+                  Z → A
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPatientSort('RECENT')}
+                  className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
+                    patientSort === 'RECENT'
+                      ? 'bg-emerald-600 text-white shadow-2xs'
+                      : 'text-slate-500 hover:text-slate-800 bg-white border border-slate-200'
+                  }`}
+                  title="Mais Recentes"
+                >
+                  Recentes
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center justify-between text-[11px] px-0.5">
+              <span className="text-slate-400 font-medium">Responsável:</span>
+              <div className="flex items-center gap-1 flex-wrap justify-end">
+                {(
+                  [
+                    { key: 'ALL', label: 'Todos' },
+                    { key: 'WITH_GUARDIAN', label: 'Com responsável' },
+                    { key: 'WITHOUT_GUARDIAN', label: 'Sem responsável' },
+                    { key: 'IS_GUARDIAN', label: 'Responsáveis' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setGuardianFilter(opt.key)}
+                    className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
+                      guardianFilter === opt.key
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'text-slate-500 hover:text-slate-800 bg-white border border-slate-200'
+                    }`}
+                    title={opt.label}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
-            {filteredPatients.length === 0 ? (
+            {sortedPatients.length === 0 ? (
               <div className="p-6 text-center text-xs text-slate-400">
                 Nenhum paciente encontrado.
               </div>
             ) : (
-              filteredPatients.map((p) => {
+              sortedPatients.map((p) => {
                 const isSelected = p.id === activePatient?.id;
                 const initials = p.name
                   .split(' ')
@@ -227,6 +462,8 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                   .slice(0, 2)
                   .join('')
                   .toUpperCase();
+
+                const photoUrl = db.getEffectivePatientPhotoUrl(p);
 
                 return (
                   <div
@@ -239,21 +476,53 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                     }`}
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 overflow-hidden ${
                         isSelected ? 'bg-emerald-600 text-white shadow-2xs' : 'bg-slate-100 text-slate-600'
                       }`}>
-                        {initials}
+                        {photoUrl ? (
+                          <img
+                            src={photoUrl}
+                            alt={p.name}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          initials
+                        )}
                       </div>
                       <div className="min-w-0">
-                        <div className="font-bold text-xs text-slate-900 truncate">{p.name}</div>
-                        <div className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">
-                          CPF: {formatCpf(p.cpf, maskCpf)}
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-bold text-xs text-slate-900 truncate">{p.name}</span>
+                          {guardianSummaries.guardianOfPatientId[p.id] && (
+                            <span
+                              className="px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-700 text-[9px] font-bold uppercase tracking-wide shrink-0"
+                              title={`Responsável por ${guardianSummaries.guardianOfPatientId[p.id].dependents.length} paciente(s)`}
+                            >
+                              Responsável
+                            </span>
+                          )}
                         </div>
+                        <div className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">
+                          {p.documentType === 'CNPJ' ? 'CNPJ' : 'CPF'}: {formatCpfOrCnpj(p.cpf, maskCpf)}
+                        </div>
+                        {guardianSummaries.byPatientId[p.id] && (
+                          <div className="text-[11px] text-emerald-700 mt-0.5 truncate">
+                            Resp.: {guardianSummaries.byPatientId[p.id].guardianName}
+                            {guardianSummaries.byPatientId[p.id].relationshipType
+                              ? ` • ${guardianSummaries.byPatientId[p.id].relationshipType}`
+                              : ''}
+                          </div>
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-col items-end gap-0.5 shrink-0">
                       {p.phone && (
-                        <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">{p.phone}</span>
+                        <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">{formatPhone(p.phone)}</span>
+                      )}
+                      {p.phoneOwner === 'RESPONSIBLE' && (
+                        <span className="text-[9px] text-emerald-600 font-semibold hidden sm:inline">Tel. responsável</span>
                       )}
                       <button
                         type="button"
@@ -283,13 +552,24 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
               {/* Profile Card Header */}
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-5 border-b border-slate-100 gap-4">
                 <div className="flex items-start gap-3.5">
-                  <div className="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-sm shrink-0">
-                    {activePatient.name
-                      .split(' ')
-                      .map((n) => n[0])
-                      .slice(0, 2)
-                      .join('')
-                      .toUpperCase()}
+                  <div className="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-sm shrink-0 overflow-hidden">
+                    {db.getEffectivePatientPhotoUrl(activePatient) ? (
+                      <img
+                        src={db.getEffectivePatientPhotoUrl(activePatient)}
+                        alt={activePatient.name}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          (e.currentTarget as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      activePatient.name
+                        .split(' ')
+                        .map((n) => n[0])
+                        .slice(0, 2)
+                        .join('')
+                        .toUpperCase()
+                    )}
                   </div>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -312,10 +592,29 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                       )}
                     </div>
 
+                    {activePatient.phoneOwner === 'RESPONSIBLE' && guardianSummaries.byPatientId[activePatient.id] && (
+                      <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200/70 text-[11px] text-emerald-800 font-sans w-fit">
+                        <span className="font-bold">Contato principal:</span>{' '}
+                        {guardianSummaries.byPatientId[activePatient.id].guardianName}
+                        {guardianSummaries.byPatientId[activePatient.id].relationshipType
+                          ? ` — ${guardianSummaries.byPatientId[activePatient.id].relationshipType}`
+                          : ''}
+                        {activePatient.phone && (
+                          <span className="ml-1.5 font-mono">({formatPhone(activePatient.phone)})</span>
+                        )}
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-500 mt-2 font-mono">
-                      <span>CPF: {formatCpf(activePatient.cpf, maskCpf)}</span>
-                      {activePatient.phone && <span>Tel: {activePatient.phone}</span>}
-                      {activePatient.birthDate ? (
+                      <span>{activePatient.documentType === 'CNPJ' ? 'CNPJ' : 'CPF'}: {formatCpfOrCnpj(activePatient.cpf, maskCpf)}</span>
+                      {activePatient.phone && activePatient.phoneOwner !== 'RESPONSIBLE' && (
+                        <span>Tel: {formatPhone(activePatient.phone)}</span>
+                      )}
+                      {activePatient.documentType === 'CNPJ' ? (
+                        <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[11px] font-sans font-semibold">
+                          Pessoa Jurídica
+                        </span>
+                      ) : activePatient.birthDate ? (
                         <>
                           <span>Nascimento: {formatDateBr(activePatient.birthDate)}</span>
                           {patientAge !== null && <span>Idade: {patientAge} anos</span>}
@@ -376,8 +675,153 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                 </div>
               </div>
 
-              {/* Resumo Financeiro (4 Cards Elegantes) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Navegação entre as 4 Abas Principais da Ficha do Paciente */}
+              <div className="flex items-center gap-1 border-b border-slate-200 pb-0 overflow-x-auto text-xs font-bold scrollbar-none">
+                <button
+                  type="button"
+                  onClick={() => setPatientTab('RESUMO')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2.5 border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+                    patientTab === 'RESUMO'
+                      ? 'border-emerald-600 text-emerald-800 bg-emerald-50/40 rounded-t-lg'
+                      : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                  }`}
+                >
+                  <User className="w-4 h-4 text-emerald-600" />
+                  <span>Resumo</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPatientTab('CLINICAL')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2.5 border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+                    patientTab === 'CLINICAL'
+                      ? 'border-teal-600 text-teal-800 bg-teal-50/40 rounded-t-lg'
+                      : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                  }`}
+                >
+                  <FileText className="w-4 h-4 text-teal-600" />
+                  <span>Prontuário Clínico ({patientClinicalRecords.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPatientTab('FINANCIAL')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2.5 border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+                    patientTab === 'FINANCIAL'
+                      ? 'border-emerald-600 text-emerald-800 bg-emerald-50/40 rounded-t-lg'
+                      : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                  }`}
+                >
+                  <Receipt className="w-4 h-4 text-emerald-600" />
+                  <span>Financeiro ({enhancedHistoryItems.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPatientTab('DOCUMENTS')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2.5 border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+                    patientTab === 'DOCUMENTS'
+                      ? 'border-teal-600 text-teal-800 bg-teal-50/40 rounded-t-lg'
+                      : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                  }`}
+                >
+                  <Paperclip className="w-4 h-4 text-blue-600" />
+                  <span>Documentos ({patientAttachments.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPatientTab('BEFORE_AFTER')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2.5 border-b-2 transition-all cursor-pointer whitespace-nowrap ${
+                    patientTab === 'BEFORE_AFTER'
+                      ? 'border-teal-600 text-teal-800 bg-teal-50/40 rounded-t-lg'
+                      : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                  }`}
+                >
+                  <Sparkles className="w-4 h-4 text-amber-500" />
+                  <span>Antes / Depois ({patientBeforeAfterPairs.length})</span>
+                </button>
+              </div>
+
+              {/* CONTEÚDO DA ABA RESUMO */}
+              {patientTab === 'RESUMO' && (
+                <PatientSummaryTab
+                  patient={activePatient}
+                  clinicalRecords={patientClinicalRecords}
+                  attachments={patientAttachments}
+                  beforeAfterPairs={patientBeforeAfterPairs}
+                  onOpenNewRecordModal={() => {
+                    setEditingClinicalRecord(null);
+                    setContinuationClinicalRecord(null);
+                    setIsClinicalRecordModalOpen(true);
+                  }}
+                  onOpenNewAttachmentModal={() => setPatientTab('DOCUMENTS')}
+                  onNavigateToTab={(tabId) => {
+                    if (tabId === 'clinical') setPatientTab('CLINICAL');
+                    else if (tabId === 'documents') setPatientTab('DOCUMENTS');
+                    else if (tabId === 'before_after') setPatientTab('BEFORE_AFTER');
+                    else setPatientTab('RESUMO');
+                  }}
+                  onSelectRecordDetails={(rec) => setSelectedRecordForDetails(rec)}
+                  onSelectPatient={(patientId) => setSelectedPatientId(patientId)}
+                  guardianInfo={activeGuardianInfo}
+                  dependents={activeDependents}
+                />
+              )}
+
+              {/* CONTEÚDO DA ABA PRONTUÁRIO CLÍNICO */}
+              {patientTab === 'CLINICAL' && (
+                <PatientClinicalTimeline
+                  patient={activePatient}
+                  records={patientClinicalRecords}
+                  attachments={patientAttachments}
+                  onOpenNewRecordModal={() => {
+                    setEditingClinicalRecord(null);
+                    setContinuationClinicalRecord(null);
+                    setIsClinicalRecordModalOpen(true);
+                  }}
+                  onEditDraftRecord={(rec) => {
+                    setEditingClinicalRecord(rec);
+                    setContinuationClinicalRecord(null);
+                    setIsClinicalRecordModalOpen(true);
+                  }}
+                  onFinalizeRecord={handleFinalizeRecord}
+                  onDeleteDraftRecord={(rec) => setRecordForDeleteDraft(rec)}
+                  onOpenAmendmentModal={(rec) => setRecordForAmendment(rec)}
+                  onOpenVoidModal={(rec) => setRecordForVoid(rec)}
+                  onFollowUpRecord={(rec) => {
+                    setEditingClinicalRecord(null);
+                    setContinuationClinicalRecord(rec);
+                    setIsClinicalRecordModalOpen(true);
+                  }}
+                  onSelectRecordDetails={(rec) => setSelectedRecordForDetails(rec)}
+                />
+              )}
+
+              {/* CONTEÚDO DA ABA DOCUMENTOS & ANEXOS */}
+              {patientTab === 'DOCUMENTS' && (
+                <ClinicalDocumentsView
+                  patient={activePatient}
+                  attachments={patientAttachments}
+                  onReload={() => setRefreshKey((k) => k + 1)}
+                />
+              )}
+
+              {/* CONTEÚDO DA ABA ANTES / DEPOIS */}
+              {patientTab === 'BEFORE_AFTER' && (
+                <ClinicalBeforeAfterView
+                  patient={activePatient}
+                  pairs={patientBeforeAfterPairs}
+                  attachments={patientAttachments}
+                  onReload={() => setRefreshKey((k) => k + 1)}
+                />
+              )}
+
+              {/* CONTEÚDO DA ABA FINANCEIRO */}
+              {patientTab === 'FINANCIAL' && (
+                <div className="space-y-6">
+                  {/* Resumo Financeiro (4 Cards Elegantes) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className="p-4 bg-emerald-50/50 border border-emerald-200/80 rounded-2xl">
                   <div className="text-[11px] font-bold text-emerald-800 uppercase tracking-wider flex items-center gap-1.5">
                     <User className="w-3 h-3" /> Faturado via CPF
@@ -580,18 +1024,74 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                     <table className="w-full min-w-[1120px] text-left text-xs border-collapse">
                       <thead className="bg-slate-50/80 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200/80 sticky top-0 z-10">
                         <tr>
-                          <th className="p-3.5 w-[105px] min-w-[105px]">Data</th>
-                          <th className="p-3.5 w-[240px] min-w-[200px]">Procedimento</th>
-                          <th className="p-3.5 w-[90px] min-w-[90px]">Origem</th>
-                          <th className="p-3.5 w-[120px] min-w-[110px]">Valor</th>
-                          <th className="p-3.5 w-[150px] min-w-[140px]">Forma de Pagamento</th>
-                          <th className="p-3.5 w-[120px] min-w-[110px]">Situação</th>
-                          <th className="p-3.5 w-[170px] min-w-[160px]">Pontualidade</th>
+                          <SortableHeader
+                            label="Data"
+                            sortKey="serviceDate"
+                            currentSortKey={historySortKey}
+                            currentDirection={historySortDirection}
+                            onSort={handleHistorySort}
+                            align="left"
+                            className="w-[105px] min-w-[105px]"
+                          />
+                          <SortableHeader
+                            label="Procedimento"
+                            sortKey="procedureName"
+                            currentSortKey={historySortKey}
+                            currentDirection={historySortDirection}
+                            onSort={handleHistorySort}
+                            align="left"
+                            className="w-[240px] min-w-[200px]"
+                          />
+                          <SortableHeader
+                            label="Origem"
+                            sortKey="taxOrigin"
+                            currentSortKey={historySortKey}
+                            currentDirection={historySortDirection}
+                            onSort={handleHistorySort}
+                            align="left"
+                            className="w-[90px] min-w-[90px]"
+                          />
+                          <SortableHeader
+                            label="Valor"
+                            sortKey="totalValue"
+                            currentSortKey={historySortKey}
+                            currentDirection={historySortDirection}
+                            onSort={handleHistorySort}
+                            align="left"
+                            className="w-[120px] min-w-[110px]"
+                          />
+                          <SortableHeader
+                            label="Forma de Pagamento"
+                            sortKey="paymentMethod"
+                            currentSortKey={historySortKey}
+                            currentDirection={historySortDirection}
+                            onSort={handleHistorySort}
+                            align="left"
+                            className="w-[150px] min-w-[140px]"
+                          />
+                          <SortableHeader
+                            label="Situação"
+                            sortKey="status"
+                            currentSortKey={historySortKey}
+                            currentDirection={historySortDirection}
+                            onSort={handleHistorySort}
+                            align="left"
+                            className="w-[120px] min-w-[110px]"
+                          />
+                          <SortableHeader
+                            label="Pontualidade"
+                            sortKey="punctuality"
+                            currentSortKey={historySortKey}
+                            currentDirection={historySortDirection}
+                            onSort={handleHistorySort}
+                            align="left"
+                            className="w-[170px] min-w-[160px]"
+                          />
                           <th className="p-3.5 w-[120px] min-w-[110px] text-right">Ação</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {filteredHistoryItems.map((item) => (
+                        {displayHistoryItems.map((item) => (
                           <tr
                             key={item.sale.id}
                             onClick={() => handleOpenDetailsModal(item)}
@@ -677,15 +1177,17 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                 )}
               </div>
             </div>
+          )}
+            </div>
           ) : (
             <div className="text-center py-20 text-slate-400 text-xs">
-              Selecione um paciente na lista ao lado para ver o histórico financeiro.
+              Selecione um paciente na lista ao lado para ver o histórico financeiro e clínico.
             </div>
           )}
         </div>
       </div>
 
-      {/* Modal Central de Detalhes do Atendimento */}
+      {/* Modal Central de Detalhes do Atendimento Financeiro */}
       <PatientProcedureModal
         isOpen={isDetailsModalOpen}
         onClose={() => {
@@ -714,7 +1216,92 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
           }
           setIsModalOpen(false);
           setEditingPatient(null);
+          // Força refetch canônico do resumo de responsável (guardianSummaries)
+          // após QUALQUER save — criação, edição, reaproveitamento de guardian
+          // existente, troca de parentesco, troca ou remoção de responsável.
+          // Sem isso, edições (patients.length inalterado) deixavam a UI com
+          // o guardian antigo até F5 — bug corrigido nesta sessão.
+          setRefreshKey((k) => k + 1);
         }}
+      />
+
+      {/* Modal Central para Nova Evolução ou Edição de Rascunho */}
+      {activePatient && (
+        <ClinicalRecordModal
+          isOpen={isClinicalRecordModalOpen}
+          onClose={() => {
+            setIsClinicalRecordModalOpen(false);
+            setEditingClinicalRecord(null);
+            setContinuationClinicalRecord(null);
+          }}
+          patient={activePatient}
+          recordToEdit={editingClinicalRecord}
+          continuationRecord={continuationClinicalRecord}
+          onSaved={() => {
+            setRefreshKey((k) => k + 1);
+            setContinuationClinicalRecord(null);
+          }}
+        />
+      )}
+
+      {/* Modal de Detalhes de Evolução Clínica Selecionada */}
+      {activePatient && (
+        <ClinicalRecordDetailsModal
+          isOpen={Boolean(selectedRecordForDetails)}
+          onClose={() => setSelectedRecordForDetails(null)}
+          record={selectedRecordForDetails}
+          patient={activePatient}
+          attachments={patientAttachments}
+        />
+      )}
+
+      {/* Modal para Registro de Adendo / Retificação Formal */}
+      <ClinicalAmendmentModal
+        isOpen={Boolean(recordForAmendment)}
+        onClose={() => setRecordForAmendment(null)}
+        record={recordForAmendment}
+        onSaved={() => setRefreshKey((k) => k + 1)}
+      />
+
+      {/* Modal para Invalidação Segura de Registro Clínico */}
+      <ClinicalVoidModal
+        isOpen={Boolean(recordForVoid)}
+        onClose={() => setRecordForVoid(null)}
+        record={recordForVoid}
+        onVoided={() => {
+          setRefreshKey((k) => k + 1);
+          setRecordForVoid(null);
+          toast.success('Registro clínico invalidado.');
+        }}
+      />
+
+      {/* Modal para Exclusão Customizada de Rascunho */}
+      <ClinicalDeleteDraftModal
+        isOpen={Boolean(recordForDeleteDraft)}
+        onClose={() => setRecordForDeleteDraft(null)}
+        record={recordForDeleteDraft}
+        onDeleted={() => {
+          setRefreshKey((k) => k + 1);
+          setRecordForDeleteDraft(null);
+          toast.success('Rascunho excluído com sucesso.');
+        }}
+      />
+
+      {/* Modal de Importação de Pacientes e Prontuários (CSV/Excel/Sheets) */}
+      <PatientImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onImportSuccess={() => {
+          setRefreshKey((k) => k + 1);
+          toast.success('Pacientes e prontuários importados com sucesso!');
+        }}
+      />
+
+      {/* Modal de Exportação da Base de Pacientes */}
+      <PatientExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        patients={filteredPatients}
       />
     </div>
   );

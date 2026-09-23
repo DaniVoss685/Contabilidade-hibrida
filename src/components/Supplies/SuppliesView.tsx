@@ -21,7 +21,8 @@ import { formatCurrency } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { ClinicalInputModal } from '../Modals/ClinicalInputModal';
-import { CustomSelect, ConfirmDialog, useToast } from '../UI';
+import { CustomSelect, ConfirmDialog, useToast, SortableHeader } from '../UI';
+import { useSortableData } from '../../hooks/useSortableData';
 
 interface SuppliesViewProps {
   onSelectInputForProcedure?: (input: ClinicalInput) => void;
@@ -103,12 +104,19 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
     });
   }, [inputs, searchTerm, selectedCategory, selectedUnit]);
 
+  const {
+    sortedItems: displayInputs,
+    sortKey,
+    sortDirection,
+    handleSort,
+  } = useSortableData(filteredInputs);
+
   // Bulk Selection Handlers
   const handleSelectAll = () => {
-    if (selectedIds.size === filteredInputs.length && filteredInputs.length > 0) {
+    if (selectedIds.size === displayInputs.length && displayInputs.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredInputs.map((i) => i.id)));
+      setSelectedIds(new Set(displayInputs.map((i) => i.id)));
     }
   };
 
@@ -411,40 +419,87 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
                     onClick={handleSelectAll}
                     className="cursor-pointer text-slate-600 hover:text-slate-900"
                     title={
-                      selectedIds.size === filteredInputs.length && filteredInputs.length > 0
+                      selectedIds.size === displayInputs.length && displayInputs.length > 0
                         ? 'Desmarcar todos'
                         : 'Selecionar todos'
                     }
                   >
-                    {filteredInputs.length > 0 &&
-                    selectedIds.size === filteredInputs.length ? (
+                    {displayInputs.length > 0 &&
+                    selectedIds.size === displayInputs.length ? (
                       <CheckSquare className="w-4 h-4 text-teal-600" />
                     ) : (
                       <Square className="w-4 h-4 text-slate-400" />
                     )}
                   </button>
                 </th>
-                <th className="py-3 px-4">Insumo / Material</th>
-                <th className="py-3 px-4">Categoria</th>
-                <th className="py-3 px-4">Embalagem de Aquisição</th>
-                <th className="py-3 px-4 text-right">Preço Compra</th>
-                <th className="py-3 px-4 text-center">Rendimento</th>
-                <th className="py-3 px-4 text-center">Unidade de Uso</th>
-                <th className="py-3 px-4 text-right font-black text-teal-900">
-                  Custo Unitário
-                </th>
+                <SortableHeader
+                  label="Insumo / Material"
+                  sortKey="name"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="left"
+                />
+                <SortableHeader
+                  label="Categoria"
+                  sortKey="category"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="left"
+                />
+                <SortableHeader
+                  label="Embalagem de Aquisição"
+                  sortKey="purchasePackageName"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="left"
+                />
+                <SortableHeader
+                  label="Preço Compra"
+                  sortKey="purchaseCost"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="right"
+                />
+                <SortableHeader
+                  label="Rendimento"
+                  sortKey="packageYield"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Unidade de Uso"
+                  sortKey="usageUnit"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="center"
+                />
+                <SortableHeader
+                  label="Custo Unitário"
+                  sortKey="unitCost"
+                  currentSortKey={sortKey}
+                  currentDirection={sortDirection}
+                  onSort={handleSort}
+                  align="right"
+                />
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
-              {filteredInputs.length === 0 ? (
+              {displayInputs.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-8 text-center text-slate-400">
                     Nenhum insumo encontrado com os filtros atuais.
                   </td>
                 </tr>
               ) : (
-                filteredInputs.map((item) => {
+                displayInputs.map((item) => {
                   const isSelected = selectedIds.has(item.id);
                   const unitMeta = UNIT_LABELS[item.usageUnit] || {
                     label: item.usageUnit,
