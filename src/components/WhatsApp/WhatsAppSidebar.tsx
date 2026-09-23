@@ -19,7 +19,7 @@ import { WhatsAppConversation, WhatsAppContact, WhatsAppContactRelations } from 
 import { formatPhoneDisplay, getContactDisplayName, getContactInitial, isWhatsAppGroup } from '../../lib/phoneUtils';
 import { resolveAttendantDisplayName } from '../../lib/attendantIdentity';
 import { getRoleLabel, hasPermission } from '../../lib/permissions';
-import { filterContacts, getContactTags, getContactDisplayNameForList } from '../../lib/contactsFilter';
+import { filterContacts, getContactTags, getContactDisplayNameForList, getContactSearchMatch } from '../../lib/contactsFilter';
 
 function formatMessageTime(dateStr?: string | null): string {
   if (!dateStr) return '';
@@ -498,6 +498,7 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
               const relation = contactRelations[ctc.id];
               const displayName = getContactDisplayNameForList(ctc, relation);
               const initial = displayName.replace(/[^\p{L}\p{N}]/gu, '').charAt(0).toUpperCase() || 'C';
+              const searchMatch = getContactSearchMatch(ctc, search, relation);
               return (
               <div
                 key={ctc.id}
@@ -538,7 +539,29 @@ export const WhatsAppSidebar: React.FC<WhatsAppSidebarProps> = ({
                     </p>
                     {relation?.isGuardianPhone && relation.patientNames.length > 0 && (
                       <p className="text-[10px] text-slate-400 truncate">
-                        Responsável por: {relation.patientNames.join(', ')}
+                        Responsável por:{' '}
+                        {relation.patientNames.map((name, idx) => (
+                          <React.Fragment key={name}>
+                            {idx > 0 && ', '}
+                            <span
+                              className={
+                                searchMatch?.via === 'patientName' && searchMatch.matchedName === name
+                                  ? 'font-bold text-amber-700 bg-amber-100 px-0.5 rounded'
+                                  : undefined
+                              }
+                            >
+                              {name}
+                            </span>
+                          </React.Fragment>
+                        ))}
+                      </p>
+                    )}
+                    {searchMatch && (
+                      <p className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 mt-1 flex items-center gap-1 w-fit">
+                        <Search className="w-2.5 h-2.5 shrink-0" />
+                        <span>
+                          Encontrado por paciente relacionado: <strong>{searchMatch.matchedName}</strong>
+                        </span>
                       </p>
                     )}
                   </div>

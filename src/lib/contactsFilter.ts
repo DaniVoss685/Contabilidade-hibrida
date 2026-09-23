@@ -34,6 +34,45 @@ export function filterContacts(
 }
 
 /**
+ * Explica POR QUE um contato apareceu no resultado de busca (A32, rodada 2):
+ * quando o match veio de um paciente relacionado (ex.: buscar "Sebastião" e
+ * encontrar o contato de "Marilda Ricardo Arantes", porque Sebastião é
+ * dependente dela), isso precisa ficar explícito e destacado — não basta
+ * mostrar "Responsável por: Sebastião, Leonardo" no mesmo tom neutro de
+ * sempre, porque não fica óbvio que foi ESSE nome que bateu com a busca.
+ * Retorna null quando não há termo de busca ou quando o match foi direto
+ * (nome/telefone do próprio contato) — nesse caso não há nada a destacar.
+ */
+export interface ContactSearchMatch {
+  via: 'guardianName' | 'patientName';
+  matchedName: string;
+}
+
+export function getContactSearchMatch(
+  contact: WhatsAppContact,
+  search: string,
+  relation: WhatsAppContactRelations | undefined
+): ContactSearchMatch | null {
+  const term = search.trim().toLowerCase();
+  if (!term || !relation) return null;
+
+  const displayName = getContactDisplayNameForList(contact, relation).toLowerCase();
+  if (displayName.includes(term)) return null;
+  if (contact.whatsapp_number.includes(term)) return null;
+
+  // Nome do contato bate, mas via guardianName (ex.: guardianDisplayName ainda
+  // não tinha sido anexado ao objeto que chegou aqui) — trata como direto.
+  if (relation.guardianName && relation.guardianName.toLowerCase().includes(term)) return null;
+
+  const matchedPatient = relation.patientNames.find((name) => name.toLowerCase().includes(term));
+  if (matchedPatient) {
+    return { via: 'patientName', matchedName: matchedPatient };
+  }
+
+  return null;
+}
+
+/**
  * Nome de exibição do contato na aba Contatos, respeitando a precedência A31:
  * quando o número é de um responsável (guardian), mostra o NOME DO RESPONSÁVEL,
  * nunca o nome do primeiro paciente vinculado ao contato. `getContactDisplayName`

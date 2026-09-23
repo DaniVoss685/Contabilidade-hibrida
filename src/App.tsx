@@ -962,6 +962,10 @@ function AppContent() {
                 if (patientId) setInitialAgendaPatientId(patientId);
                 setCurrentTab('agenda');
               }}
+              onNavigateToPatient={(patientId) => {
+                setSelectedPatientForViewId(patientId);
+                setCurrentTab('patients');
+              }}
             />
           )}
 

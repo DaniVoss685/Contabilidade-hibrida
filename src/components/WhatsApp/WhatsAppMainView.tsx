@@ -44,6 +44,8 @@ interface WhatsAppMainViewProps {
   currentUserName?: string;
   currentUserRole?: string;
   onNavigateToAgenda?: (date?: string, patientId?: string) => void;
+  /** Abre a ficha completa do paciente na aba Pacientes (chip "Pacientes relacionados"). */
+  onNavigateToPatient?: (patientId: string) => void;
   initialPatientId?: string;
   initialConversationId?: string;
   initialContactId?: string;
@@ -56,6 +58,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
   currentUserName,
   currentUserRole,
   onNavigateToAgenda,
+  onNavigateToPatient,
   initialPatientId,
   initialConversationId,
   initialContactId,
@@ -858,6 +861,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                   selectedClinicalPatientId={selectedClinicalPatientId}
                   onSelectClinicalPatient={setSelectedClinicalPatientId}
                   effectiveClinicalPatientId={effectiveClinicalPatientId}
+                  onOpenPatientRecord={onNavigateToPatient}
                 />
 
                 {/* Gaveta de Contexto do Atendimento */}
@@ -876,6 +880,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
                   selectedClinicalPatientId={selectedClinicalPatientId}
                   onSelectClinicalPatient={setSelectedClinicalPatientId}
                   effectiveClinicalPatientId={effectiveClinicalPatientId}
+                  onOpenPatientRecord={onNavigateToPatient}
                   onOpenScheduleModal={(patId) => {
                     setSchedulePatientId(patId);
                     setScheduleRescheduleFrom(null);

@@ -46,6 +46,14 @@ interface WhatsAppContextDrawerProps {
   onOpenAppointmentDetails?: (appointment: Appointment) => void;
   onRescheduleAppointment?: (appointment: Appointment) => void;
   onTimelineRefresh?: () => void;
+  // Telefone compartilhado: estado de seleção elevado a WhatsAppMainView,
+  // compartilhado com WhatsAppChatArea (ver comentário em WhatsAppMainView.tsx).
+  relatedPatients?: Array<{ id: string; name: string; isPrimary: boolean }>;
+  selectedClinicalPatientId?: string | null;
+  onSelectClinicalPatient?: (patientId: string) => void;
+  effectiveClinicalPatientId?: string | null;
+  /** Abre a ficha completa do paciente (aba Pacientes) — chip "Pacientes relacionados". */
+  onOpenPatientRecord?: (patientId: string) => void;
 }
 
 export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
@@ -63,6 +71,11 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
   onOpenAppointmentDetails,
   onRescheduleAppointment,
   onTimelineRefresh,
+  relatedPatients = [],
+  selectedClinicalPatientId = null,
+  onSelectClinicalPatient,
+  effectiveClinicalPatientId,
+  onOpenPatientRecord,
 }) => {
   const toast = useToast();
   const [activeTab, setActiveTab] = useState<'info' | 'notes' | 'history'>('info');
@@ -88,9 +101,24 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
   const contact = conversation.contact;
   const patient = contact?.patient;
 
+  // Telefone compartilhado: quando há >1 paciente vinculado ao contato,
+  // nenhuma ação clínica (agenda, prontuário, dados exibidos) pode escolher
+  // o paciente primário silenciosamente — exige seleção explícita, elevada a
+  // WhatsAppMainView e compartilhada com WhatsAppChatArea.
+  const hasPatientAmbiguity = relatedPatients.length > 1;
+  const resolvedPatientId =
+    effectiveClinicalPatientId !== undefined
+      ? effectiveClinicalPatientId
+      : hasPatientAmbiguity
+      ? selectedClinicalPatientId
+      : contact?.patient_id || (patient as any)?.id || null;
+  const selectedPatientInfo = hasPatientAmbiguity
+    ? relatedPatients.find((p) => p.id === resolvedPatientId) || null
+    : null;
+
   // Carregar dados da agenda para o paciente vinculado
   const loadAgenda = async () => {
-    const targetPatientId = contact?.patient_id || (patient as any)?.id;
+    const targetPatientId = resolvedPatientId;
     if (!targetPatientId || !tenantId) {
       setNextAppointment(null);
       setRecentAppointments([]);
@@ -275,7 +303,7 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
         loadHistory();
       }
     }
-  }, [isOpen, contact?.id, activeTab, tenantId, contact?.patient_id]);
+  }, [isOpen, contact?.id, activeTab, tenantId, contact?.patient_id, resolvedPatientId]);
 
   // Escuta em tempo real atualizações na agenda e eventos para o drawer
   useEffect(() => {
@@ -315,7 +343,7 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [isOpen, tenantId, contact?.id, contact?.patient_id]);
+  }, [isOpen, tenantId, contact?.id, contact?.patient_id, resolvedPatientId]);
 
   const historyEvents = timelineItems.filter(
     (t) => t.type === 'event' || t.type === 'transfer' || t.type === 'call'
@@ -466,31 +494,86 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
                   )}
                 </div>
 
-                {patient || contact?.patient_id ? (
+                {hasPatientAmbiguity && (
+                  <div className="mb-3 p-2.5 bg-white border border-emerald-200 rounded-lg">
+                    <p className="text-[10px] font-bold text-emerald-800 mb-1.5">
+                      Este telefone é compartilhado — selecione o paciente:
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {relatedPatients.map((p) => (
+                        <span
+                          key={p.id}
+                          className={`inline-flex items-center rounded-full text-[10px] font-bold border overflow-hidden ${
+                            resolvedPatientId === p.id
+                              ? 'bg-emerald-600 border-emerald-600 text-white'
+                              : 'bg-white border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => onSelectClinicalPatient?.(p.id)}
+                            className={`px-2 py-1 cursor-pointer transition-colors ${
+                              resolvedPatientId === p.id ? '' : 'hover:bg-emerald-50'
+                            }`}
+                          >
+                            {p.name}{p.isPrimary ? ' — Titular' : ''}
+                          </button>
+                          {onOpenPatientRecord && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenPatientRecord(p.id);
+                              }}
+                              title={`Abrir ficha completa de ${p.name}`}
+                              className={`pl-1 pr-2 py-1 cursor-pointer border-l transition-colors ${
+                                resolvedPatientId === p.id
+                                  ? 'border-emerald-500 hover:bg-emerald-700'
+                                  : 'border-slate-200 hover:bg-slate-100'
+                              }`}
+                            >
+                              <ExternalLink className="w-2.5 h-2.5" />
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {hasPatientAmbiguity && !selectedPatientInfo ? (
+                  <div className="text-xs text-slate-500 py-2">
+                    Selecione um paciente acima para ver prontuário, agenda e ações clínicas.
+                  </div>
+                ) : patient || contact?.patient_id ? (
                   <div className="space-y-2 text-xs text-slate-700">
                     <div>
-                      <p className="font-semibold text-slate-900">{patient?.name || 'Paciente cadastrado'}</p>
-                      {patient?.cpf && <p className="text-slate-500">CPF: {patient.cpf}</p>}
-                      {patient?.phone && <p className="text-slate-500">Tel: {patient.phone}</p>}
-                      {patient?.email && <p className="text-slate-500">Email: {patient.email}</p>}
+                      <p className="font-semibold text-slate-900">
+                        {hasPatientAmbiguity ? selectedPatientInfo?.name : patient?.name || 'Paciente cadastrado'}
+                      </p>
+                      {!hasPatientAmbiguity && patient?.cpf && <p className="text-slate-500">CPF: {patient.cpf}</p>}
+                      {!hasPatientAmbiguity && patient?.phone && <p className="text-slate-500">Tel: {patient.phone}</p>}
+                      {!hasPatientAmbiguity && patient?.email && <p className="text-slate-500">Email: {patient.email}</p>}
                     </div>
-                    <div className="flex items-center gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => setShowLinkSearch(true)}
-                        className="text-[11px] font-semibold text-slate-600 hover:text-slate-900 underline cursor-pointer"
-                      >
-                        Alterar vínculo
-                      </button>
-                      <span className="text-slate-300">•</span>
-                      <button
-                        type="button"
-                        onClick={handleUnlinkPatient}
-                        className="text-[11px] font-semibold text-rose-600 hover:text-rose-700 underline cursor-pointer"
-                      >
-                        Desvincular
-                      </button>
-                    </div>
+                    {!hasPatientAmbiguity && (
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowLinkSearch(true)}
+                          className="text-[11px] font-semibold text-slate-600 hover:text-slate-900 underline cursor-pointer"
+                        >
+                          Alterar vínculo
+                        </button>
+                        <span className="text-slate-300">•</span>
+                        <button
+                          type="button"
+                          onClick={handleUnlinkPatient}
+                          className="text-[11px] font-semibold text-rose-600 hover:text-rose-700 underline cursor-pointer"
+                        >
+                          Desvincular
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div>
@@ -580,7 +663,7 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
             )}
 
             {/* 📅 CONTEXTO DA AGENDA ODONTOLÓGICA */}
-            {patient || contact?.patient_id ? (
+            {(patient || contact?.patient_id) && (!hasPatientAmbiguity || selectedPatientInfo) ? (
               <div className="p-4 rounded-xl bg-gradient-to-br from-emerald-50/50 to-teal-50/40 border border-emerald-200/80 shadow-2xs space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950">
@@ -699,11 +782,7 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
                     {onOpenScheduleModal && (
                       <button
                         type="button"
-                        onClick={() =>
-                          onOpenScheduleModal(
-                            contact?.patient_id || (patient as any)?.id
-                          )
-                        }
+                        onClick={() => onOpenScheduleModal(resolvedPatientId || undefined)}
                         className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-2xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                       >
                         <Plus className="w-4 h-4" />

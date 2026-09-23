@@ -36,6 +36,7 @@ import {
   Clock,
   Plus,
   Users,
+  ExternalLink,
 } from 'lucide-react';
 import {
   WhatsAppConversation,
@@ -117,6 +118,8 @@ interface WhatsAppChatAreaProps {
   selectedClinicalPatientId?: string | null;
   onSelectClinicalPatient?: (patientId: string) => void;
   effectiveClinicalPatientId?: string | null;
+  /** Abre a ficha completa do paciente (aba Pacientes) — chip "Pacientes relacionados". */
+  onOpenPatientRecord?: (patientId: string) => void;
 }
 
 interface PendingAttachment {
@@ -144,6 +147,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   selectedClinicalPatientId: selectedClinicalPatientIdProp,
   onSelectClinicalPatient,
   effectiveClinicalPatientId: effectiveClinicalPatientIdProp,
+  onOpenPatientRecord,
 }) => {
   const [timelineItems, setTimelineItems] = useState<WhatsAppTimelineItem[]>([]);
   const [loadingTimeline, setLoadingTimeline] = useState(true);
@@ -1502,19 +1506,42 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
               <div className="flex items-center gap-1.5 flex-wrap mt-1">
                 <span className="text-[10px] font-bold text-slate-500">Pacientes relacionados:</span>
                 {relatedPatients.map((p) => (
-                  <button
+                  <span
                     key={p.id}
-                    type="button"
-                    onClick={() => setSelectedClinicalPatientId(p.id)}
-                    title="Selecionar para ações clínicas (anexar documento, abrir prontuário)"
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-colors cursor-pointer ${
+                    className={`inline-flex items-center rounded-full text-[10px] font-bold border overflow-hidden ${
                       selectedClinicalPatientId === p.id
                         ? 'bg-emerald-600 border-emerald-600 text-white'
-                        : 'bg-white border-slate-200 text-slate-700 hover:border-emerald-300'
+                        : 'bg-white border-slate-200 text-slate-700'
                     }`}
                   >
-                    {p.name}{p.isPrimary ? ' — Titular' : ''}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedClinicalPatientId(p.id)}
+                      title="Selecionar para ações clínicas (anexar documento, abrir prontuário)"
+                      className={`px-2 py-0.5 cursor-pointer transition-colors ${
+                        selectedClinicalPatientId === p.id ? '' : 'hover:bg-emerald-50'
+                      }`}
+                    >
+                      {p.name}{p.isPrimary ? ' — Titular' : ''}
+                    </button>
+                    {onOpenPatientRecord && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenPatientRecord(p.id);
+                        }}
+                        title={`Abrir ficha completa de ${p.name}`}
+                        className={`pl-1 pr-2 py-0.5 cursor-pointer border-l transition-colors ${
+                          selectedClinicalPatientId === p.id
+                            ? 'border-emerald-500 hover:bg-emerald-700'
+                            : 'border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </button>
+                    )}
+                  </span>
                 ))}
               </div>
             )}
