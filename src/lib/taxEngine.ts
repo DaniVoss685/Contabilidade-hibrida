@@ -243,7 +243,7 @@ export function calculateMonthlyPfTax(
       // NAO_TRIBUTAVEL/EXCLUIDO_DA_BASE, sempre com motivo+fundamento
       // obrigatórios (ver db.updateFiscalClassification), saem da base do
       // Carnê-Leão — documentRequested NUNCA influencia esta decisão.
-      if (!isTaxableForCarneLeao(inst.fiscalClassification)) continue;
+      if (!isTaxableForCarneLeao(inst.fiscalClassification, inst.documentRequested)) continue;
 
       // Realized: received in this month
       if (inst.status === 'RECEBIDO' && inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
@@ -561,7 +561,7 @@ export function calculateCpfMonthlyTax(
     for (const inst of sale.installments) {
       // Ver calculateMonthlyPfTax acima — mesma regra, duplicada aqui
       // porque as duas funções mantêm loops de agregação independentes.
-      if (!isTaxableForCarneLeao(inst.fiscalClassification)) continue;
+      if (!isTaxableForCarneLeao(inst.fiscalClassification, inst.documentRequested)) continue;
 
       if (inst.status === 'RECEBIDO' && inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
         grossRevenueReceived += inst.amountReceived || inst.value;

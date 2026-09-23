@@ -61,10 +61,12 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(initialOpenNewModal);
   const [editingProcedure, setEditingProcedure] = useState<DentalProcedure | null>(null);
+  const [modalSession, setModalSession] = useState(0);
 
   React.useEffect(() => {
     if (initialOpenNewModal) {
       setEditingProcedure(null);
+      setModalSession((n) => n + 1);
       setIsModalOpen(true);
       if (onClearAction) onClearAction();
     }
@@ -176,7 +178,8 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
   // Single Action Handlers
   const handleEdit = (proc: DentalProcedure) => {
     setEditingProcedure(proc);
-    setIsModalOpen(true);
+    setModalSession((n) => n + 1);
+      setIsModalOpen(true);
   };
 
   const handleDelete = (id: string, name: string) => {
@@ -342,7 +345,8 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
           <button
             onClick={() => {
               setEditingProcedure(null);
-              setIsModalOpen(true);
+              setModalSession((n) => n + 1);
+      setIsModalOpen(true);
             }}
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-md active:scale-98 transition-all cursor-pointer"
           >
@@ -711,6 +715,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
 
       {/* Procedure Modal */}
       <ProcedureModal
+        key={`${editingProcedure?.id ?? 'new'}-${modalSession}`}
         isOpen={isModalOpen}
         onClose={() => {
           setIsModalOpen(false);

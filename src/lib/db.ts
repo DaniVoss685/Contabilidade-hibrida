@@ -2474,6 +2474,22 @@ export class DentalFinanceDB {
     return newAccount;
   }
 
+  public ensureCashBankAccount(): BankAccount {
+    const existing = (this.bankAccounts || []).find(
+      (b) => b.accountType === 'CORRENTE_PF' && b.bankName === 'Dinheiro' && b.isActive !== false
+    );
+    if (existing) return existing;
+    return this.addBankAccount({
+      name: 'Dinheiro em Espécie',
+      bankName: 'Dinheiro',
+      accountType: 'CORRENTE_PF',
+      initialBalance: 0,
+      currentBalance: 0,
+      isActive: true,
+      isPreferred: false,
+    });
+  }
+
   public async addBankAccountAsync(account: Omit<BankAccount, 'id' | 'orgId'>): Promise<BankAccount> {
     const newAccount = this.addBankAccount(account);
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {

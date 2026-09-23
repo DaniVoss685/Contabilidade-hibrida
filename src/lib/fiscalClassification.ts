@@ -41,6 +41,13 @@ export function isPendingDocumentAlert(params: {
 // TRIBUTAVEL quando o campo está ausente (comportamento idêntico a antes
 // deste campo existir). Usado em taxEngine.ts (calculateMonthlyPfTax e
 // calculateCpfMonthlyTax).
-export function isTaxableForCarneLeao(fiscalClassification?: FiscalClassification): boolean {
+// Regra de negócio: dinheiro recebido SEM documento solicitado
+// (documentRequested === false) continua no faturamento, mas NÃO entra na
+// base do CPF. undefined (legado) nunca é tratado como "não solicitado".
+export function isTaxableForCarneLeao(
+  fiscalClassification?: FiscalClassification,
+  documentRequested?: boolean
+): boolean {
+  if (documentRequested === false) return false;
   return !fiscalClassification || fiscalClassification === 'TRIBUTAVEL';
 }

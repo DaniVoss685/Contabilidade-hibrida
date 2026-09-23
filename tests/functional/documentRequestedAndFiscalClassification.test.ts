@@ -109,6 +109,9 @@ function runTests() {
     assert(isTaxableForCarneLeao('TRIBUTAVEL') === true, 'BASE-02: TRIBUTAVEL explícito -> tributável');
     assert(isTaxableForCarneLeao('NAO_TRIBUTAVEL') === false, 'BASE-03: NAO_TRIBUTAVEL -> excluído da base');
     assert(isTaxableForCarneLeao('EXCLUIDO_DA_BASE') === false, 'BASE-04: EXCLUIDO_DA_BASE -> excluído da base');
+    assert(isTaxableForCarneLeao('TRIBUTAVEL', false) === false, 'BASE-05: dinheiro sem documento solicitado -> fora da base do CPF (regra de negócio)');
+    assert(isTaxableForCarneLeao('TRIBUTAVEL', true) === true, 'BASE-06: documento solicitado -> continua na base');
+    assert(isTaxableForCarneLeao(undefined, undefined) === true, 'BASE-07: legado sem documentRequested -> nunca tratado como não solicitado');
   }
 
   // ---------------------------------------------------------------------

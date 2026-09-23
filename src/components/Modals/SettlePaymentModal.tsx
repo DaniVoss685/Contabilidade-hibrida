@@ -80,7 +80,23 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
     { value: 'BOLETO', label: 'Boleto Bancário' },
   ];
 
-  const bankAccountOptions = bankAccounts.map((b) => ({
+  const noDocument = paymentMethod === 'DINHEIRO' && !documentRequested;
+  const [cashAccount, setCashAccount] = useState<BankAccount | null>(null);
+  const accountList = cashAccount && !bankAccounts.some((b) => b.id === cashAccount.id)
+    ? [...bankAccounts, cashAccount]
+    : bankAccounts;
+
+  const handleMethodChange = (val: string) => {
+    const method = val as PaymentMethod;
+    setPaymentMethod(method);
+    if (method === 'DINHEIRO') {
+      const acc = db.ensureCashBankAccount();
+      setCashAccount(acc);
+      setBankAccountId(acc.id);
+    }
+  };
+
+  const bankAccountOptions = accountList.map((b) => ({
     value: b.id,
     label: `${b.isPreferred ? '⭐ ' : ''}${b.name}${b.isPreferred ? ' (Principal)' : ''}`,
     description: `${b.isPreferred ? '⭐ Padrão • ' : ''}${b.accountType === 'CORRENTE_PF' ? 'Conta Física (CPF)' : 'Conta Jurídica (PJ)'}`,
@@ -89,7 +105,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (bankAccounts.length === 0) {
+    if (accountList.length === 0) {
       toast.warning('É necessário cadastrar uma conta bancária em Configurações > Contas Bancárias antes de registrar o recebimento.');
       return;
     }
@@ -104,8 +120,9 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
       return;
     }
 
+    const emit = markAsEmitted && !noDocument;
     const receitaStatus: ReceitaSaudeStatus | undefined = isCpf
-      ? markAsEmitted
+      ? emit
         ? 'EMITIDO'
         : 'A_EMITIR'
       : undefined;
@@ -117,7 +134,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
       amountReceived,
       paymentMethod,
       bankAccountId,
-      isCpf && markAsEmitted ? receitaSaudeId.trim() : undefined,
+      isCpf && emit ? receitaSaudeId.trim() : undefined,
       receitaStatus,
       paymentMethod === 'DINHEIRO' ? documentRequested : undefined
     );
@@ -192,7 +209,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
             />
           </div>
 
-          {bankAccounts.length === 0 && (
+          {accountList.length === 0 && paymentMethod !== 'DINHEIRO' && (
             <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <div className="text-xs text-amber-900 space-y-1">
@@ -209,7 +226,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
               label="Forma de Pagamento"
               options={paymentOptions}
               value={paymentMethod}
-              onChange={(val) => setPaymentMethod(val as PaymentMethod)}
+              onChange={handleMethodChange}
             />
 
             <CustomSelect
@@ -218,7 +235,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
               value={bankAccountId}
               onChange={setBankAccountId}
               required
-              placeholder={bankAccounts.length === 0 ? "Nenhuma conta cadastrada" : "Selecione..."}
+              placeholder={accountList.length === 0 ? "Nenhuma conta cadastrada" : "Selecione..."}
             />
           </div>
 
@@ -259,7 +276,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
           )}
 
           {/* If CPF: Receita Saúde Document details */}
-          {isCpf && (
+          {isCpf && !noDocument && (
             <div className="p-4 bg-emerald-50/50 border border-emerald-200/80 rounded-2xl space-y-3">
               <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
@@ -305,9 +322,9 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={bankAccounts.length === 0}
+              disabled={accountList.length === 0 && paymentMethod !== 'DINHEIRO'}
               className={`px-5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer ${
-                bankAccounts.length === 0
+                (accountList.length === 0 && paymentMethod !== 'DINHEIRO')
                   ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
                   : 'text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
               }`}
