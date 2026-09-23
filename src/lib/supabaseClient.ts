@@ -19,7 +19,13 @@ import {
   ConsultingClientSummary,
   ConsultingPortfolioTotals,
   ConsultingPriorityAlert,
+  ClinicalRecord,
+  ClinicalAttachment,
+  ClinicalRecordAmendment,
+  ClinicalBeforeAfterPair,
+  LegacyImportMapEntry,
 } from '../types';
+import { resolveGuardianMatch } from './guardianMatching';
 
 export const SUPABASE_URL =
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SUPABASE_URL) ||
@@ -296,6 +302,11 @@ export function mapAppPayrollToDb(app: PayrollHistoryEntry, tenantId: string): a
   };
 }
 
+function asStringArray(value: any): string[] {
+  if (Array.isArray(value)) return value.filter((v) => typeof v === 'string' && v.trim().length > 0);
+  return [];
+}
+
 export function mapDbPatientToApp(db: any): Patient {
   return {
     id: db.id,
@@ -305,8 +316,14 @@ export function mapDbPatientToApp(db: any): Patient {
     cpf: db.cpf || '',
     email: db.email || '',
     phone: db.phone || '',
+    phoneOwner: db.phone_owner === 'RESPONSIBLE' ? 'RESPONSIBLE' : 'PATIENT',
     birthDate: db.birth_date || '',
     notes: db.notes || '',
+    allergies: asStringArray(db.allergies),
+    conditions: asStringArray(db.conditions),
+    medications: asStringArray(db.medications),
+    clinicalNotes: db.clinical_notes || '',
+    legacyMetadata: db.legacy_metadata || undefined,
     createdAt: db.created_at || new Date().toISOString(),
   };
 }
@@ -320,8 +337,13 @@ export function mapAppPatientToDb(app: Patient, tenantId: string): any {
     cpf: app.cpf || '',
     email: app.email || '',
     phone: app.phone || '',
+    phone_owner: app.phoneOwner === 'RESPONSIBLE' ? 'RESPONSIBLE' : 'PATIENT',
     birth_date: app.birthDate || '',
     notes: app.notes || '',
+    allergies: asStringArray(app.allergies),
+    conditions: asStringArray(app.conditions),
+    medications: asStringArray(app.medications),
+    clinical_notes: app.clinicalNotes || '',
     created_at: app.createdAt || new Date().toISOString(),
   };
 }
@@ -735,6 +757,225 @@ export function mapAppAuditLogToDb(app: AuditLog, tenantId: string): any {
     entity_type: app.entityType,
     entity_id: app.entityId,
     details: app.details,
+  };
+}
+
+// -------------------------------------------------------------
+// Clinical Records & Attachments Mappings
+// -------------------------------------------------------------
+
+export function mapDbClinicalRecordToApp(db: any): ClinicalRecord {
+  return {
+    id: db.id,
+    tenantId: db.tenant_id,
+    patientId: db.patient_id,
+    professionalId: db.professional_id,
+    professionalName: db.professional_name || '',
+    professionalCro: db.professional_cro || '',
+    recordType: db.record_type,
+    procedureId: db.procedure_id || undefined,
+    procedureName: db.procedure_name || undefined,
+    recordDate: db.record_date,
+    recordTime: db.record_time || undefined,
+    complaint: db.complaint || undefined,
+    assessment: db.assessment || undefined,
+    conduct: db.conduct || undefined,
+    evolution: db.evolution,
+    conclusion: db.conclusion || undefined,
+    guidance: db.guidance || undefined,
+    returnDate: db.return_date || undefined,
+    status: db.status || 'DRAFT',
+    origin: db.origin || 'MANUAL',
+    importMetadata: db.import_metadata || undefined,
+    continuationOfRecordId: db.continuation_of_record_id || undefined,
+    continuationDate: db.continuation_date || undefined,
+    createdBy: db.created_by,
+    createdByName: db.created_by_name || undefined,
+    createdAt: db.created_at || new Date().toISOString(),
+    updatedAt: db.updated_at || undefined,
+    finalizedBy: db.finalized_by || undefined,
+    finalizedByName: db.finalized_by_name || undefined,
+    finalizedAt: db.finalized_at || undefined,
+    voidedBy: db.voided_by || undefined,
+    voidedByName: db.voided_by_name || undefined,
+    voidedAt: db.voided_at || undefined,
+    voidReason: db.void_reason || undefined,
+    toothNumber: db.tooth_number || undefined,
+    toothFace: db.tooth_face || undefined,
+    legacyTussCode: db.legacy_tuss_code || undefined,
+    legacyProcedureName: db.legacy_procedure_name || undefined,
+    legacyDentistName: db.legacy_dentist_name || undefined,
+    legacyStatus: db.legacy_status || undefined,
+    attachments: [],
+    amendments: [],
+  };
+}
+
+export function mapAppClinicalRecordToDb(app: ClinicalRecord, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    patient_id: app.patientId,
+    professional_id: app.professionalId,
+    professional_name: app.professionalName || null,
+    professional_cro: app.professionalCro || null,
+    record_type: app.recordType,
+    procedure_id: app.procedureId || null,
+    procedure_name: app.procedureName || null,
+    record_date: app.recordDate,
+    record_time: app.recordTime || null,
+    complaint: app.complaint || null,
+    assessment: app.assessment || null,
+    conduct: app.conduct || null,
+    evolution: app.evolution,
+    conclusion: app.conclusion || null,
+    guidance: app.guidance || null,
+    return_date: app.returnDate || null,
+    status: app.status || 'DRAFT',
+    origin: app.origin || 'MANUAL',
+    import_metadata: app.importMetadata || null,
+    continuation_of_record_id: app.continuationOfRecordId || null,
+    continuation_date: app.continuationDate || null,
+    created_by: app.createdBy,
+    created_at: app.createdAt || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    finalized_by: app.finalizedBy || null,
+    finalized_at: app.finalizedAt || null,
+    voided_by: app.voidedBy || null,
+    voided_at: app.voidedAt || null,
+    void_reason: app.voidReason || null,
+    tooth_number: app.toothNumber || null,
+    tooth_face: app.toothFace || null,
+    legacy_tuss_code: app.legacyTussCode || null,
+    legacy_procedure_name: app.legacyProcedureName || null,
+    legacy_dentist_name: app.legacyDentistName || null,
+    legacy_status: app.legacyStatus || null,
+  };
+}
+
+export function mapDbClinicalAttachmentToApp(db: any): ClinicalAttachment {
+  return {
+    id: db.id,
+    tenantId: db.tenant_id,
+    patientId: db.patient_id,
+    clinicalRecordId: db.clinical_record_id || undefined,
+    storagePath: db.storage_path,
+    originalFilename: db.original_filename,
+    mimeType: db.mime_type,
+    sizeBytes: Number(db.size_bytes || 0),
+    attachmentType: db.attachment_type,
+    caption: db.caption || undefined,
+    date: db.date || undefined,
+    procedureId: db.procedure_id || undefined,
+    procedureName: db.procedure_name || undefined,
+    beforeAfterPairId: db.before_after_pair_id || undefined,
+    createdBy: db.created_by,
+    createdAt: db.created_at || new Date().toISOString(),
+    source: db.source || undefined,
+    sourceMessageId: db.source_message_id || undefined,
+    sourceContactId: db.source_contact_id || undefined,
+    sourceConversationId: db.source_conversation_id || undefined,
+  };
+}
+
+export function mapAppClinicalAttachmentToDb(app: ClinicalAttachment, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    patient_id: app.patientId,
+    clinical_record_id: app.clinicalRecordId || null,
+    storage_path: app.storagePath,
+    original_filename: app.originalFilename,
+    mime_type: app.mimeType,
+    size_bytes: app.sizeBytes,
+    attachment_type: app.attachmentType,
+    caption: app.caption || null,
+    date: app.date || null,
+    procedure_id: app.procedureId || null,
+    procedure_name: app.procedureName || null,
+    before_after_pair_id: app.beforeAfterPairId || null,
+    created_by: app.createdBy,
+    created_at: app.createdAt || new Date().toISOString(),
+    source: app.source || null,
+    source_message_id: app.sourceMessageId || null,
+    source_contact_id: app.sourceContactId || null,
+    source_conversation_id: app.sourceConversationId || null,
+  };
+}
+
+export function mapDbClinicalAmendmentToApp(db: any): ClinicalRecordAmendment {
+  return {
+    id: db.id,
+    tenantId: db.tenant_id,
+    clinicalRecordId: db.clinical_record_id,
+    reason: db.reason,
+    content: db.content,
+    createdBy: db.created_by,
+    createdByName: db.created_by_name,
+    createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppClinicalAmendmentToDb(app: ClinicalRecordAmendment, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    clinical_record_id: app.clinicalRecordId,
+    reason: app.reason,
+    content: app.content,
+    created_by: app.createdBy,
+    created_by_name: app.createdByName,
+    created_at: app.createdAt || new Date().toISOString(),
+  };
+}
+
+export function mapDbBeforeAfterPairToApp(db: any): ClinicalBeforeAfterPair {
+  return {
+    id: db.id,
+    tenantId: db.tenant_id,
+    patientId: db.patient_id,
+    title: db.title,
+    procedureId: db.procedure_id || undefined,
+    procedureName: db.procedure_name || undefined,
+    observation: db.observation || undefined,
+    beforeAttachmentId: db.before_attachment_id,
+    afterAttachmentId: db.after_attachment_id,
+    beforeDate: db.before_date || undefined,
+    afterDate: db.after_date || undefined,
+    beforePositionX: db.before_position_x != null ? Number(db.before_position_x) : 0,
+    beforePositionY: db.before_position_y != null ? Number(db.before_position_y) : 0,
+    beforeZoom: db.before_zoom != null ? Number(db.before_zoom) : 1,
+    afterPositionX: db.after_position_x != null ? Number(db.after_position_x) : 0,
+    afterPositionY: db.after_position_y != null ? Number(db.after_position_y) : 0,
+    afterZoom: db.after_zoom != null ? Number(db.after_zoom) : 1,
+    dividerPosition: db.divider_position != null ? Number(db.divider_position) : 50,
+    createdBy: db.created_by,
+    createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapAppBeforeAfterPairToDb(app: ClinicalBeforeAfterPair, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    patient_id: app.patientId,
+    title: app.title,
+    procedure_id: app.procedureId || null,
+    procedure_name: app.procedureName || null,
+    observation: app.observation || null,
+    before_attachment_id: app.beforeAttachmentId,
+    after_attachment_id: app.afterAttachmentId,
+    before_date: app.beforeDate || null,
+    after_date: app.afterDate || null,
+    before_position_x: Number(app.beforePositionX ?? 0),
+    before_position_y: Number(app.beforePositionY ?? 0),
+    before_zoom: Number(app.beforeZoom ?? 1),
+    after_position_x: Number(app.afterPositionX ?? 0),
+    after_position_y: Number(app.afterPositionY ?? 0),
+    after_zoom: Number(app.afterZoom ?? 1),
+    divider_position: Number(app.dividerPosition ?? 50),
+    created_by: app.createdBy,
+    created_at: app.createdAt || new Date().toISOString(),
   };
 }
 
@@ -1298,8 +1539,13 @@ export const SupabaseService = {
       cpf: patient.cpf || '',
       email: patient.email || '',
       phone: patient.phone || '',
+      phone_owner: patient.phoneOwner === 'RESPONSIBLE' ? 'RESPONSIBLE' : 'PATIENT',
       birth_date: patient.birthDate || '',
       notes: patient.notes || '',
+      allergies: asStringArray(patient.allergies),
+      conditions: asStringArray(patient.conditions),
+      medications: asStringArray(patient.medications),
+      clinical_notes: patient.clinicalNotes || '',
     };
     const { error } = await supabaseFetch(`df_patients?id=eq.${patient.id}&tenant_id=eq.${tenantId}`, {
       method: 'PATCH',
@@ -1314,6 +1560,214 @@ export const SupabaseService = {
       method: 'DELETE',
     });
     return { success: !error, error: error || undefined };
+  },
+
+  // --- Responsável (guardian) ---------------------------------------------
+  // Modelo: df_patient_guardians (entidade responsável, reutilizável entre
+  // irmãos) + df_patient_guardian_links (vínculo N:N paciente<->responsável,
+  // no máximo 1 primário por paciente). Ver CLAUDE.md "Guardian / responsável".
+
+  async findGuardianCandidates(
+    tenantId: string,
+    query: { phone?: string; cpf?: string }
+  ): Promise<Array<{ id: string; name: string; cpf?: string; phone?: string; email?: string }>> {
+    const cleanPhone = (query.phone || '').replace(/\D/g, '');
+    const cleanCpf = (query.cpf || '').replace(/\D/g, '');
+    if (!cleanPhone && !cleanCpf) return [];
+
+    const filters: string[] = [];
+    if (cleanPhone) filters.push(`phone.eq.${cleanPhone}`);
+    if (cleanCpf) filters.push(`cpf.eq.${cleanCpf}`);
+
+    const { data, error } = await supabaseFetch(
+      `df_patient_guardians?tenant_id=eq.${tenantId}&or=(${filters.join(',')})&select=id,name,cpf,phone,email`,
+      { method: 'GET' }
+    );
+    if (error || !Array.isArray(data)) return [];
+    return data.map((g: any) => ({ id: g.id, name: g.name, cpf: g.cpf || undefined, phone: g.phone || undefined, email: g.email || undefined }));
+  },
+
+  async upsertGuardian(
+    tenantId: string,
+    guardian: { id?: string; name: string; cpf?: string; phone?: string; email?: string }
+  ): Promise<{ success: boolean; id?: string; error?: string }> {
+    // Sem id explícito: nunca cria duplicado quando já existe um responsável
+    // com CPF igual, ou nome+telefone iguais (Fase 6 do hardening — critério
+    // em src/lib/guardianMatching.ts, mesmo usado pelo futuro importador).
+    let id = guardian.id;
+    if (!id) {
+      const candidates = await this.findGuardianCandidates(tenantId, { phone: guardian.phone, cpf: guardian.cpf });
+      const match = resolveGuardianMatch(candidates, { name: guardian.name, cpf: guardian.cpf, phone: guardian.phone });
+      if (match) id = match.id;
+    }
+    id = id || `grd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const cleanCpf = (guardian.cpf || '').replace(/\D/g, '') || null;
+    const cleanPhone = (guardian.phone || '').replace(/\D/g, '') || null;
+    const payload = {
+      id,
+      tenant_id: tenantId,
+      name: guardian.name,
+      cpf: cleanCpf,
+      phone: cleanPhone,
+      email: guardian.email || null,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabaseFetch('df_patient_guardians?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, id, error: error || undefined };
+  },
+
+  async linkGuardianToPatient(
+    tenantId: string,
+    patientId: string,
+    guardianId: string,
+    opts?: { relationshipType?: string; isPrimary?: boolean }
+  ): Promise<{ success: boolean; error?: string }> {
+    const isPrimary = opts?.isPrimary !== false;
+
+    // Troca de responsável (Fase 5 do hardening): a unique index
+    // uq_df_patient_guardian_links_primary só permite 1 vínculo primário por
+    // paciente — desmarca qualquer outro primário ANTES de gravar o novo,
+    // sem apagar o vínculo antigo (o paciente pode voltar a usá-lo depois, e
+    // o responsável anterior não é afetado se ainda estiver ligado a outros
+    // pacientes, ex.: Maria continua responsável de Ana quando João passa
+    // para Carlos).
+    if (isPrimary) {
+      await supabaseFetch(
+        `df_patient_guardian_links?tenant_id=eq.${tenantId}&patient_id=eq.${patientId}&is_primary=eq.true&guardian_id=neq.${guardianId}`,
+        { method: 'PATCH', body: { is_primary: false } }
+      );
+    }
+
+    const payload = {
+      tenant_id: tenantId,
+      patient_id: patientId,
+      guardian_id: guardianId,
+      relationship_type: opts?.relationshipType || null,
+      is_primary: isPrimary,
+    };
+    const { error } = await supabaseFetch('df_patient_guardian_links?on_conflict=patient_id,guardian_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async getPrimaryGuardianForPatient(
+    tenantId: string,
+    patientId: string
+  ): Promise<{ id: string; name: string; cpf?: string; phone?: string; email?: string; relationshipType?: string } | null> {
+    const { data, error } = await supabaseFetch(
+      `df_patient_guardian_links?tenant_id=eq.${tenantId}&patient_id=eq.${patientId}&is_primary=eq.true&select=relationship_type,guardian:df_patient_guardians(id,name,cpf,phone,email)`,
+      { method: 'GET' }
+    );
+    if (error || !Array.isArray(data) || data.length === 0) return null;
+    const row = data[0] as any;
+    const g = row.guardian;
+    if (!g) return null;
+    return { id: g.id, name: g.name, cpf: g.cpf || undefined, phone: g.phone || undefined, email: g.email || undefined, relationshipType: row.relationship_type || undefined };
+  },
+
+  // Resumo de responsável para TODOS os pacientes do tenant em 2 queries (sem
+  // N+1) — alimenta listagem/ficha/filtros/busca por responsável.
+  // - byPatientId: pacientes que TÊM responsável (guardian primário).
+  // - guardianOfPatientId: pacientes que SÃO responsáveis de outros
+  //   (vínculo explícito guardian.linked_patient_id, só por CPF único —
+  //   nunca por nome/telefone, ver migration 20260923000000).
+  async getPatientGuardianSummaries(
+    tenantId: string
+  ): Promise<{
+    byPatientId: Record<string, { guardianId: string; guardianName: string; guardianPhone?: string; guardianEmail?: string; relationshipType?: string }>;
+    guardianOfPatientId: Record<string, { dependents: Array<{ patientId: string; relationshipType?: string }> }>;
+  }> {
+    const byPatientId: Record<string, { guardianId: string; guardianName: string; guardianPhone?: string; guardianEmail?: string; relationshipType?: string }> = {};
+    const guardianOfPatientId: Record<string, { dependents: Array<{ patientId: string; relationshipType?: string }> }> = {};
+
+    const { data: linkRows } = await supabaseFetch(
+      `df_patient_guardian_links?tenant_id=eq.${tenantId}&is_primary=eq.true&select=patient_id,relationship_type,guardian:df_patient_guardians(id,name,phone,email,linked_patient_id)`,
+      { method: 'GET' }
+    );
+    if (Array.isArray(linkRows)) {
+      for (const row of linkRows as any[]) {
+        const g = row.guardian;
+        if (!g) continue;
+        byPatientId[row.patient_id] = {
+          guardianId: g.id,
+          guardianName: g.name,
+          guardianPhone: g.phone || undefined,
+          guardianEmail: g.email || undefined,
+          relationshipType: row.relationship_type || undefined,
+        };
+        if (g.linked_patient_id) {
+          if (!guardianOfPatientId[g.linked_patient_id]) guardianOfPatientId[g.linked_patient_id] = { dependents: [] };
+          guardianOfPatientId[g.linked_patient_id].dependents.push({
+            patientId: row.patient_id,
+            relationshipType: row.relationship_type || undefined,
+          });
+        }
+      }
+    }
+
+    return { byPatientId, guardianOfPatientId };
+  },
+
+  // Remove o vínculo PRIMÁRIO de responsável de um paciente (ex.: usuário
+  // trocou o telefone de "Do responsável" de volta para "Do paciente").
+  // Soft-unlink (is_primary=false), nunca apaga a linha nem o guardian —
+  // preserva histórico e não afeta outros pacientes vinculados ao mesmo
+  // responsável (ver Fase 12 do hardening: Maria pode continuar responsável
+  // de Ana mesmo que o vínculo com João seja removido).
+  async unlinkPrimaryGuardianFromPatient(
+    tenantId: string,
+    patientId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(
+      `df_patient_guardian_links?tenant_id=eq.${tenantId}&patient_id=eq.${patientId}&is_primary=eq.true`,
+      { method: 'PATCH', body: { is_primary: false } }
+    );
+    return { success: !error, error: error || undefined };
+  },
+
+  // "Responsável por": pacientes dependentes de um paciente que também é
+  // guardian (vínculo explícito por CPF, ver migration 20260923000000).
+  async getPatientsGuardedByPatient(
+    tenantId: string,
+    patientId: string
+  ): Promise<Array<{ patientId: string; name: string; relationshipType?: string }>> {
+    const { data: guardianRows, error } = await supabaseFetch(
+      `df_patient_guardians?tenant_id=eq.${tenantId}&linked_patient_id=eq.${patientId}&select=id`,
+      { method: 'GET' }
+    );
+    if (error || !Array.isArray(guardianRows) || guardianRows.length === 0) return [];
+
+    const guardianIds = guardianRows.map((g: any) => g.id);
+    const orFilter = guardianIds.map((id: string) => `guardian_id.eq.${id}`).join(',');
+    const { data: linkRows } = await supabaseFetch(
+      `df_patient_guardian_links?tenant_id=eq.${tenantId}&or=(${orFilter})&select=patient_id,relationship_type,patient:df_patients(name)`,
+      { method: 'GET' }
+    );
+    if (!Array.isArray(linkRows)) return [];
+    return linkRows
+      .filter((r: any) => r.patient_id !== patientId)
+      .map((r: any) => ({ patientId: r.patient_id, name: r.patient?.name || '—', relationshipType: r.relationship_type || undefined }));
+  },
+
+  // Todos os pacientes vinculados (primário + secundários) a um contato
+  // WhatsApp — usado quando um número é compartilhado entre irmãos.
+  async getPatientsForWaContact(
+    tenantId: string,
+    contactId: string
+  ): Promise<Array<{ patientId: string; isPrimary: boolean; relationshipType?: string }>> {
+    const { data, error } = await supabaseFetch(
+      `df_wa_contact_patients?tenant_id=eq.${tenantId}&contact_id=eq.${contactId}&select=patient_id,is_primary,relationship_type`,
+      { method: 'GET' }
+    );
+    if (error || !Array.isArray(data)) return [];
+    return data.map((r: any) => ({ patientId: r.patient_id, isPrimary: !!r.is_primary, relationshipType: r.relationship_type || undefined }));
   },
 
   async saveSale(sale: Sale, tenantId: string): Promise<{ success: boolean; error?: string }> {
@@ -1476,6 +1930,218 @@ export const SupabaseService = {
       body: payload,
     });
     return { success: !error };
+  },
+
+  // -----------------------------------------------------------
+  // Prontuário Clínico, Anexos, Adendos e Pares Antes/Depois
+  // -----------------------------------------------------------
+  async getClinicalRecords(tenantId: string, patientId?: string): Promise<{ data: ClinicalRecord[]; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    let endpoint = `df_clinical_records?tenant_id=eq.${tenantId}&order=record_date.desc,created_at.desc`;
+    if (patientId) {
+      endpoint += `&patient_id=eq.${patientId}`;
+    }
+    const { data, error } = await supabaseFetch<any[]>(endpoint);
+    if (error || !data) return { data: [], error: error || undefined };
+
+    const records = data.map(mapDbClinicalRecordToApp);
+
+    // Carrega adendos e anexos vinculados para compor cada registro
+    const [amendRes, attachRes] = await Promise.all([
+      supabaseFetch<any[]>(`df_clinical_record_amendments?tenant_id=eq.${tenantId}&order=created_at.asc`),
+      supabaseFetch<any[]>(`df_clinical_attachments?tenant_id=eq.${tenantId}&order=created_at.asc`),
+    ]);
+
+    const amendments = (amendRes.data || []).map(mapDbClinicalAmendmentToApp);
+    const attachments = (attachRes.data || []).map(mapDbClinicalAttachmentToApp);
+
+    for (const rec of records) {
+      rec.amendments = amendments.filter((a) => a.clinicalRecordId === rec.id);
+      rec.attachments = attachments.filter((att) => att.clinicalRecordId === rec.id);
+      rec.attachmentsCount = rec.attachments.length;
+    }
+
+    return { data: records };
+  },
+
+  async saveClinicalRecord(record: ClinicalRecord, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppClinicalRecordToDb(record, tenantId);
+    const { error } = await supabaseFetch('df_clinical_records?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async finalizeClinicalRecord(
+    recordId: string,
+    finalizedBy: string,
+    finalizedByName: string,
+    tenantId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const now = new Date().toISOString();
+    const { error } = await supabaseFetch(`df_clinical_records?id=eq.${recordId}&tenant_id=eq.${tenantId}`, {
+      method: 'PATCH',
+      body: {
+        status: 'FINALIZED',
+        finalized_by: finalizedBy,
+        finalized_at: now,
+        updated_at: now,
+      },
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async addClinicalRecordAmendment(
+    amendment: ClinicalRecordAmendment,
+    tenantId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppClinicalAmendmentToDb(amendment, tenantId);
+    const { error: insertError } = await supabaseFetch('df_clinical_record_amendments', {
+      method: 'POST',
+      body: payload,
+    });
+    if (insertError) return { success: false, error: insertError };
+
+    // Atualiza status do registro para AMENDED
+    await supabaseFetch(`df_clinical_records?id=eq.${amendment.clinicalRecordId}&tenant_id=eq.${tenantId}`, {
+      method: 'PATCH',
+      body: { status: 'AMENDED', updated_at: new Date().toISOString() },
+    });
+
+    return { success: true };
+  },
+
+  async voidClinicalRecord(
+    recordId: string,
+    voidedBy: string,
+    voidedByName: string,
+    voidReason: string,
+    tenantId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const now = new Date().toISOString();
+    const { error } = await supabaseFetch(`df_clinical_records?id=eq.${recordId}&tenant_id=eq.${tenantId}`, {
+      method: 'PATCH',
+      body: {
+        status: 'VOIDED',
+        voided_by: voidedBy,
+        voided_by_name: voidedByName,
+        voided_at: now,
+        void_reason: voidReason,
+        updated_at: now,
+      },
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async getClinicalAttachments(tenantId: string, patientId?: string): Promise<{ data: ClinicalAttachment[]; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    let endpoint = `df_clinical_attachments?tenant_id=eq.${tenantId}&order=created_at.desc`;
+    if (patientId) {
+      endpoint += `&patient_id=eq.${patientId}`;
+    }
+    const { data, error } = await supabaseFetch<any[]>(endpoint);
+    if (error || !data) return { data: [], error: error || undefined };
+    return { data: data.map(mapDbClinicalAttachmentToApp) };
+  },
+
+  async saveClinicalAttachment(attachment: ClinicalAttachment, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppClinicalAttachmentToDb(attachment, tenantId);
+    const { error } = await supabaseFetch('df_clinical_attachments?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteClinicalAttachment(attachmentId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_clinical_attachments?id=eq.${attachmentId}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async getBeforeAfterPairs(tenantId: string, patientId?: string): Promise<{ data: ClinicalBeforeAfterPair[]; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    let endpoint = `df_clinical_before_after_pairs?tenant_id=eq.${tenantId}&order=created_at.desc`;
+    if (patientId) {
+      endpoint += `&patient_id=eq.${patientId}`;
+    }
+    const { data, error } = await supabaseFetch<any[]>(endpoint);
+    if (error || !data) return { data: [], error: error || undefined };
+    return { data: data.map(mapDbBeforeAfterPairToApp) };
+  },
+
+  async saveBeforeAfterPair(pair: ClinicalBeforeAfterPair, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payload = mapAppBeforeAfterPairToDb(pair, tenantId);
+    const { error } = await supabaseFetch('df_clinical_before_after_pairs?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteBeforeAfterPair(pairId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_clinical_before_after_pairs?id=eq.${pairId}&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async savePatientsBulk(patients: Patient[], tenantId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    const payloads = patients.map((p) => mapAppPatientToDb(p, tenantId));
+    const { error } = await supabaseFetch('df_patients?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payloads,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  // Leitura explícita por tenantId (nunca pelo activeTenantId implícito do
+  // singleton `db`) — usada pelo dry-run da migração de sistema anterior,
+  // que precisa comparar contra os pacientes/mapeamentos de UM tenant alvo
+  // específico, independentemente de qual clínica está ativa na sessão do
+  // usuário no momento da leitura.
+  async getPatientsForTenant(tenantId: string): Promise<{ data: Patient[]; error?: string }> {
+    const { data, error } = await supabaseFetch<any[]>(`df_patients?tenant_id=eq.${tenantId}&select=*`);
+    if (error || !data) return { data: [], error: error || undefined };
+    return { data: data.map(mapDbPatientToApp) };
+  },
+
+  async getLegacyImportMapForTenant(
+    tenantId: string,
+    sourceSystem: string
+  ): Promise<{ data: LegacyImportMapEntry[]; error?: string }> {
+    const { data, error } = await supabaseFetch<any[]>(
+      `df_legacy_import_map?tenant_id=eq.${tenantId}&source_system=eq.${encodeURIComponent(sourceSystem)}&select=*`
+    );
+    if (error || !data) return { data: [], error: error || undefined };
+    return {
+      data: data.map((row: any) => ({
+        entityType: row.entity_type,
+        legacyId: row.legacy_id,
+        targetId: row.target_id,
+        importSessionId: row.import_session_id || undefined,
+        importedAt: row.imported_at,
+      })),
+    };
+  },
+
+  async getTenantInfo(tenantId: string): Promise<{ id: string; name: string } | null> {
+    const { data, error } = await supabaseFetch<any[]>(`df_tenants?id=eq.${tenantId}&select=id,name`);
+    if (error || !data || data.length === 0) return null;
+    return { id: data[0].id, name: data[0].name };
   },
 };
 
