@@ -39,6 +39,7 @@ import {
 import { formatCnpj, normalizeCnpj } from '../../types/contabilexIntegration';
 import { db } from '../../lib/db';
 import { useToast, CurrencyInput, ConfirmDialog, Switch } from '../UI';
+import { CardFeesCard } from './CardFeesCard';
 import { TeamManagementTab } from './TeamManagementTab';
 import { hasPermission } from '../../lib/permissions';
 
@@ -104,8 +105,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   // 3. Preferências & Privacidade com Switches
   const [preferences, setPreferences] = useState<SystemPreferences>(() => db.getPreferences());
-  const [cardFees, setCardFees] = useState<CardFeeSettings>(() => db.getPreferences().cardFees || { debit: 0, credit: {} });
-  const [isSavingCardFees, setIsSavingCardFees] = useState<boolean>(false);
 
   // Mensagem de feedback temporária
   const [scenarioMessage, setScenarioMessage] = useState<string | null>(null);
@@ -164,34 +163,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   useEffect(() => {
     const p = db.getPreferences();
     setPreferences(p);
-    if (p.cardFees) {
-      setCardFees(p.cardFees);
-    }
   }, [professional]);
 
   // Handler para atualizar qualquer preferência (Switch ou campos)
   const handleUpdatePreferences = async (partial: Partial<SystemPreferences>) => {
     const updated = await db.updatePreferencesAsync(partial);
     setPreferences(updated);
-    if (updated.cardFees) {
-      setCardFees(updated.cardFees);
-    }
     toast.success('Preferência do sistema atualizada.');
     onRefreshData();
-  };
-
-  const handleSaveCardFees = async () => {
-    setIsSavingCardFees(true);
-    try {
-      const updated = await db.updatePreferencesAsync({ cardFees });
-      setPreferences(updated);
-      toast.success('Taxas de cartão & maquininha salvas com sucesso!');
-      onRefreshData();
-    } catch (e) {
-      toast.error('Erro ao salvar taxas de cartão.');
-    } finally {
-      setIsSavingCardFees(false);
-    }
   };
 
   const handleTogglePreference = (key: keyof SystemPreferences, value: boolean) => {
@@ -261,7 +240,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const officialMinWage2026 = db.getOfficialMinimumWage(2026);
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto pb-12 animate-in fade-in duration-200">
+    <div className="space-y-6 max-w-7xl mx-auto pb-12 animate-in fade-in duration-200">
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
@@ -716,103 +695,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </div>
 
-          {/* Card 1.1: Taxas de Cartão & Maquininha */}
-          <div className="bg-white rounded-2xl border border-slate-200/90 p-5 sm:p-6 shadow-xs space-y-4">
-            <div className="pb-3 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
-                <CreditCard className="w-4 h-4 text-emerald-600" />
-                Taxas de Cartão & Maquininha
-              </h3>
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Automação de Venda
-              </span>
-            </div>
-
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Configure as taxas cobradas pela operadora da maquininha. Ao registrar uma receita no cartão, a taxa correspondente às parcelas será preenchida automaticamente.
-            </p>
-
-            {/* Débito */}
-            <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/80 space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                  <span>Cartão de Débito</span>
-                </label>
-                <div className="relative w-28">
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="100"
-                    placeholder="0.00"
-                    value={cardFees.debit || ''}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value) || 0;
-                      setCardFees((prev) => ({ ...prev, debit: val }));
-                    }}
-                    className="w-full text-xs rounded-lg border border-slate-200 px-2.5 py-1.5 pr-6 bg-white text-slate-900 font-mono font-semibold text-right focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 shadow-2xs"
-                  />
-                  <span className="absolute right-2 top-1.5 text-xs text-slate-400 font-bold">%</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Crédito Parcelado (1x a 12x) */}
-            <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/80 space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-slate-800">
-                  Cartão de Crédito (1x a 12x)
-                </label>
-                <span className="text-[10px] text-slate-500">Taxa por parcela (%)</span>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((num) => (
-                  <div key={num} className="p-2 bg-white rounded-lg border border-slate-200 flex items-center justify-between gap-1 shadow-2xs">
-                    <span className="text-xs font-bold text-slate-700">{num}x</span>
-                    <div className="relative w-20">
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="100"
-                        placeholder="0.00"
-                        value={cardFees.credit?.[num] !== undefined ? cardFees.credit[num] : ''}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value) || 0;
-                          setCardFees((prev) => ({
-                            ...prev,
-                            credit: {
-                              ...(prev.credit || {}),
-                              [num]: val,
-                            },
-                          }));
-                        }}
-                        className="w-full text-xs rounded border border-slate-200 px-1.5 py-1 pr-5 bg-white text-slate-900 font-mono font-medium text-right focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      />
-                      <span className="absolute right-1.5 top-1 text-[11px] text-slate-400 font-bold">%</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Botão de Salvar Taxas */}
-            <button
-              type="button"
-              onClick={handleSaveCardFees}
-              disabled={isSavingCardFees}
-              className={`w-full py-2.5 px-3 ${
-                isSavingCardFees
-                  ? 'bg-emerald-400 cursor-not-allowed'
-                  : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 cursor-pointer'
-              } text-white font-bold text-xs rounded-xl shadow-sm hover:shadow transition-all flex items-center justify-center gap-1.5`}
-            >
-              <CheckCircle className={`w-3.5 h-3.5 ${isSavingCardFees ? 'animate-spin' : ''}`} />
-              <span>{isSavingCardFees ? 'Salvando taxas...' : 'Salvar Taxas da Maquininha'}</span>
-            </button>
-          </div>
-
           {/* Card 2: Parâmetros Legais Versionados (Governança Oficial) */}
           <div className="bg-white rounded-2xl border border-slate-200/90 p-5 sm:p-6 shadow-xs space-y-3.5">
             <div className="pb-3 border-b border-slate-100 flex items-center justify-between">
@@ -951,6 +833,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
       </form>
+
+      {/* Taxas de Cartão & Maquininha (por bandeira) — largura total, fora do form de perfil */}
+      <CardFeesCard resetKey={professional} onSaved={onRefreshData} />
       </>
       )}
 

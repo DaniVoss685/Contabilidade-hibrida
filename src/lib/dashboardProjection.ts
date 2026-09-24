@@ -22,6 +22,7 @@
  *    - Subtotais de CPF e PJ somam rigorosamente 100% dos totais dos cards em ambos os modos.
  */
 
+import { getInstallmentGrossReceived } from './cardFees';
 import { Sale, Expense } from '../types';
 
 export interface DashboardProjectionParams {
@@ -206,7 +207,9 @@ export function calculateDashboardProjection(
             statusStr !== 'OVERDUE' &&
             statusStr !== 'EM_ATRASO');
 
-        const val = Number(inst.amountReceived || inst.value || (inst as any).amount || 0);
+        const val = Number(
+          ((inst.amountReceived || 0) > 0 ? getInstallmentGrossReceived(inst as any) : 0) || inst.value || (inst as any).amount || 0
+        );
         const dueDate = (inst.dueDate || (inst as any).due_date || (inst as any).vencimento || '').trim();
 
         if (isReceived) {

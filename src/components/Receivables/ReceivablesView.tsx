@@ -26,6 +26,8 @@ import {
 import { AccountReceivableItem, TaxOrigin, PaymentMethod, InstallmentStatus, Sale } from '../../types';
 import { formatCurrency, formatDateBr, normalizeSearchText } from '../../lib/masks';
 import { formatPaymentMethodName, formatPaymentMethodWithInstallments } from '../../lib/paymentMethodFormat';
+import { summarizeReceipts, settlementProfileLabel, receivingModeLabel } from '../../lib/cardFees';
+import { getSaleAllocations, isSplitSale, isCardMethod, buildSplitGroups, orderSplitGroups, getFiscalCoverage } from '../../lib/salePayments';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { getEffectiveReceivableStatus } from '../../lib/statusHelper';
@@ -194,6 +196,10 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     },
   });
 
+  // Recebíveis da MESMA venda (pagamento dividido): identificador canônico = saleId + allocationNumber.
+  const splitGroups = useMemo(() => buildSplitGroups(items), [items]);
+  const groupedItems = useMemo(() => orderSplitGroups(displayItems, splitGroups), [displayItems, splitGroups]);
+
   // Bulk Selection Handlers
   const handleSelectAll = () => {
     if (selectedIds.size === displayItems.length && displayItems.length > 0) {
@@ -307,9 +313,11 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     })
     .reduce((sum, i) => sum + i.balance, 0);
 
-  const totalReceived = originScopedItems
-    .filter((i) => i.status === 'RECEBIDO' || i.amountReceived > 0)
-    .reduce((sum, i) => sum + i.amountReceived, 0);
+  // Bruto = faturamento recebido (antes da taxa); taxas = retidas pela operadora; líquido = dinheiro que
+  // entrou. Sempre bruto − taxas = líquido (mesmo conjunto de itens). amountReceived é o LÍQUIDO.
+  const receiptSummary = summarizeReceipts(originScopedItems);
+  const totalReceived = receiptSummary.gross;
+  const totalNetReceived = receiptSummary.net;
 
   // Relatório gerencial: Dinheiro recebido total = Documento solicitado +
   // Documento não solicitado (X = Y + Z), sem perder nenhum centavo do
@@ -324,12 +332,9 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
     .reduce((sum, i) => sum + i.amountReceived, 0);
   const dinheiroSemDocumento = dinheiroTotal - dinheiroComDocumento;
 
-  const totalCardFees = originScopedItems.reduce(
-    (sum, i) => sum + (i.cardFeeAmount || 0),
-    0
-  );
+  const totalCardFees = receiptSummary.fees;
   const totalWithCardFees = originScopedItems
-    .filter((i) => i.cardFeeAmount && i.cardFeeAmount > 0)
+    .filter((i) => i.cardFeeAmount && i.cardFeeAmount > 0 && (i.status === 'RECEBIDO' || i.amountReceived > 0))
     .reduce((sum, i) => sum + i.value, 0);
   const avgCardFeePercent = totalWithCardFees > 0
     ? ((totalCardFees / totalWithCardFees) * 100).toFixed(1)
@@ -394,15 +399,15 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* 1. Total Recebido */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+        {/* 1. Total Bruto Recebido */}
         <div className="bg-white p-4 rounded-xl border border-emerald-100 bg-emerald-50/20 shadow-xs">
           <div className="flex items-center justify-between text-emerald-600 text-xs font-semibold mb-1">
-            <span>Total Recebido</span>
+            <span>Total Bruto Recebido</span>
             <CheckCircle className="w-4 h-4 text-emerald-500" />
           </div>
           <div className="text-xl font-bold text-emerald-700">{formatCurrency(totalReceived)}</div>
-          <div className="text-[11px] text-emerald-600/80 mt-1">Baixado e conciliado no período</div>
+          <div className="text-[11px] text-emerald-600/80 mt-1">Antes das taxas • baixado no período</div>
           {dinheiroTotal > 0 && (
             <div
               className="mt-2 pt-2 border-t border-emerald-100 text-[10px] text-emerald-700/90 space-y-0.5"
@@ -422,6 +427,16 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
               </div>
             </div>
           )}
+        </div>
+
+        {/* 1b. Líquido Recebido */}
+        <div className="bg-white p-4 rounded-xl border border-emerald-100 bg-emerald-50/20 shadow-xs">
+          <div className="flex items-center justify-between text-emerald-700 text-xs font-semibold mb-1">
+            <span>Líquido Recebido</span>
+            <CheckCircle className="w-4 h-4 text-emerald-600" />
+          </div>
+          <div className="text-xl font-bold text-emerald-800">{formatCurrency(totalNetReceived)}</div>
+          <div className="text-[11px] text-emerald-700/80 mt-1">Bruto − taxas • dinheiro que entrou</div>
         </div>
 
         {/* 2. A Vencer */}
@@ -732,7 +747,19 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                   </td>
                 </tr>
               ) : (
-                displayItems.map((item) => {
+                groupedItems.map((item) => {
+                  const groupAll = splitGroups.get(item.saleId);
+                  const groupVisible = groupAll ? groupedItems.filter((x) => x.saleId === item.saleId) : [];
+                  const isGroupMember = Boolean(groupAll);
+                  const isGroupFollower = isGroupMember && groupVisible[0] !== item;
+                  const isGroupLast = isGroupMember && groupVisible[groupVisible.length - 1] === item;
+                  const groupTooltip = groupAll
+                    ? `Pagamento dividido • mesma venda\nVenda total: ${formatCurrency(groupAll.reduce((t, x) => t + x.value, 0))}\n` +
+                      [...groupAll]
+                        .sort((a, b) => (a.allocationNumber || 1) - (b.allocationNumber || 1))
+                        .map((x) => `Forma ${x.allocationNumber}: ${formatPaymentMethodName(x.paymentMethod)} — ${formatCurrency(x.value)}`)
+                        .join('\n')
+                    : '';
                   const isSelected = selectedIds.has(item.installmentId);
                   const effectiveStatus = getEffectiveReceivableStatus(item);
                   const isOverdue =
@@ -764,8 +791,10 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                       tabIndex={0}
                       role="button"
                       aria-label={`Ver detalhes de ${item.procedureName} — ${item.patientName}`}
-                      title="Clique para ver detalhes"
+                      title={isGroupMember ? `${groupTooltip}\n\nClique para ver a venda completa` : 'Clique para ver detalhes'}
                       className={`transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/40 focus-visible:ring-inset ${
+                        isGroupMember ? `border-l-4 border-l-indigo-400 bg-indigo-50/30 ${isGroupLast ? '' : 'border-b-transparent'}` : ''
+                      } ${
                         isSelected
                           ? 'bg-teal-50/60'
                           : isOverdue
@@ -793,7 +822,13 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                         <div
                           className="font-semibold text-slate-900 flex items-center gap-1.5 group"
                         >
-                          <span>{item.procedureName}</span>
+                          {isGroupFollower ? (
+                            <span className="text-slate-400 font-medium text-xs" title="Mesma venda e mesmo procedimento da linha acima">
+                              ↳ {item.procedureName}
+                            </span>
+                          ) : (
+                            <span>{item.procedureName}</span>
+                          )}
                           <Eye className="w-3.5 h-3.5 opacity-30 group-hover:opacity-100 transition-opacity text-teal-600 shrink-0" />
                         </div>
                       </td>
@@ -801,6 +836,16 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                       {/* 2. Paciente & Parcela */}
                       <td className="py-3.5 px-4 min-w-[170px]">
                         <div className="font-bold text-slate-900 leading-snug">{item.patientName}</div>
+                        {isGroupMember && (
+                          <div className="mt-1">
+                            <span
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9.5px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200 cursor-help"
+                              title={groupTooltip}
+                            >
+                              Pagamento dividido • mesma venda ({item.allocationNumber}/{groupAll!.length === 2 ? 2 : new Set(groupAll!.map((x) => x.allocationNumber)).size})
+                            </span>
+                          </div>
+                        )}
                         <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
                           {/* Icon to view observation if notes exists */}
                           {(() => {
@@ -880,7 +925,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                               <div className="absolute bottom-full right-0 mb-1.5 hidden group-hover:flex flex-col gap-1 bg-slate-900 text-white text-[10px] rounded-lg p-2.5 shadow-xl whitespace-nowrap z-30 pointer-events-none text-left">
                                 <div className="font-bold text-slate-200 border-b border-slate-700 pb-1">Taxa da Maquininha</div>
                                 <div className="text-slate-300">Valor Bruto: <span className="font-mono text-white">{formatCurrency(item.value)}</span></div>
-                                <div className="text-rose-300">Taxa Retida ({item.cardFeePercent || 0}%): <span className="font-mono font-bold">-{formatCurrency(item.cardFeeAmount)}</span></div>
+                                <div className="text-rose-300">{item.cardBrandName ? `${item.cardBrandName} • ` : ''}Taxa Retida ({item.cardFeeType === 'FIXED' ? 'fixa' : `${item.cardFeePercent || 0}%`}): <span className="font-mono font-bold">-{formatCurrency(item.cardFeeAmount)}</span></div>
                                 <div className="text-emerald-300 pt-0.5 border-t border-slate-800">Valor Líquido: <span className="font-mono font-bold">{formatCurrency(item.netValue || (item.value - item.cardFeeAmount))}</span></div>
                               </div>
                             </div>
@@ -902,12 +947,18 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                         <div className="flex flex-col items-center gap-1">
                           <span className={`text-[11px] font-semibold ${item.paymentMethod ? 'text-slate-700' : 'text-slate-400'}`}>
                             {item.paymentMethod
-                              ? formatPaymentMethodWithInstallments(item.paymentMethod, item.totalInstallments > 1 ? item.totalInstallments : undefined)
+                              ? formatPaymentMethodWithInstallments(item.paymentMethod, (item.customerInstallments ?? item.totalInstallments) > 1 ? (item.customerInstallments ?? item.totalInstallments) : undefined)
                               : 'Não informado'}
                           </span>
+                          {item.cardBrandName && (
+                            <span className="text-[10.5px] text-slate-500">
+                              {item.cardBrandName}
+                              {item.receivingMode === 'NORMAL' ? ' • Recebimento normal' : item.settlementProfile ? ` • Recebe em ${settlementProfileLabel(item.settlementProfile)}` : ''}
+                            </span>
+                          )}
 
                           {/* Documento: só relevante para DINHEIRO */}
-                          {item.paymentMethod === 'DINHEIRO' && (
+                          {item.paymentMethod === 'DINHEIRO' && item.taxOrigin === 'CPF' && (
                             <button
                               type="button"
                               disabled={togglingDocId === item.installmentId}
@@ -1256,6 +1307,9 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
           viewingSale.cardFeePercent ??
           viewingSale.installments?.find((i) => i.cardFeePercent)?.cardFeePercent ??
           0;
+        const viewingSnap = viewingSale.installments?.find((i) => i.cardFeeType || i.cardBrandName);
+        const viewingIsCard = isCardMethod(viewingSale.paymentMethod) || (viewingSale.installments || []).some((i) => isCardMethod(i.paymentMethod));
+        const viewingAllocations = getSaleAllocations(viewingSale);
         const viewingNetValue =
           viewingSale.netValue ??
           (viewingSale.totalValue - viewingFeeAmount);
@@ -1320,9 +1374,17 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                     <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Taxa Maquininha</div>
                     <div className="text-sm font-bold text-rose-700 mt-0.5">
                       {viewingFeeAmount > 0
-                        ? `-${formatCurrency(viewingFeeAmount)} (${viewingFeePercent}%)`
+                        ? `-${formatCurrency(viewingFeeAmount)} (${viewingSnap?.cardFeeType === 'FIXED' ? 'fixa' : `${viewingFeePercent}%`})`
                         : 'R$ 0,00'}
                     </div>
+                    {viewingIsCard && (
+                      <div className="text-[10px] text-slate-500 space-y-0.5">
+                        <div>Bandeira: {viewingSnap?.cardBrandName || 'Não informada'}</div>
+                        {viewingSnap?.customerInstallments ? <div>Parcelamento do paciente: {viewingSnap.customerInstallments}x</div> : null}
+                        {viewingSnap?.receivingMode ? <div>Recebimento da clínica: {receivingModeLabel(viewingSnap.receivingMode, viewingSnap.settlementProfile)}</div> : null}
+                        <div>Valor bruto: {formatCurrency(viewingSale.totalValue)}</div>
+                      </div>
+                    )}
                     <div className="text-[10px] text-emerald-700 font-semibold">
                       Líq: {formatCurrency(viewingNetValue)}
                     </div>
@@ -1372,6 +1434,92 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
 
                 {/* Installments Table */}
                 <div className="space-y-2">
+                {(() => {
+                  const fc = getFiscalCoverage(viewingSale);
+                  return (
+                    <div className="space-y-2" data-testid="fiscal-section">
+                      <div className="text-xs uppercase font-bold text-slate-500 tracking-wider">Documento fiscal</div>
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs grid grid-cols-2 sm:grid-cols-5 gap-3">
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-500">Tipo</div>
+                          <div className="font-bold text-slate-800">{fc.documentType}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-500">Valor da venda</div>
+                          <div className="font-bold text-slate-800">{formatCurrency(fc.gross)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-500">Valor coberto</div>
+                          <div className="font-bold text-slate-800">{formatCurrency(fc.covered)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-500">Cobertura</div>
+                          <div className={`font-bold ${fc.coverage === 'PARCIAL' ? 'text-amber-700' : 'text-emerald-700'}`}>
+                            {fc.coverage === 'PARCIAL' ? 'Parcial' : 'Total'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-500">Status</div>
+                          <div className="font-bold text-slate-800">{fc.status}</div>
+                        </div>
+                        {fc.coverage === 'PARCIAL' && (
+                          <div className="col-span-2 sm:col-span-5 text-slate-600 border-t border-slate-200 pt-2 space-y-0.5">
+                            <div>Não coberto pelo documento: <strong>{formatCurrency(fc.uncovered)}</strong> (o faturamento gerencial continua {formatCurrency(fc.gross)}).</div>
+                            {fc.perAllocation.length > 1 && fc.perAllocation.map((a) => (
+                              <div key={a.number}>
+                                Pagamento {a.number} — {formatPaymentMethodName(a.method)}: documento cobre {formatCurrency(a.covered)} de {formatCurrency(a.amount)}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {viewingAllocations.length > 1 && (
+                  <div className="space-y-2">
+                    <div className="text-xs uppercase font-bold text-slate-500 tracking-wider">
+                      Formas de pagamento ({viewingAllocations.length})
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {viewingAllocations.map((al) => (
+                        <div key={al.number} className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-0.5">
+                          <div className="font-bold text-slate-800">
+                            {al.number}. {formatPaymentMethodName(al.method)} — {formatCurrency(al.amount)}
+                          </div>
+                          <div className="text-slate-600">
+                            Conta de recebimento:{' '}
+                            <strong>
+                              {db.getBankAccounts().find((b) => b.id === al.installments[0]?.bankAccountId)?.name || 'Não informada'}
+                            </strong>
+                          </div>
+                          <div className="text-slate-600">
+                            Recebido: <strong>{al.received ? 'Sim' : 'Não'}</strong>
+                            {al.installmentCount > 1 ? ` • ${al.installments.filter((i) => i.status === 'RECEBIDO').length}/${al.installmentCount} parcelas` : ''}
+                          </div>
+                          {isCardMethod(al.method) && (
+                            <>
+                              <div className="text-slate-600">
+                                Bandeira: {al.brandName || 'Não informada'}
+                                {al.method === 'CARTAO_CREDITO' && al.customerInstallments ? ` • ${al.customerInstallments}x` : ''}
+                              </div>
+                              {al.receivingMode && (
+                                <div className="text-slate-600">
+                                  Recebimento: {receivingModeLabel(al.receivingMode, al.installments[0]?.settlementProfile)}
+                                </div>
+                              )}
+                              <div className="text-slate-600">
+                                Taxa: −{formatCurrency(al.fee)} • Líquido: <strong className="text-emerald-700">{formatCurrency(al.net)}</strong>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                   <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
                     Parcelas da Venda ({viewingSale.installments.length})
                   </h4>
@@ -1396,7 +1544,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                           return (
                             <tr key={inst.id} className={isPaid ? 'bg-emerald-50/20' : isInstOverdue ? 'bg-rose-50/30' : 'hover:bg-slate-50'}>
                               <td className="py-2 px-3 text-center font-bold text-slate-600">
-                                {inst.installmentNumber}/{viewingSale.installmentsCount}
+                                {inst.allocationNumber ? `P${inst.allocationNumber} • ` : ''}{inst.installmentNumber}/{inst.totalInstallments || viewingSale.installmentsCount}
                               </td>
                               <td className="py-2 px-3 font-mono">{formatDateBr(inst.dueDate)}</td>
                               <td className="py-2 px-3 font-mono">
@@ -1421,8 +1569,8 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                                     </span>
                                   )
                                 ) : (
-                                  <span className="text-slate-400" title="Forma prevista, ainda não recebida">
-                                    Previsto: {formatPaymentMethodName(viewingSale.paymentMethod)}
+                                  <span className="text-slate-400" title={`Forma prevista desta parcela: ${formatPaymentMethodName(inst.paymentMethod || viewingSale.paymentMethod)}`}>
+                                    Previsto: {formatPaymentMethodName(inst.paymentMethod || viewingSale.paymentMethod)}
                                   </span>
                                 )}
                                 {isPaid && inst.paymentMethod === 'DINHEIRO' && (
@@ -1469,7 +1617,9 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                                   </span>
                                 ) : (
                                   <span className="text-slate-500">
-                                    {viewingSale.nfseStatus === 'EMITIDA'
+                                    {inst.fiscalCoveredAmount === 0
+                                      ? 'Sem nota (dinheiro)'
+                                      : viewingSale.nfseStatus === 'EMITIDA'
                                       ? `NFS-e #${viewingSale.nfseNumber || ''}`
                                       : 'NFS-e Pendente'}
                                   </span>

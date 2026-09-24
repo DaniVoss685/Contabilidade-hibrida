@@ -12,7 +12,7 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
-  Download,
+  Calculator,
   Trash2,
   CheckSquare,
   Square,
@@ -24,9 +24,10 @@ import {
 } from 'lucide-react';
 import { Sale, TaxOrigin, ReceitaSaudeStatus, NfseStatus } from '../../types';
 import { formatCurrency, formatCpf, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
-import { exportToCsv } from '../../lib/exportUtils';
 import { db, getSalePaymentSummary } from '../../lib/db';
 import { NewSaleModal } from '../Modals/NewSaleModal';
+import { CardFeeSimulatorModal } from '../Modals/CardFeeSimulatorModal';
+import { saleHasPaymentMethod, saleMethodsLabel, isSplitSale, getFiscalCoverage } from '../../lib/salePayments';
 import { CustomSelect, ConfirmDialog, useToast, SortableHeader } from '../UI';
 import { useSortableData } from '../../hooks/useSortableData';
 
@@ -68,6 +69,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
   const toast = useToast();
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
+  const [isFeeSimulatorOpen, setIsFeeSimulatorOpen] = useState(false);
   const [taxOriginFilter, setTaxOriginFilter] = useState<'ALL' | TaxOrigin>('ALL');
   const [procedureFilter, setProcedureFilter] = useState<string>('ALL');
   const [paymentMethodFilter, setPaymentMethodFilter] = useState<string>('ALL');
@@ -191,7 +193,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
         const fee = sale.cardFeeAmount || sale.installments.reduce((acc, i) => acc + (i.cardFeeAmount || 0), 0);
         matchesPaymentMethod = fee > 0;
       } else if (paymentMethodFilter !== 'ALL') {
-        matchesPaymentMethod = sale.paymentMethod === paymentMethodFilter;
+        matchesPaymentMethod = saleHasPaymentMethod(sale, paymentMethodFilter);
       }
 
       let matchesDoc = true;
@@ -203,7 +205,8 @@ export const SalesView: React.FC<SalesViewProps> = ({
             (i) => i.status === 'RECEBIDO' && i.receitaSaudeStatus !== 'EMITIDO' && i.documentRequested !== false
           );
         } else {
-          matchesDoc = sale.nfseStatus !== 'EMITIDA';
+          // Dinheiro em CNPJ não gera nota: sem base coberta pelo documento não há pendência de NFS-e.
+          matchesDoc = sale.nfseStatus !== 'EMITIDA' && getFiscalCoverage(sale).covered > 0;
         }
       } else if (docFilter === 'EMITTED') {
         if (sale.taxOrigin === 'CPF') {
@@ -225,40 +228,6 @@ export const SalesView: React.FC<SalesViewProps> = ({
     sortDirection,
     handleSort,
   } = useSortableData(filteredSales);
-
-  const handleExportCsv = () => {
-    const headers = [
-      'Data Competência',
-      'Origem Tributária',
-      'Paciente',
-      'CPF Paciente',
-      'Pagador Responsável',
-      'Procedimento',
-      'Valor Total',
-      'Parcelas',
-      'Documento Fiscal',
-      'Status Documento',
-    ];
-
-    const rows = filteredSales.map((s) => [
-      formatDateBr(s.serviceDate),
-      s.taxOrigin,
-      s.patientName,
-      formatCpf(s.patientCpf, false),
-      s.payerIsBeneficiary ? 'O próprio' : s.payerName || 'Não informado',
-      s.procedureName,
-      s.totalValue,
-      s.installmentsCount,
-      s.taxOrigin === 'CPF' ? 'Receita Saúde' : `NFS-e ${s.nfseNumber || ''}`,
-      s.taxOrigin === 'CPF'
-        ? s.installments.some((i) => i.receitaSaudeStatus === 'A_EMITIR' && i.documentRequested !== false)
-          ? 'Pendente'
-          : 'Emitido'
-        : s.nfseStatus || 'A_EMITIR',
-    ]);
-
-    exportToCsv('receitas_odontologicas', [headers, ...rows]);
-  };
 
   const handleSaveDocIdentifier = (sale: Sale) => {
     if (sale.taxOrigin === 'CNPJ') {
@@ -291,11 +260,11 @@ export const SalesView: React.FC<SalesViewProps> = ({
 
         <div className="flex items-center gap-2">
           <button
-            onClick={handleExportCsv}
+            onClick={() => setIsFeeSimulatorOpen(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 shadow-2xs transition-colors cursor-pointer"
           >
-            <Download className="w-3.5 h-3.5 text-slate-400" />
-            <span>Exportar CSV</span>
+            <Calculator className="w-3.5 h-3.5 text-indigo-500" />
+            <span>Simular Taxa</span>
           </button>
 
           <button
@@ -685,9 +654,23 @@ export const SalesView: React.FC<SalesViewProps> = ({
                                   <FileText className="w-3.5 h-3.5 text-blue-600" />
                                   NFS-e #{sale.nfseNumber || 'Emitida'}
                                 </span>
+                              ) : getFiscalCoverage(sale).covered <= 0 ? (
+                                <span
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200"
+                                  title="Dinheiro em CNPJ não gera nota fiscal"
+                                >
+                                  Sem nota (dinheiro)
+                                </span>
                               ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-50 text-amber-900 border border-amber-200/80">
-                                  NFS-e a Emitir
+                                <span
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-50 text-amber-900 border border-amber-200/80"
+                                  title={
+                                    getFiscalCoverage(sale).coverage === 'PARCIAL'
+                                      ? `NFS-e sobre ${formatCurrency(getFiscalCoverage(sale).covered)} de ${formatCurrency(sale.totalValue)} (dinheiro fica fora da nota)`
+                                      : undefined
+                                  }
+                                >
+                                  NFS-e a Emitir{getFiscalCoverage(sale).coverage === 'PARCIAL' ? ` (${formatCurrency(getFiscalCoverage(sale).covered)})` : ''}
                                 </span>
                               )}
                             </div>
@@ -711,6 +694,14 @@ export const SalesView: React.FC<SalesViewProps> = ({
                             <span className="inline-block px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-bold text-[10px]">
                               {sale.installmentsCount}x
                             </span>
+                            {isSplitSale(sale) && (
+                              <span
+                                className="inline-block px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200/80 text-[9.5px] font-bold cursor-help whitespace-pre-line"
+                                title={saleMethodsLabel(sale).title}
+                              >
+                                {saleMethodsLabel(sale).label}
+                              </span>
+                            )}
                             {summary.overallStatus === 'TOTALMENTE_RECEBIDA' && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200/80">
                                 Totalmente Recebida
@@ -780,7 +771,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
                                   Detalhamento das Parcelas & Vínculos Tributários
                                 </h4>
                                 <span className="text-[11px] text-slate-500">
-                                  Forma de Pagamento: {sale.paymentMethod}
+                                  Forma de Pagamento: {saleMethodsLabel(sale).title.split('\n')[0]}
                                 </span>
                               </div>
 
@@ -887,6 +878,9 @@ export const SalesView: React.FC<SalesViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Simulador de taxa do cartão (somente cálculo, não grava nada) */}
+      <CardFeeSimulatorModal isOpen={isFeeSimulatorOpen} onClose={() => setIsFeeSimulatorOpen(false)} />
 
       {/* Edit Sale Modal */}
       {editingSale && (

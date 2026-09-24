@@ -38,8 +38,10 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
   const [paymentDate, setPaymentDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
-  const [amountReceived, setAmountReceived] = useState<number>(item?.balance || item?.value || 0);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
+  const [amountReceived, setAmountReceived] = useState<number>(
+    item?.cardFeeAmount && item?.netValue ? item.netValue : item?.balance || item?.value || 0
+  );
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(item?.paymentMethod || 'PIX');
   const [bankAccountId, setBankAccountId] = useState<string>(() => {
     const preferred = bankAccounts.find((b) => b.isPreferred && b.isActive !== false);
     if (preferred) return preferred.id;
@@ -63,8 +65,16 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
 
   React.useEffect(() => {
     if (item) {
-      setAmountReceived(item.balance || item.value);
+      setAmountReceived(item.cardFeeAmount && item.netValue ? item.netValue : item.balance || item.value);
       setPaymentDate(new Date().toISOString().split('T')[0]);
+      // Pré-seleciona a forma de pagamento já definida na venda (não sobrescrever com PIX).
+      const method = (item.paymentMethod || 'PIX') as PaymentMethod;
+      setPaymentMethod(method);
+      if (method === 'DINHEIRO') {
+        const acc = db.ensureCashBankAccount();
+        setCashAccount(acc);
+        setBankAccountId(acc.id);
+      }
       if (item.receitaSaudeId) {
         setReceitaSaudeId(item.receitaSaudeId);
       }

@@ -160,7 +160,7 @@ export const PatientProcedureModal: React.FC<PatientProcedureModalProps> = ({
                 {hasCardFee ? `-${formatCurrency(sale.cardFeeAmount)}` : 'R$ 0,00'}
               </span>
               <span className="text-[10.5px] text-rose-600/80 block mt-0.5">
-                {sale.cardFeePercent ? `${sale.cardFeePercent}% tarifa` : 'Sem taxa'}
+                {sale.installments?.find((i) => i.cardFeeType === 'FIXED') ? 'Taxa fixa' : sale.cardFeePercent ? `${sale.cardFeePercent}% tarifa` : 'Sem taxa'}
               </span>
             </div>
 

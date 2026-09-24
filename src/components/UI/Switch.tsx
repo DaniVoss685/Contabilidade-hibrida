@@ -9,6 +9,9 @@ export interface SwitchProps {
   id?: string;
   showStatusBadge?: boolean;
   className?: string;
+  // Só o toggle (sem card/borda/label) para encaixar dentro de um campo de formulário já com rótulo próprio.
+  bare?: boolean;
+  ariaLabel?: string;
 }
 
 export const Switch: React.FC<SwitchProps> = ({
@@ -20,6 +23,8 @@ export const Switch: React.FC<SwitchProps> = ({
   id,
   showStatusBadge = true,
   className = '',
+  bare = false,
+  ariaLabel,
 }) => {
   const switchId = id || `switch_${Math.random().toString(36).substring(2, 8)}`;
 
@@ -36,6 +41,32 @@ export const Switch: React.FC<SwitchProps> = ({
       onChange(!checked);
     }
   };
+
+  const toggle = (
+    <button
+      type="button"
+      role="switch"
+      id={switchId}
+      aria-checked={checked}
+      aria-label={ariaLabel || label}
+      disabled={disabled}
+      onClick={handleToggle}
+      onKeyDown={handleKeyDown}
+      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+        checked ? 'bg-emerald-600' : 'bg-slate-300'
+      } ${disabled ? 'cursor-not-allowed' : ''}`}
+    >
+      <span className="sr-only">{ariaLabel || label || 'Alternar'}</span>
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+          checked ? 'translate-x-5' : 'translate-x-0'
+        }`}
+      />
+    </button>
+  );
+
+  if (bare) return toggle;
 
   return (
     <div

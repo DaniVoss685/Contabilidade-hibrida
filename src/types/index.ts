@@ -513,6 +513,20 @@ export interface SaleInstallment {
   bankAccountId?: string;
   cardFeePercent?: number;
   cardFeeAmount?: number;
+  // Snapshot da regra aplicada no momento do lançamento (não muda retroativamente)
+  cardBrandId?: string;
+  cardBrandName?: string;
+  cardFeeType?: CardFeeType;
+  cardFeeValue?: number;
+  customerInstallments?: number; // parcelas do paciente (metadata comercial)
+  settlementProfile?: SettlementProfileId; // prazo de recebimento da clínica na época
+  receivingMode?: ReceivingMode; // ANTICIPATED (1 recebível D+N) ou NORMAL (cronograma das parcelas), snapshot da venda
+  // Pagamento dividido: alocação (forma de pagamento) à qual a parcela pertence. Ausente = alocação única (venda antiga).
+  allocationNumber?: number;
+  allocationAmount?: number; // bruto total da alocação (soma das parcelas dela)
+  // Cobertura do documento fiscal: quanto DESTA parcela o documento cobre. Ausente = coberta integralmente (padrão).
+  // Decisão explícita do usuário — nunca derivada da forma de pagamento.
+  fiscalCoveredAmount?: number;
   netValue?: number;
 }
 
@@ -583,6 +597,20 @@ export interface AccountReceivableItem {
   serviceDate?: string;
   cardFeePercent?: number;
   cardFeeAmount?: number;
+  // Snapshot da regra aplicada no momento do lançamento (não muda retroativamente)
+  cardBrandId?: string;
+  cardBrandName?: string;
+  cardFeeType?: CardFeeType;
+  cardFeeValue?: number;
+  customerInstallments?: number; // parcelas do paciente (metadata comercial)
+  settlementProfile?: SettlementProfileId; // prazo de recebimento da clínica na época
+  receivingMode?: ReceivingMode; // ANTICIPATED (1 recebível D+N) ou NORMAL (cronograma das parcelas), snapshot da venda
+  // Pagamento dividido: alocação (forma de pagamento) à qual a parcela pertence. Ausente = alocação única (venda antiga).
+  allocationNumber?: number;
+  allocationAmount?: number; // bruto total da alocação (soma das parcelas dela)
+  // Cobertura do documento fiscal: quanto DESTA parcela o documento cobre. Ausente = coberta integralmente (padrão).
+  // Decisão explícita do usuário — nunca derivada da forma de pagamento.
+  fiscalCoveredAmount?: number;
   netValue?: number;
   paymentMethod?: PaymentMethod;
   bankAccountId?: string;
@@ -690,7 +718,7 @@ export interface BankAccount {
   orgId: string;
   name: string;
   bankName: string;
-  accountType: 'CORRENTE_PF' | 'CORRENTE_PJ' | 'POUPANCA' | 'INVESTIMENTO';
+  accountType: 'CORRENTE_PF' | 'CORRENTE_PJ' | 'POUPANCA' | 'INVESTIMENTO' | 'CAIXA';
   initialBalance: number;
   currentBalance: number;
   isActive?: boolean;
@@ -939,9 +967,41 @@ export interface FiscalParameter {
   notes?: string;
 }
 
+export type CardFeeType = 'PERCENTAGE' | 'FIXED';
+
+export interface CardFeeRule {
+  type: CardFeeType;
+  value: number; // % (0-100) quando PERCENTAGE; R$ (taxa TOTAL da transação) quando FIXED
+}
+
+// Bandeira customizável por tenant. Regra ausente = "não configurada";
+// regra com value 0 = configurada como zero.
+export interface CardBrand {
+  id: string;
+  name: string;
+  active: boolean;
+  debit?: CardFeeRule;
+  credit?: Record<number, CardFeeRule>; // chave = parcelas (1..12)
+  // Tabela do recebimento NORMAL (sem antecipação). `debit`/`credit` acima são a tabela ANTECIPADA
+  // (D+1 na Odonto Minas) — nunca reaproveitar uma pela outra.
+  normal?: { debit?: CardFeeRule; credit?: Record<number, CardFeeRule> };
+}
+
+export type ReceivingMode = 'ANTICIPATED' | 'NORMAL';
+
+export type SettlementProfileId = 'D0' | 'D1' | 'D14' | 'D30';
+
 export interface CardFeeSettings {
+  // Perfil de recebimento (prazo) ao qual a tabela de taxas abaixo pertence. Padrão: D1 (1 dia útil).
+  settlementProfile?: SettlementProfileId;
+  // A clínica antecipa recebíveis? (por tenant; ausente = NÃO). Só registra a condição — sem integração com adquirente.
+  anticipationEnabled?: boolean;
+  // Forma padrão de novas vendas quando a antecipação está ativada.
+  defaultReceivingMode?: ReceivingMode;
+  // Legado (antes das bandeiras): taxa global % preservada como "Padrão / Sem bandeira".
   debit?: number;
   credit?: Record<number, number>;
+  brands?: CardBrand[];
 }
 
 // 18. System Operational Preferences & Privacy

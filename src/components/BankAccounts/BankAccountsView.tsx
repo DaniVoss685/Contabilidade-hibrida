@@ -93,7 +93,13 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
       .reduce((sum, b) => sum + (b.currentBalance ?? b.initialBalance ?? 0), 0);
   }, [bankAccounts]);
 
-  const totalConsolidated = totalPfBalance + totalPjBalance;
+  const totalCashBalance = useMemo(() => {
+    return bankAccounts
+      .filter((b) => b.accountType === 'CAIXA' && b.isActive !== false)
+      .reduce((sum, b) => sum + (b.currentBalance ?? b.initialBalance ?? 0), 0);
+  }, [bankAccounts]);
+
+  const totalConsolidated = totalPfBalance + totalPjBalance + totalCashBalance;
   const activeCount = bankAccounts.filter((b) => b.isActive !== false).length;
 
   // Helper Functions para formatação automática de Nome do Banco com sufixo PJ/CPF
@@ -489,8 +495,8 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                               : 'bg-blue-100 text-blue-800 border border-blue-200'
                           }`}
                         >
-                          {isPf ? <User className="w-3 h-3" /> : <Building className="w-3 h-3" />}
-                          {isPf ? 'Pessoa Física (PF)' : 'Pessoa Jurídica (PJ)'}
+                          {acc.accountType === 'CAIXA' ? <Wallet className="w-3 h-3" /> : isPf ? <User className="w-3 h-3" /> : <Building className="w-3 h-3" />}
+                          {acc.accountType === 'CAIXA' ? 'Caixa / Dinheiro' : isPf ? 'Pessoa Física (PF)' : 'Pessoa Jurídica (PJ)'}
                         </span>
                       </div>
                       <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 pl-6">

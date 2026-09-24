@@ -145,7 +145,11 @@ export function buildAnnualCashFlow(
           (inst.status !== 'CANCELADO' && inst.value > (inst.amountReceived || 0));
 
         if (isPending && inst.dueDate && inst.dueDate.startsWith(monthKey)) {
-          const pendingBalance = Math.max(0, inst.value - (inst.amountReceived || 0));
+          // Fluxo de caixa: cartão ainda não liquidado entra pelo LÍQUIDO (a taxa é retida pela operadora).
+          const pendingBalance =
+            inst.cardFeeAmount && !(inst.amountReceived && inst.amountReceived > 0)
+              ? Math.max(0, inst.netValue ?? inst.value - inst.cardFeeAmount)
+              : Math.max(0, inst.value - (inst.amountReceived || 0));
           projectedInflow += pendingBalance;
           inflowByProcedure[procName].projected += pendingBalance;
           inflowByProcedure[procName].total += pendingBalance;

@@ -26,6 +26,7 @@ import {
 } from './dashboardProjection';
 
 import { isTaxableForCarneLeao } from './fiscalClassification';
+import { getInstallmentGrossReceived } from './cardFees';
 
 export {
   getMinimumWageParameter,
@@ -247,12 +248,12 @@ export function calculateMonthlyPfTax(
 
       // Realized: received in this month
       if (inst.status === 'RECEBIDO' && inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
-        receivedGrossCpf += inst.amountReceived || inst.value;
+        receivedGrossCpf += getInstallmentGrossReceived(inst);
       }
       // Projected: due in this month (or already received in this month)
       if (inst.dueDate.startsWith(yearMonth) && inst.status !== 'CANCELADO') {
         if (inst.status === 'RECEBIDO') {
-          projectedGrossCpf += inst.amountReceived || inst.value;
+          projectedGrossCpf += getInstallmentGrossReceived(inst);
         } else {
           projectedGrossCpf += inst.value;
         }
@@ -564,11 +565,11 @@ export function calculateCpfMonthlyTax(
       if (!isTaxableForCarneLeao(inst.fiscalClassification, inst.documentRequested)) continue;
 
       if (inst.status === 'RECEBIDO' && inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
-        grossRevenueReceived += inst.amountReceived || inst.value;
+        grossRevenueReceived += getInstallmentGrossReceived(inst);
       }
       if (inst.dueDate.startsWith(yearMonth) && inst.status !== 'CANCELADO') {
         if (inst.status === 'RECEBIDO') {
-          grossRevenueProjected += inst.amountReceived || inst.value;
+          grossRevenueProjected += getInstallmentGrossReceived(inst);
         } else {
           grossRevenueProjected += inst.value;
         }

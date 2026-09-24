@@ -40,6 +40,8 @@ import {
   ClinicalRecordAmendment,
   FiscalClassification,
 } from '../types';
+import { planCashAccount, receivedByAccount } from './bankAccounts';
+import { getInstallmentGrossReceived } from './cardFees';
 import {
   DEMO_ORGANIZATION,
   DEMO_USER,
@@ -2474,20 +2476,11 @@ export class DentalFinanceDB {
     return newAccount;
   }
 
+  // Idempotente e tenant-scoped (usa o tenant ativo da sessão, nunca um tenant_id vindo do formulário).
   public ensureCashBankAccount(): BankAccount {
-    const existing = (this.bankAccounts || []).find(
-      (b) => b.accountType === 'CORRENTE_PF' && b.bankName === 'Dinheiro' && b.isActive !== false
-    );
-    if (existing) return existing;
-    return this.addBankAccount({
-      name: 'Dinheiro em Espécie',
-      bankName: 'Dinheiro',
-      accountType: 'CORRENTE_PF',
-      initialBalance: 0,
-      currentBalance: 0,
-      isActive: true,
-      isPreferred: false,
-    });
+    const plan = planCashAccount(this.bankAccounts || []);
+    if (plan.existing) return plan.existing;
+    return this.addBankAccount(plan.draft!);
   }
 
   public async addBankAccountAsync(account: Omit<BankAccount, 'id' | 'orgId'>): Promise<BankAccount> {
@@ -2670,6 +2663,8 @@ export class DentalFinanceDB {
               : inst.documentRequested === false
               ? 'Documento não solicitado'
               : `Receita Saúde (Pendente de Emissão)`
+            : inst.fiscalCoveredAmount === 0
+            ? 'Sem nota (dinheiro)'
             : sale.nfseNumber
             ? `NFS-e #${sale.nfseNumber}`
             : `NFS-e (Pendente)`;
@@ -2711,6 +2706,16 @@ export class DentalFinanceDB {
           serviceDate: sale.serviceDate,
           cardFeePercent: inst.cardFeePercent ?? sale.cardFeePercent,
           cardFeeAmount: inst.cardFeeAmount ?? sale.cardFeeAmount,
+          cardBrandId: inst.cardBrandId,
+          cardBrandName: inst.cardBrandName,
+          cardFeeType: inst.cardFeeType,
+          cardFeeValue: inst.cardFeeValue,
+          customerInstallments: inst.customerInstallments,
+          settlementProfile: inst.settlementProfile,
+          receivingMode: inst.receivingMode,
+          allocationNumber: inst.allocationNumber,
+          allocationAmount: inst.allocationAmount,
+          fiscalCoveredAmount: inst.fiscalCoveredAmount,
           netValue: inst.netValue ?? sale.netValue,
           paymentMethod: inst.paymentMethod || sale.paymentMethod,
           bankAccountId: inst.bankAccountId || sale.bankAccountId,
@@ -3554,6 +3559,7 @@ export class DentalFinanceDB {
     const updated: Sale = { ...found, ...updates };
     this.sales = this.sales.map((s) => (s.id === id ? updated : s));
     saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    this.reconcileBankBalances(found, updated);
     this.log('ATUALIZACAO_RECEITA', 'SALE', id, `Dados da receita foram atualizados.`);
     this.notify();
 
@@ -3572,6 +3578,7 @@ export class DentalFinanceDB {
     const updated: Sale = { ...found, ...updates };
     this.sales = this.sales.map((s) => (s.id === id ? updated : s));
     saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    this.reconcileBankBalances(found, updated);
     this.log('ATUALIZACAO_RECEITA', 'SALE', id, `Dados da receita foram atualizados.`);
     this.notify();
 
@@ -3631,6 +3638,19 @@ export class DentalFinanceDB {
       this.notify();
     }
     return updatedCount;
+  }
+
+  // Ajusta o saldo das contas pela DIFERENÇA entre o estado antigo e o novo da venda
+  // (parcelas recebidas: banco + valor efetivamente recebido). Edição de forma/conta/valor
+  // de um recebimento já liquidado precisa refletir no saldo, como baixa e estorno já fazem.
+  private reconcileBankBalances(oldSale: Sale | undefined, newSale: Sale): void {
+    const contribution = (sale: Sale | undefined) => receivedByAccount(sale?.installments || []);
+    const before = contribution(oldSale);
+    const after = contribution(newSale);
+    new Set([...before.keys(), ...after.keys()]).forEach((bankId) => {
+      const delta = Number(((after.get(bankId) || 0) - (before.get(bankId) || 0)).toFixed(2));
+      if (delta !== 0) this.updateBankAccountBalance(bankId, delta);
+    });
   }
 
   public updateBankAccountBalance(bankAccountId: string, deltaAmount: number) {
@@ -4074,9 +4094,11 @@ export class DentalFinanceDB {
   ): boolean {
     let affected = false;
     let modifiedSale: Sale | null = null;
+    let previousSale: Sale | undefined;
     this.sales = this.sales.map((sale) => {
       const hasInst = sale.installments.some((i) => i.id === installmentId);
       if (!hasInst) return sale;
+      previousSale = sale;
 
       affected = true;
       const updatedInstallments = sale.installments.map((inst) => {
@@ -4084,9 +4106,13 @@ export class DentalFinanceDB {
 
         const isSettled = updates.status === 'RECEBIDO';
         const newVal = updates.value !== undefined ? updates.value : inst.value;
-        const feePercent = updates.cardFeePercent !== undefined ? updates.cardFeePercent : (inst.cardFeePercent || sale.cardFeePercent || 0);
-        const feeAmount = feePercent > 0 ? Number(((newVal * feePercent) / 100).toFixed(2)) : 0;
-        const netVal = feePercent > 0 ? Number((newVal - feeAmount).toFixed(2)) : newVal;
+        const isFixedFee = inst.cardFeeType === 'FIXED' && updates.cardFeePercent === undefined;
+        const feePercent = isFixedFee ? 0 : updates.cardFeePercent !== undefined ? updates.cardFeePercent : (inst.cardFeePercent || sale.cardFeePercent || 0);
+        // Taxa fixa (snapshot): preserva o valor gravado; se o valor da parcela mudar, escala proporcionalmente.
+        const feeAmount = isFixedFee
+          ? (inst.cardFeeAmount && inst.value > 0 ? Number(((inst.cardFeeAmount * newVal) / inst.value).toFixed(2)) : 0)
+          : feePercent > 0 ? Number(((newVal * feePercent) / 100).toFixed(2)) : 0;
+        const netVal = feeAmount > 0 ? Number((newVal - feeAmount).toFixed(2)) : newVal;
         const newReceived = isSettled ? (inst.amountReceived && inst.amountReceived > 0 && updates.value === undefined ? inst.amountReceived : netVal) : (updates.status === 'A_RECEBER' ? 0 : inst.amountReceived);
 
         return {
@@ -4123,6 +4149,7 @@ export class DentalFinanceDB {
       if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
         SupabaseService.saveSale(modifiedSale, this.activeTenantId).catch(console.warn);
       }
+      this.reconcileBankBalances(previousSale, modifiedSale);
       this.log('ATUALIZACAO_RECEIVABLE', 'INSTALLMENT', installmentId, 'Parcela de conta a receber atualizada com sucesso.');
       this.notify();
       return true;
@@ -5452,7 +5479,8 @@ export function getSalePaymentSummary(sale: Sale): SalePaymentSummary {
   installments.forEach((inst) => {
     const isPaid = inst.status === 'RECEBIDO';
     if (isPaid) {
-      const rec = inst.amountReceived ?? inst.value;
+      // bruto recebido (amountReceived é o líquido; a taxa não reduz o saldo devido da venda)
+      const rec = getInstallmentGrossReceived({ ...inst, amountReceived: inst.amountReceived ?? inst.value });
       receivedValue += rec;
       receivedCount++;
       if (inst.paymentDate) {
