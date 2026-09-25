@@ -38,6 +38,10 @@ export type AppPermission =
   | 'procedures:manage'
   | 'supplies:view'
   | 'supplies:manage'
+  // Precificação (extensão de procedures:*): custos e parâmetros financeiros são um nível à parte
+  | 'procedures:costs:view'
+  | 'procedures:price:edit'
+  | 'pricing:manage'
   // Equipe & Configurações
   | 'team:view'
   | 'team:manage'
@@ -75,10 +79,23 @@ export const ALL_APP_PERMISSIONS: AppPermission[] = [
   'procedures:manage',
   'supplies:view',
   'supplies:manage',
+  'procedures:costs:view',
+  'procedures:price:edit',
+  'pricing:manage',
   'team:view',
   'team:manage',
   'settings:view',
   'settings:manage',
+];
+
+/**
+ * Pacote de acesso financeiro à precificação (o "Dentista / Gestor" conceitual): ver custos/hora clínica/margem,
+ * editar o preço final e editar os parâmetros financeiros da clínica. Recepção/operacional não recebe nenhum.
+ */
+export const PRICING_FINANCIAL_PERMISSIONS: AppPermission[] = [
+  'procedures:costs:view',
+  'procedures:price:edit',
+  'pricing:manage',
 ];
 
 export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
@@ -121,6 +138,7 @@ export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
     'patients:view',
     'patients:manage',
     'procedures:view',
+    'procedures:costs:view',
     'settings:view',
   ],
   PROFESSIONAL: [
@@ -132,6 +150,7 @@ export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
     'patients:view',
     'patients:manage',
     'procedures:view',
+    'procedures:costs:view',
     'settings:view',
   ],
   FINANCE: [
@@ -155,6 +174,9 @@ export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
     'procedures:manage',
     'supplies:view',
     'supplies:manage',
+    'procedures:costs:view',
+    'procedures:price:edit',
+    'pricing:manage',
     'patients:view',
     'agenda:view',
     'settings:view',
@@ -242,6 +264,9 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       { key: 'procedures:manage', label: 'Gerenciar Procedimentos', description: 'Criar e editar procedimentos e custos' },
       { key: 'supplies:view', label: 'Insumos & Estoque', description: 'Consultar estoque e produtos da clínica' },
       { key: 'supplies:manage', label: 'Gerenciar Estoque', description: 'Dar entrada, saída e gerenciar fornecedores' },
+      { key: 'procedures:costs:view', label: 'Ver custos e margens', description: 'Hora clínica, custo de cadeira, composição do custo e margem dos procedimentos' },
+      { key: 'procedures:price:edit', label: 'Editar preço final', description: 'Definir o preço praticado dos procedimentos' },
+      { key: 'pricing:manage', label: 'Parâmetros de precificação', description: 'Editar hora clínica, custo da estrutura e margem padrão da clínica' },
     ],
   },
   {
@@ -279,7 +304,11 @@ export function hasPermission(
   // Checar customPermissions com suporte a string[] ou Record<string, boolean>
   if (customPermissions) {
     if (Array.isArray(customPermissions)) {
-      return customPermissions.includes(permission);
+      if (customPermissions.includes(permission)) return true;
+      // Pacote de precificação: a lista customizada só CONCEDE (soma-se ao padrão do papel). As listas já gravadas
+      // (derivadas de abas) nunca mencionaram estas permissões — sem isto, admins/financeiro/dentistas atuais
+      // perderiam acesso que têm hoje. Recepção/assistente continuam sem nada até uma concessão explícita.
+      if (!PRICING_FINANCIAL_PERMISSIONS.includes(permission)) return false;
     } else if (typeof customPermissions === 'object') {
       if (customPermissions[permission] !== undefined) {
         return Boolean(customPermissions[permission]);
@@ -442,7 +471,11 @@ export const NAV_TAB_OPTIONS: NavTabOptionDef[] = [
 /**
  * Converte um conjunto de abas selecionadas na UI em permissões granulares para persistência.
  */
-export function getPermissionsFromTabs(tabs: NavTab[], role?: string): AppPermission[] {
+export function getPermissionsFromTabs(
+  tabs: NavTab[],
+  role?: string,
+  options?: { pricingFinancialAccess?: boolean }
+): AppPermission[] {
   const set = new Set<AppPermission>();
   const upperRole = role?.toUpperCase() || 'RECEPTION';
 
@@ -450,6 +483,11 @@ export function getPermissionsFromTabs(tabs: NavTab[], role?: string): AppPermis
     const bundle = TAB_PERMISSION_BUNDLES[tab] || [];
     bundle.forEach((p) => set.add(p));
   });
+
+  // Acesso financeiro à precificação é uma escolha explícita (nunca vem "de brinde" com a aba de procedimentos)
+  if (options?.pricingFinancialAccess) {
+    PRICING_FINANCIAL_PERMISSIONS.forEach((p) => set.add(p));
+  }
 
   // Se for ADMIN, OWNER ou SUPER_ADMIN com a aba settings ativa, garante permissões de gestão
   if (tabs.includes('settings') && (upperRole === 'ADMIN' || upperRole === 'OWNER' || upperRole === 'SUPER_ADMIN')) {
@@ -541,4 +579,29 @@ export function isCustomizedPermissions(
 export function getRoleLabel(role?: string): string {
   if (!role) return 'Membro da Equipe';
   return ROLE_LABELS[role.toUpperCase()] || role;
+}
+
+export interface PricingAccess {
+  /** Ver custos, hora clínica, custo de cadeira, composição e margens (visibilidade financeira). */
+  canViewCosts: boolean;
+  /** Editar o preço final (preço praticado) do procedimento. */
+  canEditPrice: boolean;
+  /** Editar os parâmetros financeiros da clínica em Configurações. */
+  canManagePricingParams: boolean;
+}
+
+/**
+ * Acesso à precificação de um usuário. Reutiliza `hasPermission` (mesmo RBAC: papel + permissões customizadas).
+ * Sem `procedures:costs:view`, nenhum valor financeiro sensível deve ser renderizado.
+ */
+export function getPricingAccess(
+  role?: string,
+  customPermissions?: string[] | Record<string, boolean> | null,
+  isPrimary?: boolean
+): PricingAccess {
+  return {
+    canViewCosts: hasPermission(role, 'procedures:costs:view', customPermissions, isPrimary),
+    canEditPrice: hasPermission(role, 'procedures:price:edit', customPermissions, isPrimary),
+    canManagePricingParams: hasPermission(role, 'pricing:manage', customPermissions, isPrimary),
+  };
 }

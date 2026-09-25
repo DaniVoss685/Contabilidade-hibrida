@@ -45,7 +45,7 @@ const sales = src('src/components/Sales/SalesView.tsx');
 assert(sales.includes('Simular Taxa') && sales.includes('CardFeeSimulatorModal'), 'SIM-01: botão "Simular Taxa" em Receitas/Vendas');
 assert(!sales.includes('Exportar CSV') && !sales.includes('handleExportCsv'), 'SIM-02: "Exportar CSV" removido da UI desta tela');
 const modal = src('src/components/Modals/CardFeeSimulatorModal.tsx');
-assert(modal.includes('Simular Taxa do Cartão') && modal.includes('Veja quanto a clínica recebe líquido antes de lançar a venda.'), 'SIM-03: modal com título/subtítulo');
+assert(modal.includes('Simular Taxa do Cartão') && modal.includes('Calcule antes de lançar a venda. Nada é gravado.'), 'SIM-03: modal com título/subtítulo (dois modos: quanto recebo / quanto cobrar)');
 assert(!/db\.(add|update|save|delete)/.test(modal) && !modal.includes('Patient'), 'SIM-16/C19: modal não grava nada e não exige paciente');
 assert(!src('src/components/Settings/CardFeesCard.tsx').includes('Simulador de taxa'), 'Simulador removido de Configurações (sem dois simuladores)');
 assert(src('src/components/Modals/NewSaleModal.tsx').includes('resolveCardFee') && modal.includes('simulateCardFee'), 'Mesmo motor (cardFees.ts) na Nova Receita e no simulador');

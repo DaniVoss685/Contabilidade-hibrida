@@ -21,6 +21,7 @@ import { formatCurrency } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { ClinicalInputModal } from '../Modals/ClinicalInputModal';
+import { formatUnitCost } from '../../lib/procedureCosting';
 import { CustomSelect, ConfirmDialog, useToast, SortableHeader } from '../UI';
 import { useSortableData } from '../../hooks/useSortableData';
 
@@ -209,7 +210,7 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
       'Categoria',
       'Embalagem Compra',
       'Preço Compra',
-      'Rendimento',
+      'Qtd. na Embalagem',
       'Unidade Uso',
       'Custo Unitário',
     ];
@@ -449,7 +450,7 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
                   align="left"
                 />
                 <SortableHeader
-                  label="Embalagem de Aquisição"
+                  label="Como é comprado"
                   sortKey="purchasePackageName"
                   currentSortKey={sortKey}
                   currentDirection={sortDirection}
@@ -457,7 +458,7 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
                   align="left"
                 />
                 <SortableHeader
-                  label="Preço Compra"
+                  label="Preço da Embalagem"
                   sortKey="purchaseCost"
                   currentSortKey={sortKey}
                   currentDirection={sortDirection}
@@ -465,7 +466,7 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
                   align="right"
                 />
                 <SortableHeader
-                  label="Rendimento"
+                  label="Qtd. na Embalagem"
                   sortKey="packageYield"
                   currentSortKey={sortKey}
                   currentDirection={sortDirection}
@@ -473,7 +474,7 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
                   align="center"
                 />
                 <SortableHeader
-                  label="Unidade de Uso"
+                  label="Unidade Base"
                   sortKey="usageUnit"
                   currentSortKey={sortKey}
                   currentDirection={sortDirection}
@@ -576,7 +577,7 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
 
                       {/* Custo Unitário */}
                       <td className="py-3.5 px-4 text-right font-bold text-teal-800 font-mono text-xs whitespace-nowrap tabular-nums">
-                        <span>R$ {item.unitCost.toFixed(item.unitCost < 0.1 ? 3 : 2).replace('.', ',')}</span>
+                        <span>{formatUnitCost(item.unitCost, 'compact')}</span>
                         <span className="text-[11px] font-medium text-slate-500 ml-1">
                           / {item.usageUnit}
                         </span>

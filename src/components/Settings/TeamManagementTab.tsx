@@ -38,6 +38,7 @@ import {
   getDefaultTabsForRole,
   getTabsFromPermissions,
   getPermissionsFromTabs,
+  PRICING_FINANCIAL_PERMISSIONS,
   AppPermission,
 } from '../../lib/permissions';
 import { NavTab } from '../../types';
@@ -137,6 +138,9 @@ export const TeamManagementTab: React.FC<TeamManagementTabProps> = ({
   const [editWhatsappName, setEditWhatsappName] = useState('');
   const [editRole, setEditRole] = useState('RECEPTION');
   const [editTabs, setEditTabs] = useState<NavTab[]>([]);
+  // Acesso financeiro à precificação (ver custos/margens, editar preço final e parâmetros da clínica).
+  // Só CONCEDE: papéis que já têm por padrão (admin, financeiro, dentista) continuam tendo.
+  const [editPricingAccess, setEditPricingAccess] = useState(false);
   const [submittingEdit, setSubmittingEdit] = useState(false);
 
   // Diálogo de confirmação
@@ -230,6 +234,12 @@ export const TeamManagementTab: React.FC<TeamManagementTabProps> = ({
       member.is_primary
     );
     setEditTabs(activeTabs);
+    const explicit = member.permissions;
+    setEditPricingAccess(
+      Array.isArray(explicit)
+        ? PRICING_FINANCIAL_PERMISSIONS.every((p) => explicit.includes(p))
+        : Boolean(explicit && typeof explicit === 'object' && PRICING_FINANCIAL_PERMISSIONS.every((p) => (explicit as Record<string, boolean>)[p]))
+    );
     setIsEditModalOpen(true);
   };
 
@@ -295,7 +305,7 @@ export const TeamManagementTab: React.FC<TeamManagementTabProps> = ({
 
     const activePerms = isOwnerOrSuperAdmin
       ? null
-      : getPermissionsFromTabs(editTabs, editRole);
+      : getPermissionsFromTabs(editTabs, editRole, { pricingFinancialAccess: editPricingAccess });
 
     setSubmittingEdit(true);
     try {
@@ -846,6 +856,37 @@ export const TeamManagementTab: React.FC<TeamManagementTabProps> = ({
                         );
                       })}
                     </div>
+
+                    {/* Acesso financeiro à precificação: recepção/operacional NÃO recebe; gestor/dentista sim */}
+                    {(editTabs.includes('procedures') || editTabs.includes('settings')) && (
+                      <div className="mt-3 p-3 rounded-xl border border-slate-200 bg-slate-50/70">
+                        {(() => {
+                          const roleHasByDefault = getRoleDefaultPermissions(editRole).includes('procedures:costs:view');
+                          return (
+                            <label className="flex items-start gap-2.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                data-testid="team-pricing-access"
+                                checked={roleHasByDefault || editPricingAccess}
+                                disabled={roleHasByDefault}
+                                onChange={(e) => setEditPricingAccess(e.target.checked)}
+                                className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300"
+                              />
+                              <span className="text-xs leading-snug">
+                                <span className="font-semibold text-slate-900 block">
+                                  Acesso financeiro à precificação
+                                </span>
+                                <span className="text-slate-500">
+                                  {roleHasByDefault
+                                    ? `Já incluído na função ${getRoleLabel(editRole)}.`
+                                    : 'Permite ver custos, hora clínica e margens, editar o preço final e os parâmetros de precificação da clínica. Sem isto, o usuário vê só nome, duração, insumos e preço.'}
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })()}
+                      </div>
+                    )}
                   </>
                 )}
               </div>

@@ -548,6 +548,7 @@ export function mapDbProcedureToApp(db: any): DentalProcedure {
     suggestedMarginPercent: Number(db.suggested_margin_percent || 50),
     estimatedTaxesPercent: Number(db.estimated_taxes_percent || 6),
     suggestedPrice: Number(db.suggested_price || 150),
+    structureCostPerHour: Number(db.structure_cost_per_hour || 0),
     defaultPrice: Number(db.default_price || 150),
     active: db.active !== false,
     notes: db.notes || '',
@@ -578,6 +579,7 @@ export function mapAppProcedureToDb(app: DentalProcedure, tenantId: string): any
     suggested_margin_percent: Number(app.suggestedMarginPercent || 50),
     estimated_taxes_percent: Number(app.estimatedTaxesPercent || 6),
     suggested_price: Number(app.suggestedPrice || 150),
+    structure_cost_per_hour: Number(app.structureCostPerHour || 0),
     default_price: Number(app.defaultPrice || 150),
     active: app.active !== false,
     notes: app.notes || '',
@@ -590,6 +592,7 @@ export function mapDbClinicalInputToApp(db: any): ClinicalInput {
     name: db.name,
     brand: db.brand || '',
     category: db.category,
+    packageType: db.package_type || undefined,
     purchasePackageName: db.purchase_package_name,
     packageQuantity: Number(db.package_quantity || 1),
     purchasePrice: Number(db.purchase_price || 0),
@@ -609,6 +612,7 @@ export function mapAppClinicalInputToDb(app: ClinicalInput, tenantId: string): a
     name: app.name,
     brand: app.brand || '',
     category: app.category,
+    package_type: app.packageType || null,
     purchase_package_name: app.purchasePackageName,
     package_quantity: Number(app.packageQuantity || 1),
     purchase_price: Number(app.purchasePrice || 0),
@@ -717,6 +721,7 @@ export function mapDbPreferencesToApp(db: any): SystemPreferences {
     lunchBreakStart: db.lunch_break_start || undefined,
     lunchBreakEnd: db.lunch_break_end || undefined,
     cardFees: db.card_fees && typeof db.card_fees === 'object' ? db.card_fees : undefined,
+    pricing: db.pricing_settings && typeof db.pricing_settings === 'object' ? db.pricing_settings : undefined,
   };
 }
 
@@ -731,6 +736,7 @@ export function mapAppPreferencesToDb(app: SystemPreferences, tenantId: string):
     lunch_break_start: app.lunchBreakStart || null,
     lunch_break_end: app.lunchBreakEnd || null,
     card_fees: app.cardFees || {},
+    pricing_settings: app.pricing || null,
     updated_at: new Date().toISOString(),
   };
 }

@@ -152,6 +152,77 @@ export function simulateCardFee(
 }
 
 // ---------------------------------------------------------------------------
+// GROSS-UP: "quanto quero RECEBER?" → "quanto COBRAR do paciente?".
+// A taxa incide sobre o BRUTO, então cobrar `líquido + taxa%` deixa a clínica com MENOS que o desejado.
+// Para taxa puramente percentual a conta direta é bruto = líquido / (1 − taxa); como a regra real arredonda em
+// centavos (computeFee) e pode ser fixa, o cálculo usa a MESMA função de liquidação da venda e devolve o MENOR
+// bruto, em centavos, cujo líquido é >= o desejado (nunca R$ 999,99 quando se pediu R$ 1.000,00).
+// O líquido é monótono não decrescente no bruto (a taxa cresce no máximo 1 centavo por centavo, e a fixa é
+// constante), o que permite a busca binária exata.
+// ---------------------------------------------------------------------------
+export function solveGrossForNet(netDesired: number, netOf: (gross: number) => number): number | null {
+  const target = toCents(netDesired);
+  if (!Number.isFinite(target) || target <= 0) return null;
+  const netC = (grossCents: number) => toCents(netOf(fromCents(grossCents)));
+
+  if (netC(target) >= target) return fromCents(target); // taxa zero: bruto = líquido
+
+  // limite superior por dobra (cobre taxa fixa e percentuais altos); 100% de taxa nunca chega ao líquido
+  let hi = target * 2;
+  let guard = 0;
+  while (netC(hi) < target && guard < 40) {
+    hi = hi * 2;
+    guard++;
+  }
+  if (netC(hi) < target) return null;
+
+  let lo = target; // netC(lo) < target
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (netC(mid) >= target) hi = mid;
+    else lo = mid;
+  }
+  return fromCents(hi);
+}
+
+export interface GrossUpParams {
+  netDesired: number;
+  brandId?: string;
+  mode: CardPaymentMode;
+  installments?: number;
+  receivingMode?: ReceivingMode;
+}
+
+export type GrossUpResult =
+  | { configured: false }
+  | { configured: true; reachable: false; rule: CardFeeRule; netDesired: number }
+  | ({
+      configured: true;
+      reachable: true;
+      rule: CardFeeRule;
+      netDesired: number;
+      gross: number; // valor a cobrar do paciente
+      effectiveRatePercent: number; // taxa efetiva sobre o bruto (fee ÷ gross × 100)
+    } & FeeComputation);
+
+export function grossUpCardFee(settings: CardFeeSettings | undefined, params: GrossUpParams): GrossUpResult {
+  const res = resolveCardFee(settings, params);
+  if (res.status !== 'CONFIGURED') return { configured: false };
+  const gross = solveGrossForNet(params.netDesired, (g) => computeFee(g, res.rule).netValue);
+  if (gross === null) return { configured: true, reachable: false, rule: res.rule, netDesired: params.netDesired };
+  const calc = computeFee(gross, res.rule);
+  return {
+    configured: true,
+    reachable: true,
+    rule: res.rule,
+    netDesired: params.netDesired,
+    gross,
+    effectiveRatePercent: gross > 0 ? (toCents(calc.feeAmount) / toCents(gross)) * 100 : 0,
+    ...calc,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Perfil de recebimento (prazo da clínica) — independente do parcelamento do
 // paciente. As taxas configuradas JÁ INCLUEM o custo do perfil ativo: nunca
 // somar taxa de antecipação por cima. Cada perfil futuro precisará de sua

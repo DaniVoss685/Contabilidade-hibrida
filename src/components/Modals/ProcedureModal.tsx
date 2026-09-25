@@ -8,19 +8,35 @@ import {
   Package,
   PackageOpen,
   Layers,
-  Sparkles,
   Calculator,
-  FlaskConical,
   PlusCircle,
-  Tag,
   Loader2,
+  ChevronDown,
+  Lock,
+  Info,
 } from 'lucide-react';
 import { DentalProcedure, ProcedureInputItem, ClinicalInput, InputUsageUnit } from '../../types';
 import { formatCurrency } from '../../lib/masks';
-import { safeMargin, formatPercent as safeFormatPercent } from '../../lib/mathUtils';
 import { db } from '../../lib/db';
+import { getPricingAccess } from '../../lib/permissions';
+import {
+  BASE_UNITS,
+  baseUnitLabel,
+  buildAdHocProcedureItem,
+  buildCatalogProcedureItem,
+  computePriceMargin,
+  computeProcedureCosts,
+  computeSuggestedPrice,
+  evaluateMargin,
+  formatMarginPercent,
+  formatQuantity,
+  formatUnitCost,
+  isCatalogItem,
+  resolvePricingParams,
+  updateProcedureItem,
+} from '../../lib/procedureCosting';
 import { ClinicalInputModal } from './ClinicalInputModal';
-import { CurrencyInput, CustomSelect, useToast, Slider, SuccessDialog } from '../UI';
+import { CurrencyInput, CustomSelect, useToast, SuccessDialog } from '../UI';
 
 interface ProcedureModalProps {
   isOpen: boolean;
@@ -55,154 +71,120 @@ const CATEGORY_LABELS: Record<DentalProcedure['category'], string> = {
   OUTROS: 'Outros Procedimentos',
 };
 
-const USAGE_UNITS: { id: InputUsageUnit; label: string }[] = [
-  { id: 'tubete', label: 'Tubete' },
-  { id: 'ml', label: 'ml' },
-  { id: 'g', label: 'g (grama)' },
-  { id: 'un', label: 'Unidade' },
-  { id: 'dose', label: 'Dose' },
-  { id: 'kit', label: 'Kit' },
-];
+const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
 
-export const ProcedureModal: React.FC<ProcedureModalProps> = ({
-  isOpen,
-  onClose,
-  onSave,
-  initialProcedure,
-}) => {
+const formatDuration = (minutes: number) => {
+  if (!minutes || minutes <= 0) return '—';
+  if (minutes < 60) return `${minutes} minutos`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+};
+
+const inputClass =
+  'w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium';
+
+export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose, onSave, initialProcedure }) => {
   const toast = useToast();
 
-  // Catalog inputs from database (reactive)
+  // Quem pode ver custos / editar preço (RBAC existente). Sem acesso financeiro, nada sensível é renderizado.
+  const access = useMemo(() => {
+    const u = db.getUser();
+    return getPricingAccess(u?.role, u?.permissions, u?.isPrimary);
+  }, [isOpen]);
+  const { canViewCosts, canEditPrice } = access;
+
+  // Parâmetros da CLÍNICA (Configurações → Precificação). Nunca digitados em cada procedimento.
+  const pricing = useMemo(() => resolvePricingParams(db.getPreferences().pricing), [isOpen]);
+
+  // Catálogo de insumos (reativo)
   const [catalogVersion, setCatalogVersion] = useState(0);
   const catalogInputs = useMemo(() => db.getClinicalInputs(), [catalogVersion, isOpen]);
 
-  // Basic Info
+  // Identificação
   const [name, setName] = useState(initialProcedure?.name || '');
-  const [code, setCode] = useState(
-    initialProcedure?.code || `PROC-${Math.floor(100 + Math.random() * 900)}`
-  );
-  const [category, setCategory] = useState<DentalProcedure['category']>(
-    initialProcedure?.category || 'DENTISTICA'
-  );
+  const [code, setCode] = useState(initialProcedure?.code || `PROC-${Math.floor(100 + Math.random() * 900)}`);
+  const [category, setCategory] = useState<DentalProcedure['category']>(initialProcedure?.category || 'DENTISTICA');
   const [description, setDescription] = useState(initialProcedure?.description || '');
-  const [active, setActive] = useState(initialProcedure?.active ?? true);
+  const [active] = useState(initialProcedure?.active ?? true);
 
-  // Time & Hourly Rate
-  const [clinicalDurationMinutes, setClinicalDurationMinutes] = useState<number>(
-    initialProcedure?.clinicalDurationMinutes || 45
+  // Duração: o campo operacional que fica sempre em evidência
+  const [clinicalDurationMinutes, setClinicalDurationMinutes] = useState<number>(initialProcedure?.clinicalDurationMinutes || 45);
+
+  // Custos por hora: procedimento novo herda a clínica; procedimento existente mantém o que foi gravado
+  // (o custo histórico não muda sozinho) e pode ser realinhado pelo botão da composição do custo.
+  const [hourlyRate, setHourlyRate] = useState<number>(
+    initialProcedure ? initialProcedure.professionalHourlyRate || pricing.clinicalHourRate : pricing.clinicalHourRate
   );
-  const [professionalHourlyRate, setProfessionalHourlyRate] = useState<number>(
-    initialProcedure?.professionalHourlyRate || 220
+  const [structureRate, setStructureRate] = useState<number>(
+    initialProcedure ? initialProcedure.structureCostPerHour || 0 : pricing.structureCostPerHour
   );
 
-  // Inputs list - clean start for new procedures, no fake inputs
-  const [inputs, setInputs] = useState<ProcedureInputItem[]>(
-    initialProcedure?.inputs || []
-  );
-
-  // Quick picker from catalog
+  // Insumos
+  const [inputs, setInputs] = useState<ProcedureInputItem[]>(initialProcedure?.inputs || []);
   const [selectedCatalogInputId, setSelectedCatalogInputId] = useState<string>('');
   const [isCatalogModalOpen, setIsCatalogModalOpen] = useState(false);
 
-  // External Lab / Other Direct Costs
+  // Composição do custo (só editável por quem vê custos)
   const [labCost, setLabCost] = useState<number>(initialProcedure?.labCost || 0);
-  const [otherDirectCosts, setOtherDirectCosts] = useState<number>(
-    initialProcedure?.otherDirectCosts || 0
-  );
+  const [otherDirectCosts, setOtherDirectCosts] = useState<number>(initialProcedure?.otherDirectCosts || 0);
+  const [showComposition, setShowComposition] = useState(false);
 
-  // Margins and Prices
-  const [suggestedMarginPercent, setSuggestedMarginPercent] = useState<number>(
-    initialProcedure?.suggestedMarginPercent || 65
-  );
-  const [defaultPrice, setDefaultPrice] = useState<number>(
-    initialProcedure?.defaultPrice || 0
-  );
-
-  // --- Real-time Cost & Pricing Engine ---
-  const costProfessionalTime = useMemo(() => {
-    return (clinicalDurationMinutes / 60) * professionalHourlyRate;
-  }, [clinicalDurationMinutes, professionalHourlyRate]);
-
-  const costInputsTotal = useMemo(() => {
-    return inputs.reduce((sum, item) => sum + (item.totalCost || 0), 0);
-  }, [inputs]);
+  // Preço
+  const [defaultPrice, setDefaultPrice] = useState<number>(initialProcedure?.defaultPrice || 0);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [savedProcedureName, setSavedProcedureName] = useState('');
 
-  const totalDirectCost = useMemo(() => {
-    return costProfessionalTime + costInputsTotal + labCost + otherDirectCosts;
-  }, [costProfessionalTime, costInputsTotal, labCost, otherDirectCosts]);
+  // --- Custos, preço sugerido e margem (lógica única em lib/procedureCosting) ---
+  const costs = useMemo(
+    () =>
+      computeProcedureCosts({
+        durationMinutes: clinicalDurationMinutes,
+        clinicalHourRate: hourlyRate,
+        structureCostPerHour: structureRate,
+        inputs,
+        labCost,
+        otherDirectCosts,
+      }),
+    [clinicalDurationMinutes, hourlyRate, structureRate, inputs, labCost, otherDirectCosts]
+  );
+  const suggestedPrice = useMemo(
+    () => computeSuggestedPrice(costs.totalDirectCost, pricing.targetMarginPercent),
+    [costs.totalDirectCost, pricing.targetMarginPercent]
+  );
+  const priceMargin = useMemo(() => computePriceMargin(defaultPrice, costs.totalDirectCost), [defaultPrice, costs.totalDirectCost]);
+  const verdict = evaluateMargin(priceMargin.marginPercent, pricing);
 
-  const calculatedSuggestedPrice = useMemo(() => {
-    const margin = Math.min(Math.max(suggestedMarginPercent, 0), 95);
-    const divisor = 1 - margin / 100;
-    if (divisor <= 0) return totalDirectCost * 2;
-    return totalDirectCost / divisor;
-  }, [totalDirectCost, suggestedMarginPercent]);
+  const rateDiffersFromClinic =
+    Boolean(initialProcedure) &&
+    (Math.abs(hourlyRate - pricing.clinicalHourRate) > 0.004 || Math.abs(structureRate - pricing.structureCostPerHour) > 0.004);
 
-  const marginResult = useMemo(() => {
-    return safeMargin(defaultPrice, totalDirectCost);
-  }, [defaultPrice, totalDirectCost]);
-
-  // Handlers for Inputs Management
+  // --- Insumos ---
   const handleAddFromCatalog = (catalogItem: ClinicalInput) => {
-    const newItem: ProcedureInputItem = {
-      id: `proc_inp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      inputId: catalogItem.id,
-      name: catalogItem.name,
-      quantity: 1,
-      unit: catalogItem.usageUnit,
-      unitCost: catalogItem.unitCost,
-      totalCost: catalogItem.unitCost,
-    };
-    setInputs((prev) => [...prev, newItem]);
+    // A unidade e o custo base vêm do cadastro do insumo; o usuário só informa a QUANTIDADE UTILIZADA.
+    setInputs((prev) => [...prev, buildCatalogProcedureItem(catalogItem, 1)]);
     setSelectedCatalogInputId('');
   };
-
-  const handleAddCustomInput = () => {
-    const newItem: ProcedureInputItem = {
-      id: `custom_${Date.now()}`,
-      name: '',
-      quantity: 1,
-      unit: 'un',
-      unitCost: 0,
-      totalCost: 0,
-    };
-    setInputs((prev) => [...prev, newItem]);
-  };
-
-  const handleUpdateInput = (
-    id: string,
-    field: keyof ProcedureInputItem,
-    val: any
-  ) => {
-    setInputs((prev) =>
-      prev.map((item) => {
-        if (item.id !== id) return item;
-        const updated = { ...item, [field]: val };
-        if (field === 'quantity' || field === 'unitCost') {
-          updated.totalCost = Number(((updated.quantity || 0) * (updated.unitCost || 0)).toFixed(2));
-        }
-        return updated;
-      })
-    );
-  };
-
-  const handleRemoveInput = (id: string) => {
-    setInputs((prev) => prev.filter((i) => i.id !== id));
-  };
-
-  const handleApplySuggestedPrice = () => {
-    setDefaultPrice(Math.round(calculatedSuggestedPrice));
-  };
+  const handleAddCustomInput = () => setInputs((prev) => [...prev, buildAdHocProcedureItem()]);
+  const handleUpdateInput = (id: string, field: 'name' | 'quantity' | 'unit' | 'unitCost', val: string | number) =>
+    setInputs((prev) => prev.map((item) => (item.id === id ? updateProcedureItem(item, field, val) : item)));
+  const handleRemoveInput = (id: string) => setInputs((prev) => prev.filter((i) => i.id !== id));
 
   const handleCreateNewInputInCatalog = (inputData: Omit<ClinicalInput, 'id' | 'createdAt'>) => {
     const created = db.addClinicalInput(inputData);
     setCatalogVersion((v) => v + 1);
     setIsCatalogModalOpen(false);
     handleAddFromCatalog(created);
+  };
+
+  const handleUseSuggestedPrice = () => setDefaultPrice(suggestedPrice);
+
+  const handleAlignWithClinic = () => {
+    setHourlyRate(pricing.clinicalHourRate);
+    setStructureRate(pricing.structureCostPerHour);
+    toast.info('Custos por hora atualizados para os parâmetros atuais da clínica.');
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -213,10 +195,18 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
       toast.warning('Por favor informe o nome do procedimento.');
       return;
     }
-    if (defaultPrice <= 0) {
-      toast.warning('O preço padrão do procedimento deve ser maior que zero.');
+    if (!clinicalDurationMinutes || clinicalDurationMinutes <= 0) {
+      toast.warning('Informe a duração do procedimento em minutos.');
       return;
     }
+    if (canEditPrice && defaultPrice <= 0) {
+      toast.warning('Informe o preço praticado do procedimento (maior que zero).');
+      return;
+    }
+
+    // Quem não edita preço/custos pode cadastrar o procedimento; o que faltar fica sinalizado para a gestão completar.
+    const adHocWithoutCost = inputs.some((i) => !isCatalogItem(i) && (!i.unitCost || i.unitCost <= 0));
+    const isIncomplete = defaultPrice <= 0 || adHocWithoutCost;
 
     setIsSubmitting(true);
     try {
@@ -227,16 +217,23 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
         description: description.trim(),
         active,
         clinicalDurationMinutes,
-        professionalHourlyRate,
-        costProfessionalTime,
+        professionalHourlyRate: hourlyRate,
+        professionalCost: costs.professionalCost,
+        costProfessionalTime: costs.professionalCost,
+        structureCostPerHour: structureRate,
         inputs,
-        costInputsTotal,
-        labCost,
-        otherDirectCosts,
-        totalDirectCost,
-        suggestedMarginPercent,
+        inputsCost: costs.inputsCost,
+        costInputsTotal: costs.inputsCost,
+        labCost: costs.labCost,
+        otherCosts: costs.structureCost, // custo de estrutura/cadeira (indireto)
+        otherDirectCosts: costs.otherDirectCosts,
+        totalCost: costs.totalDirectCost,
+        totalDirectCost: costs.totalDirectCost,
+        targetMarginPercent: pricing.targetMarginPercent,
+        suggestedMarginPercent: pricing.targetMarginPercent,
+        suggestedPrice,
         defaultPrice,
-        isIncomplete: false,
+        isIncomplete,
       });
       setSavedProcedureName(name.trim());
       setShowSuccess(true);
@@ -245,17 +242,14 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
     }
   };
 
-  const categoryOptions = CATEGORIES.map((cat) => ({
-    value: cat,
-    label: CATEGORY_LABELS[cat],
-  }));
+  const categoryOptions = CATEGORIES.map((cat) => ({ value: cat, label: CATEGORY_LABELS[cat] }));
 
   const catalogSelectOptions = [
-    { value: '', label: '-- Selecione um insumo do catálogo para puxar custo --' },
+    { value: '', label: '-- Selecione um insumo do catálogo --' },
     ...catalogInputs.map((inp) => ({
       value: inp.id,
       label: `${inp.name} (${inp.category})`,
-      description: `R$ ${inp.unitCost.toFixed(inp.unitCost < 0.1 ? 3 : 2)} por ${inp.usageUnit}`,
+      description: canViewCosts ? `${formatUnitCost(inp.unitCost, 'compact')} por ${inp.usageUnit}` : `Unidade: ${inp.usageUnit}`,
     })),
   ];
 
@@ -272,16 +266,15 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-900 tracking-tight">
-                {initialProcedure ? 'Editar Procedimento Odontológico' : 'Novo Procedimento Odontológico'}
+                {initialProcedure ? 'Editar Procedimento' : 'Novo Procedimento'}
               </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Custos diretos, tempo clínico, insumos e formação inteligente de preço de venda (Markup)
-              </p>
+              <p className="text-xs text-slate-500 mt-0.5">Duração, insumos utilizados e preço cobrado do paciente</p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fechar"
             className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
           >
             <X className="w-4 h-4" />
@@ -289,133 +282,106 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-6 overflow-y-auto flex-1">
-          {/* Section 1: Dados Gerais */}
+          {/* 1. Identificação */}
           <div className="space-y-4">
-            <span className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              1. Identificação do Procedimento
-            </span>
+            <span className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">1. Identificação</span>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
               <div className="sm:col-span-2">
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Nome do Tratamento / Procedimento <span className="text-rose-500">*</span>
+                  Nome do procedimento <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
                   required
+                  data-testid="proc-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder=""
-                  className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium"
+                  className={inputClass}
                 />
               </div>
-
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Código Interno
-                </label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Código interno</label>
                 <input
                   type="text"
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
-                  placeholder=""
-                  className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  className={`${inputClass} font-mono`}
                 />
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <CustomSelect
+                label="Especialidade"
+                required
+                options={categoryOptions}
+                value={category}
+                onChange={(v) => setCategory(v as DentalProcedure['category'])}
+              />
               <div>
-                <CustomSelect
-                  label="Especialidade Odontológica"
-                  required
-                  options={categoryOptions}
-                  value={category}
-                  onChange={(v) => setCategory(v as DentalProcedure['category'])}
-                />
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Descrição</label>
+                <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} className={inputClass} />
               </div>
+            </div>
+          </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Descrição / Detalhes Clínicos
-                </label>
+          {/* 2. Duração — o campo operacional que sempre fica evidente */}
+          <div className="p-4.5 rounded-2xl border border-indigo-100 bg-indigo-50/40 space-y-3">
+            <span className="text-xs font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+              <Clock className="w-4 h-4 text-indigo-600" />
+              2. Duração do procedimento
+            </span>
+            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+              <div className="w-full sm:w-48">
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Tempo de atendimento (minutos)</label>
                 <input
-                  type="text"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder=""
-                  className="w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  type="number"
+                  min={5}
+                  step={5}
+                  inputMode="numeric"
+                  data-testid="proc-duration"
+                  value={clinicalDurationMinutes || ''}
+                  onChange={(e) => setClinicalDurationMinutes(parseInt(e.target.value, 10) || 0)}
+                  className={`${inputClass} text-sm font-bold`}
                 />
               </div>
+              <div className="flex flex-wrap gap-1.5">
+                {DURATION_PRESETS.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setClinicalDurationMinutes(m)}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                      clinicalDurationMinutes === m
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'
+                    }`}
+                  >
+                    {m < 60 ? `${m} min` : `${m / 60} h`}
+                  </button>
+                ))}
+              </div>
+              <span className="text-xs font-semibold text-indigo-900 sm:ml-auto" data-testid="proc-duration-label">
+                {formatDuration(clinicalDurationMinutes)}
+              </span>
             </div>
           </div>
 
-          {/* Section 2: Tempo Clínico de Cadeira e Valor da Hora do Dentista */}
-          <div className="p-4.5 rounded-2xl border border-indigo-100 bg-indigo-50/40 space-y-3.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
-                <Clock className="w-4 h-4 text-indigo-600" />
-                2. Tempo de Cadeira & Custo da Hora Profissional
-              </span>
-              <span className="text-indigo-900 font-black text-sm font-mono tabular-nums">
-                Custo de Cadeira: {formatCurrency(costProfessionalTime)}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <Slider
-                  label="Duração Clínica Média"
-                  min={15}
-                  max={240}
-                  step={15}
-                  value={clinicalDurationMinutes}
-                  onChange={setClinicalDurationMinutes}
-                  valueFormatter={(val) => {
-                    if (val < 60) return `${val} min`;
-                    const h = Math.floor(val / 60);
-                    const m = val % 60;
-                    return m === 0 ? `${h}h` : `${h}h ${m}min`;
-                  }}
-                  marks={[
-                    { value: 15, label: '15m' },
-                    { value: 45, label: '45m' },
-                    { value: 90, label: '1h 30' },
-                    { value: 150, label: '2h 30' },
-                    { value: 240, label: '4h' },
-                  ]}
-                  color="indigo"
-                />
-              </div>
-
-              <div>
-                <CurrencyInput
-                  label="Valor da Hora Clínica do Dentista"
-                  required
-                  value={professionalHourlyRate}
-                  onChange={setProfessionalHourlyRate}
-                  placeholder="R$ 220,00"
-                />
-                <p className="text-[10px] text-indigo-600 mt-1">
-                  Base recomendada: R$ 180 a R$ 350/h (cobre pró-labore e custos fixos da clínica).
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Section 3: Insumos e Materiais Consumidos */}
+          {/* 3. Insumos utilizados */}
           <div className="p-4.5 rounded-2xl border border-teal-100 bg-teal-50/40 space-y-3.5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <span className="text-xs font-bold text-teal-950 uppercase tracking-wider flex items-center gap-1.5">
                   <Package className="w-4 h-4 text-teal-600" />
-                  3. Insumos e Materiais Clínicos
+                  3. Insumos utilizados
                 </span>
-                <p className="text-xs text-teal-800 mt-0.5 font-medium">
-                  Total de Insumos: <strong className="font-mono text-teal-950">{formatCurrency(costInputsTotal)}</strong>
-                </p>
+                {canViewCosts && (
+                  <p className="text-xs text-teal-800 mt-0.5 font-medium">
+                    Total de insumos: <strong className="font-mono text-teal-950">{formatCurrency(costs.inputsCost)}</strong>
+                  </p>
+                )}
               </div>
-
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -424,283 +390,337 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
                   title="Cadastrar novo insumo no catálogo"
                 >
                   <PlusCircle className="w-3.5 h-3.5 text-teal-600" />
-                  + Novo Insumo
+                  Novo insumo
                 </button>
-
                 <button
                   type="button"
+                  data-testid="proc-add-adhoc"
                   onClick={handleAddCustomInput}
                   className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs shadow-2xs transition-colors flex items-center gap-1 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  Item Avulso
+                  Item avulso
                 </button>
               </div>
             </div>
 
-            {/* Insumo Selector with Search */}
-            <div>
-              <CustomSelect
-                label="Puxar Insumo Cadastrado do Catálogo"
-                options={catalogSelectOptions}
-                value={selectedCatalogInputId}
-                onChange={(id) => {
-                  setSelectedCatalogInputId(id);
-                  if (id) {
-                    const item = catalogInputs.find((i) => i.id === id);
-                    if (item) handleAddFromCatalog(item);
-                  }
-                }}
-                placeholder="Pesquise insumo para adicionar custo e unidade..."
-                searchable={true}
-              />
-            </div>
+            <CustomSelect
+              label="Adicionar insumo do catálogo"
+              options={catalogSelectOptions}
+              value={selectedCatalogInputId}
+              onChange={(id) => {
+                setSelectedCatalogInputId(id);
+                if (id) {
+                  const item = catalogInputs.find((i) => i.id === id);
+                  if (item) handleAddFromCatalog(item);
+                }
+              }}
+              placeholder="Pesquise o insumo para adicionar..."
+              searchable={true}
+            />
 
-            {/* Inputs Table or Empty State */}
             {inputs.length === 0 ? (
               <div className="bg-slate-50/80 rounded-2xl border-2 border-dashed border-teal-200/90 p-6 text-center shadow-2xs">
                 <div className="w-12 h-12 rounded-2xl bg-teal-50 border border-teal-200/80 text-teal-600 flex items-center justify-center mx-auto mb-3 shadow-2xs">
                   <PackageOpen className="w-6 h-6" />
                 </div>
-                <h4 className="text-sm font-bold text-slate-900">
-                  Nenhum insumo adicionado
-                </h4>
-                <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1 mb-4 leading-relaxed">
-                  Adicione materiais utilizados neste procedimento para calcular o custo direto.
+                <h4 className="text-sm font-bold text-slate-900">Nenhum insumo adicionado</h4>
+                <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1 leading-relaxed">
+                  Escolha um insumo do catálogo e informe só a quantidade utilizada.
                 </p>
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const sel = document.querySelector('[placeholder*="Pesquise insumo"]') as HTMLElement;
-                      sel?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      sel?.focus();
-                    }}
-                    className="px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-bold text-xs shadow-2xs transition-colors cursor-pointer flex items-center gap-1.5"
-                  >
-                    <Layers className="w-3.5 h-3.5 text-slate-500" />
-                    Selecionar do Catálogo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsCatalogModalOpen(true)}
-                    className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
-                  >
-                    <PlusCircle className="w-3.5 h-3.5" />
-                    + Novo Insumo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleAddCustomInput}
-                    className="px-3.5 py-2 rounded-xl bg-white hover:bg-teal-50 border border-teal-200 text-teal-800 font-bold text-xs shadow-2xs transition-colors cursor-pointer flex items-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5 text-teal-600" />
-                    + Item Avulso
-                  </button>
-                </div>
               </div>
             ) : (
-              <div className="bg-white rounded-xl border border-teal-200/80 overflow-hidden shadow-2xs">
-                <table className="w-full text-xs">
+              <div className="bg-white rounded-xl border border-teal-200/80 overflow-x-auto shadow-2xs">
+                <table className="w-full text-xs min-w-[520px]">
                   <thead className="bg-teal-50/80 text-teal-950 font-bold text-[10px] uppercase tracking-wider border-b border-teal-100">
                     <tr>
-                      <th className="py-2.5 px-3 text-left">Insumo / Material</th>
-                      <th className="py-2.5 px-2 text-center w-24">Qtd.</th>
-                      <th className="py-2.5 px-2 text-center w-28">Unidade</th>
-                      <th className="py-2.5 px-2 text-right w-28">Custo Unit.</th>
-                      <th className="py-2.5 px-3 text-right w-28">Total</th>
+                      <th className="py-2.5 px-3 text-left">Insumo</th>
+                      <th className="py-2.5 px-2 text-center w-40">Quantidade utilizada</th>
+                      {canViewCosts && <th className="py-2.5 px-2 text-right w-32">Custo base</th>}
+                      {canViewCosts && <th className="py-2.5 px-3 text-right w-28">Custo no procedimento</th>}
                       <th className="py-2.5 px-2 text-center w-10"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {inputs.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-2 px-3">
-                          <div className="flex items-center gap-1.5">
-                            <input
-                              type="text"
-                              value={item.name}
-                              onChange={(e) => handleUpdateInput(item.id, 'name', e.target.value)}
-                              placeholder="Nome do insumo..."
-                              className="w-full text-xs rounded-lg border border-slate-200 px-2 py-1 bg-white font-medium focus:outline-none focus:border-teal-500"
-                            />
-                            {item.inputId && (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-teal-100 text-teal-800 shrink-0">
-                                Catálogo
-                              </span>
+                    {inputs.map((item) => {
+                      const fromCatalog = isCatalogItem(item);
+                      return (
+                        <tr key={item.id} data-testid={fromCatalog ? 'proc-item-catalog' : 'proc-item-adhoc'} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="py-2 px-3">
+                            {fromCatalog ? (
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-semibold text-slate-900">{item.name}</span>
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-teal-100 text-teal-800 shrink-0">CATÁLOGO</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="text"
+                                  value={item.name}
+                                  onChange={(e) => handleUpdateInput(item.id, 'name', e.target.value)}
+                                  placeholder="Nome do item..."
+                                  className="w-full text-xs rounded-lg border border-slate-200 px-2 py-1 bg-white font-medium focus:outline-none focus:border-teal-500"
+                                />
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 text-amber-800 shrink-0">AVULSO</span>
+                              </div>
                             )}
-                          </div>
-                        </td>
+                          </td>
 
-                        <td className="py-2 px-2">
-                          <input
-                            type="number"
-                            min="0.001"
-                            step="any"
-                            value={item.quantity}
-                            onChange={(e) =>
-                              handleUpdateInput(item.id, 'quantity', parseFloat(e.target.value) || 0)
-                            }
-                            className="w-full text-xs text-center rounded-lg border border-slate-200 px-1 py-1 font-bold font-mono bg-white focus:outline-none focus:border-teal-500"
-                          />
-                        </td>
+                          <td className="py-2 px-2">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                inputMode="decimal"
+                                data-testid="proc-item-qty"
+                                value={item.quantity === 0 ? '' : item.quantity}
+                                onChange={(e) => handleUpdateInput(item.id, 'quantity', parseFloat(e.target.value) || 0)}
+                                className="w-20 text-xs text-center rounded-lg border border-slate-200 px-1 py-1 font-bold font-mono bg-white focus:outline-none focus:border-teal-500"
+                              />
+                              {fromCatalog ? (
+                                <span className="text-[11px] font-semibold text-slate-500" data-testid="proc-item-unit">
+                                  {item.unit}
+                                </span>
+                              ) : (
+                                <div className="w-24">
+                                  <CustomSelect
+                                    value={item.unit}
+                                    onChange={(val) => handleUpdateInput(item.id, 'unit', val)}
+                                    options={BASE_UNITS.map((u: { id: InputUsageUnit; label: string }) => ({ value: u.id, label: u.id }))}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </td>
 
-                        <td className="py-2 px-2 min-w-[100px]">
-                          <CustomSelect
-                            value={item.unit}
-                            onChange={(val) => handleUpdateInput(item.id, 'unit', val)}
-                            options={USAGE_UNITS.map((u) => ({
-                              value: u.id,
-                              label: u.label,
-                            }))}
-                          />
-                        </td>
+                          {canViewCosts && (
+                            <td className="py-2 px-2 text-right">
+                              {fromCatalog ? (
+                                <span className="font-mono text-slate-600" data-testid="proc-item-base-cost">
+                                  {formatUnitCost(item.unitCost)}/{item.unit}
+                                </span>
+                              ) : (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.0001"
+                                  inputMode="decimal"
+                                  data-testid="proc-item-adhoc-cost"
+                                  value={item.unitCost === 0 ? '' : item.unitCost}
+                                  placeholder="0,00"
+                                  onChange={(e) => handleUpdateInput(item.id, 'unitCost', parseFloat(e.target.value) || 0)}
+                                  className="w-full text-xs text-right rounded-lg border border-slate-200 px-2 py-1 bg-white font-mono focus:outline-none focus:border-teal-500"
+                                />
+                              )}
+                            </td>
+                          )}
 
-                        <td className="py-2 px-2 text-right">
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.001"
-                            value={item.unitCost}
-                            onChange={(e) =>
-                              handleUpdateInput(item.id, 'unitCost', parseFloat(e.target.value) || 0)
-                            }
-                            className="w-full text-xs text-right rounded-lg border border-slate-200 px-2 py-1 bg-white font-mono focus:outline-none focus:border-teal-500"
-                          />
-                        </td>
+                          {canViewCosts && (
+                            <td className="py-2 px-3 text-right font-bold text-slate-800 font-mono tabular-nums" data-testid="proc-item-total">
+                              {formatCurrency(item.totalCost)}
+                            </td>
+                          )}
 
-                        <td className="py-2 px-3 text-right font-bold text-slate-800 font-mono tabular-nums">
-                          {formatCurrency(item.totalCost)}
-                        </td>
-
-                        <td className="py-2 px-2 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveInput(item.id)}
-                            className="text-slate-400 hover:text-rose-600 p-1 rounded-lg transition-colors cursor-pointer"
-                            title="Remover insumo"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                          <td className="py-2 px-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveInput(item.id)}
+                              className="text-slate-400 hover:text-rose-600 p-1 rounded-lg transition-colors cursor-pointer"
+                              title="Remover insumo"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             )}
           </div>
 
-          {/* Section 4: Custos Laboratoriais / Terceiros */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-4.5 rounded-2xl border border-slate-200 bg-slate-50/50">
-            <div>
-              <CurrencyInput
-                label="Custo de Laboratório de Prótese / Terceiros"
-                value={labCost}
-                onChange={setLabCost}
-                placeholder="R$ 0,00"
-              />
-              <p className="text-[10px] text-slate-500 mt-1">
-                Para coroas, facetas, blocos, alinhadores, próteses móveis, etc.
-              </p>
-            </div>
+          {/* 4. Preço do procedimento — a pergunta principal: quanto será cobrado do paciente? */}
+          <div className="p-5 rounded-2xl border-2 border-teal-500/80 bg-teal-50/30 space-y-4" data-testid="proc-price-section">
+            <span className="text-xs font-black text-teal-950 uppercase tracking-wider flex items-center gap-1.5">
+              <DollarSign className="w-4 h-4 text-teal-600" />
+              4. Preço do procedimento
+            </span>
 
-            <div>
-              <CurrencyInput
-                label="Outros Custos Diretos / Esterilização / Exames"
-                value={otherDirectCosts}
-                onChange={setOtherDirectCosts}
-                placeholder="R$ 0,00"
-              />
-              <p className="text-[10px] text-slate-500 mt-1">
-                Custos específicos adicionais não incluídos na lista de insumos.
-              </p>
-            </div>
-          </div>
-
-          {/* Section 5: Precificação e Formação de Margem de Lucro */}
-          <div className="p-5 rounded-2xl border-2 border-teal-500/80 bg-teal-50/30 space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-black text-teal-950 uppercase tracking-wider flex items-center gap-1.5">
-                <DollarSign className="w-4 h-4 text-teal-600" />
-                4. Formação do Preço de Venda (Markup & Lucro Real)
-              </span>
-              <span className="text-xs font-bold text-slate-700">
-                Custo Direto Total: <strong className="text-slate-900 font-mono">{formatCurrency(totalDirectCost)}</strong>
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Margem de Lucro Desejada (%)
-                </label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    min="10"
-                    max="90"
-                    step="5"
-                    value={suggestedMarginPercent}
-                    onChange={(e) => setSuggestedMarginPercent(parseFloat(e.target.value) || 0)}
-                    className="w-full pl-3 pr-8 py-2.5 text-xs font-bold text-slate-900 rounded-xl border border-slate-200 bg-white focus:outline-none focus:border-teal-500 font-mono"
+            <div className={`grid grid-cols-1 ${canViewCosts ? 'lg:grid-cols-5' : ''} gap-4 items-start`}>
+              <div className={canViewCosts ? 'lg:col-span-2' : ''}>
+                <label className="block text-sm font-bold text-teal-950 mb-1.5">Quanto será cobrado do paciente?</label>
+                {canEditPrice ? (
+                  <CurrencyInput
+                    label="Preço praticado"
+                    required
+                    value={defaultPrice}
+                    onChange={setDefaultPrice}
+                    className="text-lg font-black"
+                    id="proc-price"
                   />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                    %
-                  </span>
-                </div>
-                <p className="text-[10px] text-slate-500 mt-1">
-                  Recomendado para odontologia: 60% a 75%.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-teal-900 mb-1.5">
-                  Preço Sugerido (Fórmula)
-                </label>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 py-2.5 px-3 rounded-xl bg-teal-100 border border-teal-200 font-black text-teal-950 text-xs font-mono">
-                    {formatCurrency(calculatedSuggestedPrice)}
+                ) : (
+                  <div className="p-3 rounded-xl bg-white border border-slate-200">
+                    <div className="text-[11px] font-semibold text-slate-500 uppercase">Preço praticado</div>
+                    <div className="text-xl font-black text-slate-900 font-mono">
+                      {defaultPrice > 0 ? formatCurrency(defaultPrice) : 'A definir'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
+                      <Lock className="w-3 h-3" /> O preço é definido pela gestão da clínica.
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleApplySuggestedPrice}
-                    className="px-3 py-2.5 text-xs font-bold bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-xl transition-colors cursor-pointer shadow-xs whitespace-nowrap"
-                    title="Adotar o preço sugerido como preço de tabela"
-                  >
-                    Adotar
-                  </button>
-                </div>
-                <p className="text-[10px] text-teal-800 mt-1">
-                  Cobre custo de cadeira + insumos + margem.
-                </p>
+                )}
               </div>
 
-              <div>
-                <CurrencyInput
-                  label="Preço Praticado de Tabela *"
-                  required
-                  value={defaultPrice}
-                  onChange={setDefaultPrice}
-                />
-                {marginResult.status === 'NO_PRICE' && (
-                  <p className="text-[10px] font-medium text-slate-500 mt-1">
-                    Informe o preço para calcular a margem.
-                  </p>
-                )}
-                {marginResult.status === 'WAITING_COSTS' && (
-                  <p className="text-[10px] font-semibold text-amber-700 mt-1">
-                    Aguardando composição de custos diretos.
-                  </p>
-                )}
-                {marginResult.status === 'OK' && (
-                  <p className={`text-[10px] font-bold mt-1 ${marginResult.marginPercent !== null && marginResult.marginPercent >= 40 ? 'text-emerald-700' : 'text-amber-700'}`}>
-                    Margem real: {safeFormatPercent(marginResult.marginPercent)} (Lucro: {formatCurrency(marginResult.profit)})
-                  </p>
-                )}
-              </div>
+              {canViewCosts && (
+                <div className="lg:col-span-3 grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="proc-price-helpers">
+                  <div className="p-3 rounded-xl bg-teal-100/70 border border-teal-200 flex flex-col justify-between gap-2">
+                    <div>
+                      <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider">Preço sugerido pela clínica</div>
+                      <div className="text-base font-black text-teal-950 font-mono" data-testid="proc-suggested-price">
+                        {suggestedPrice > 0 ? formatCurrency(suggestedPrice) : '—'}
+                      </div>
+                    </div>
+                    {canEditPrice && (
+                      <button
+                        type="button"
+                        data-testid="proc-use-suggested"
+                        onClick={handleUseSuggestedPrice}
+                        disabled={suggestedPrice <= 0}
+                        className="px-2.5 py-1.5 text-[11px] font-bold bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white rounded-lg transition-colors cursor-pointer shadow-xs"
+                      >
+                        Usar preço sugerido
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white border border-slate-200">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Custo estimado</div>
+                    <div className="text-base font-black text-slate-900 font-mono" data-testid="proc-total-cost">
+                      {formatCurrency(costs.totalDirectCost)}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">Tempo + insumos + demais custos</div>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-white border border-slate-200">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      {priceMargin.status === 'OK' ? 'Margem real' : 'Margem-alvo da clínica'}
+                    </div>
+                    <div className="text-base font-black text-slate-900 font-mono" data-testid="proc-margin">
+                      {priceMargin.status === 'OK'
+                        ? formatMarginPercent(priceMargin.marginPercent)
+                        : `${pricing.targetMarginPercent}%`}
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5" data-testid="proc-profit">
+                      {priceMargin.status === 'OK'
+                        ? `Lucro bruto ${formatCurrency(priceMargin.grossProfit)}`
+                        : priceMargin.status === 'WAITING_COSTS'
+                        ? 'Aguardando custos'
+                        : 'Informe o preço praticado'}
+                    </div>
+                    {verdict && (
+                      <span
+                        data-testid="proc-margin-verdict"
+                        className={`inline-block mt-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          verdict === 'HEALTHY' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}
+                      >
+                        {verdict === 'HEALTHY' ? 'Margem saudável' : `Abaixo da margem-alvo (${pricing.targetMarginPercent}%)`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
+
+          {/* 5. Composição do custo — modo avançado, recolhido, só para quem vê custos */}
+          {canViewCosts && (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/50" data-testid="proc-composition">
+              <button
+                type="button"
+                onClick={() => setShowComposition((v) => !v)}
+                aria-expanded={showComposition}
+                className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold text-slate-700 cursor-pointer"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Layers className="w-4 h-4 text-slate-500" />
+                  Ver composição do custo
+                </span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showComposition ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showComposition && (
+                <div className="px-4 pb-4 space-y-3 text-xs">
+                  {!pricing.configured && (
+                    <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-2">
+                      <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <span>
+                        A clínica ainda não configurou os parâmetros de precificação: estão valendo os padrões do sistema (hora clínica{' '}
+                        {formatCurrency(pricing.clinicalHourRate)}, margem {pricing.targetMarginPercent}%). Configure em{' '}
+                        <strong>Configurações → Precificação</strong>.
+                      </span>
+                    </div>
+                  )}
+
+                  {rateDiffersFromClinic && (
+                    <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-900 flex items-center justify-between gap-3">
+                      <span>
+                        Este procedimento usa {formatCurrency(hourlyRate)}/h de hora clínica
+                        {structureRate > 0 ? ` + ${formatCurrency(structureRate)}/h de estrutura` : ''}; os parâmetros atuais da clínica são{' '}
+                        {formatCurrency(pricing.clinicalHourRate)}/h
+                        {pricing.structureCostPerHour > 0 ? ` + ${formatCurrency(pricing.structureCostPerHour)}/h` : ''}.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleAlignWithClinic}
+                        className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold whitespace-nowrap cursor-pointer"
+                      >
+                        Usar parâmetros da clínica
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
+                    <div className="flex justify-between px-3 py-2">
+                      <span className="text-slate-600">
+                        Tempo clínico ({formatDuration(clinicalDurationMinutes)} × {formatCurrency(hourlyRate)}/h)
+                        {!rateDiffersFromClinic && (
+                          <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 text-slate-500">PARÂMETRO DA CLÍNICA</span>
+                        )}
+                      </span>
+                      <span className="font-mono font-bold text-slate-800">{formatCurrency(costs.professionalCost)}</span>
+                    </div>
+                    {structureRate > 0 && (
+                      <div className="flex justify-between px-3 py-2">
+                        <span className="text-slate-600">Estrutura / cadeira ({formatCurrency(structureRate)}/h)</span>
+                        <span className="font-mono font-bold text-slate-800">{formatCurrency(costs.structureCost)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between px-3 py-2">
+                      <span className="text-slate-600">Insumos</span>
+                      <span className="font-mono font-bold text-slate-800">{formatCurrency(costs.inputsCost)}</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 px-3 py-3">
+                      <div>
+                        <CurrencyInput label="Laboratório de prótese / terceiros" value={labCost} onChange={setLabCost} placeholder="R$ 0,00" />
+                        <p className="text-[10px] text-slate-500 mt-1">Coroas, facetas, blocos, alinhadores, próteses móveis.</p>
+                      </div>
+                      <div>
+                        <CurrencyInput label="Outros custos diretos" value={otherDirectCosts} onChange={setOtherDirectCosts} placeholder="R$ 0,00" />
+                        <p className="text-[10px] text-slate-500 mt-1">Esterilização, exames e outros custos específicos.</p>
+                      </div>
+                    </div>
+                    <div className="flex justify-between px-3 py-2.5 bg-slate-50 rounded-b-xl">
+                      <span className="font-bold text-slate-800">Custo direto total</span>
+                      <span className="font-mono font-black text-slate-900">{formatCurrency(costs.totalDirectCost)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Footer Actions */}
           <div className="pt-4 flex items-center justify-end gap-3 border-t border-slate-100">
@@ -714,6 +734,7 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
             </button>
             <button
               type="submit"
+              data-testid="proc-save"
               disabled={isSubmitting}
               className="px-6 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-2 disabled:opacity-60"
             >
@@ -723,25 +744,28 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({
                   <span>Salvando...</span>
                 </>
               ) : (
-                <span>{initialProcedure ? 'Salvar Alterações' : 'Salvar e Cadastrar Procedimento'}</span>
+                <span>{initialProcedure ? 'Salvar alterações' : 'Cadastrar procedimento'}</span>
               )}
             </button>
           </div>
         </form>
       </div>
 
-      {/* Submodal to register new supply into catalog */}
+      {/* Submodal para cadastrar um novo insumo no catálogo */}
       <ClinicalInputModal
         isOpen={isCatalogModalOpen}
         onClose={() => setIsCatalogModalOpen(false)}
         onSave={handleCreateNewInputInCatalog}
       />
 
-      {/* Success Dialog */}
       <SuccessDialog
         isOpen={showSuccess}
-        title={initialProcedure ? 'Procedimento Atualizado!' : 'Procedimento Cadastrado!'}
-        message={`O procedimento "${savedProcedureName}" foi registrado com sucesso com preço de tabela ${formatCurrency(defaultPrice)} e custo direto apurado de ${formatCurrency(totalDirectCost)}.`}
+        title={initialProcedure ? 'Procedimento atualizado!' : 'Procedimento cadastrado!'}
+        message={
+          canViewCosts
+            ? `O procedimento "${savedProcedureName}" foi registrado com preço ${defaultPrice > 0 ? formatCurrency(defaultPrice) : 'a definir'} e custo estimado de ${formatCurrency(costs.totalDirectCost)}.`
+            : `O procedimento "${savedProcedureName}" foi registrado${defaultPrice > 0 ? ` com preço ${formatCurrency(defaultPrice)}` : ' (preço a definir pela gestão)'}.`
+        }
         primaryActionLabel="Concluir"
         onClose={() => {
           setShowSuccess(false);

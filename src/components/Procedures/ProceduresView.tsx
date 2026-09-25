@@ -22,6 +22,7 @@ import { formatCurrency } from '../../lib/masks';
 import { safeMargin, formatPercent, safeDivide } from '../../lib/mathUtils';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
+import { getPricingAccess } from '../../lib/permissions';
 import { ProcedureModal } from '../Modals/ProcedureModal';
 import { SuppliesView } from '../Supplies/SuppliesView';
 import { CustomSelect, ConfirmDialog, useToast, SortableHeader } from '../UI';
@@ -53,6 +54,9 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
   onClearAction,
 }) => {
   const toast = useToast();
+  // Visibilidade financeira (RBAC existente): sem `procedures:costs:view` custos, margens e lucro não são renderizados.
+  const currentUser = db.getUser();
+  const { canViewCosts } = getPricingAccess(currentUser?.role, currentUser?.permissions, currentUser?.isPrimary);
   const [activeSubTab, setActiveSubTab] = useState<'procedures' | 'supplies'>('procedures');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
@@ -237,21 +241,26 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
   };
 
   const handleExportCsv = () => {
-    const headers = [
-      'Código',
-      'Nome do Procedimento',
-      'Especialidade',
-      'Tempo de Cadeira (min)',
-      'Custo Hora Dentista',
-      'Custo Insumos',
-      'Custo Laboratório',
-      'Custo Direto Total',
-      'Preço de Tabela',
-      'Margem de Lucro (%)',
-      'Lucro Bruto (R$)',
-    ];
+    const headers = canViewCosts
+      ? [
+          'Código',
+          'Nome do Procedimento',
+          'Especialidade',
+          'Tempo de Cadeira (min)',
+          'Custo Hora Dentista',
+          'Custo Insumos',
+          'Custo Laboratório',
+          'Custo Direto Total',
+          'Preço de Tabela',
+          'Margem de Lucro (%)',
+          'Lucro Bruto (R$)',
+        ]
+      : ['Código', 'Nome do Procedimento', 'Especialidade', 'Duração (min)', 'Preço de Tabela'];
 
     const rows = filteredProcedures.map((p) => {
+      if (!canViewCosts) {
+        return [p.code, p.name, CATEGORY_NAMES[p.category] || p.category, p.clinicalDurationMinutes, p.defaultPrice];
+      }
       const marginInfo = safeMargin(p.defaultPrice, p.totalDirectCost);
       const marginStr = marginInfo.status === 'OK' ? `${marginInfo.marginPercent}%` : '—';
       const profit = (p.defaultPrice - p.totalDirectCost).toFixed(2);
@@ -320,7 +329,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                 Catálogo de Procedimentos & Precificação
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Cadastre tratamentos, insumos clínicos, custo de cadeira do dentista e defina preços com margem real
+                Cadastre procedimentos, a duração do atendimento, os insumos utilizados e o preço cobrado do paciente
               </p>
             </div>
 
@@ -357,7 +366,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+      <div className={`grid grid-cols-2 ${canViewCosts ? 'lg:grid-cols-4' : 'lg:grid-cols-2'} gap-3 sm:gap-4`}>
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Procedimentos Cadastrados</div>
           <div className="text-xl sm:text-2xl font-black text-slate-900 mt-1">
@@ -368,6 +377,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
           </div>
         </div>
 
+        {canViewCosts && (
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Custo Direto Médio</div>
           <div className="text-xl sm:text-2xl font-black text-slate-900 mt-1">
@@ -377,6 +387,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
             Insumos + Hora Clínica + Prótese
           </div>
         </div>
+        )}
 
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Preço Médio Praticado</div>
@@ -388,6 +399,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
           </div>
         </div>
 
+        {canViewCosts && (
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Margem Média de Contribuição</div>
           <div className="text-xl sm:text-2xl font-black text-emerald-600 mt-1">
@@ -397,6 +409,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
             Lucro após custos diretos
           </div>
         </div>
+        )}
       </div>
 
       {/* Bulk Action Toolbar */}
@@ -506,14 +519,16 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                   onSort={handleSort}
                   align="center"
                 />
-                <SortableHeader
-                  label="Custo Direto"
-                  sortKey="directCost"
-                  currentSortKey={sortKey}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
-                  align="right"
-                />
+                {canViewCosts && (
+                  <SortableHeader
+                    label="Custo Direto"
+                    sortKey="directCost"
+                    currentSortKey={sortKey}
+                    currentDirection={sortDirection}
+                    onSort={handleSort}
+                    align="right"
+                  />
+                )}
                 <SortableHeader
                   label="Preço de Tabela"
                   sortKey="defaultPrice"
@@ -522,29 +537,33 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                   onSort={handleSort}
                   align="right"
                 />
-                <SortableHeader
-                  label="Margem Lucro"
-                  sortKey="markupMargin"
-                  currentSortKey={sortKey}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
-                  align="center"
-                />
-                <SortableHeader
-                  label="Lucro Líquido"
-                  sortKey="netProfit"
-                  currentSortKey={sortKey}
-                  currentDirection={sortDirection}
-                  onSort={handleSort}
-                  align="right"
-                />
+                {canViewCosts && (
+                  <>
+                    <SortableHeader
+                      label="Margem Lucro"
+                      sortKey="markupMargin"
+                      currentSortKey={sortKey}
+                      currentDirection={sortDirection}
+                      onSort={handleSort}
+                      align="center"
+                    />
+                    <SortableHeader
+                      label="Lucro Líquido"
+                      sortKey="netProfit"
+                      currentSortKey={sortKey}
+                      currentDirection={sortDirection}
+                      onSort={handleSort}
+                      align="right"
+                    />
+                  </>
+                )}
                 <th className="py-3 px-4 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
               {displayProcedures.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-400">
+                  <td colSpan={canViewCosts ? 9 : 6} className="py-8 text-center text-slate-400">
                     Nenhum procedimento encontrado. Clique em "+ NOVO PROCEDIMENTO" para cadastrar.
                   </td>
                 </tr>
@@ -618,21 +637,23 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                       </td>
 
                       {/* Direct Cost */}
-                      <td className="py-3.5 px-4 text-right">
-                        <div className="font-bold text-slate-800">
-                          {formatCurrency(proc.totalDirectCost)}
-                        </div>
-                        <div className="text-[10px] text-slate-400">
-                          Insumos: {formatCurrency(proc.costInputsTotal)}
-                        </div>
-                      </td>
+                      {canViewCosts && (
+                        <td className="py-3.5 px-4 text-right">
+                          <div className="font-bold text-slate-800">
+                            {formatCurrency(proc.totalDirectCost)}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            Insumos: {formatCurrency(proc.costInputsTotal)}
+                          </div>
+                        </td>
+                      )}
 
                       {/* Default Price */}
                       <td className="py-3.5 px-4 text-right">
                         <div className="font-black text-slate-900 text-sm">
                           {formatCurrency(proc.defaultPrice)}
                         </div>
-                        {proc.suggestedPrice && (
+                        {canViewCosts && proc.suggestedPrice && (
                           <div className="text-[10px] text-teal-700">
                             Sugerido: {formatCurrency(proc.suggestedPrice)}
                           </div>
@@ -640,6 +661,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                       </td>
 
                       {/* Margin % */}
+                      {canViewCosts && (
                       <td className="py-3.5 px-4 text-center">
                         {marginInfo.status === 'NO_PRICE' ? (
                           <span className="text-slate-400 font-medium text-[11px]">—</span>
@@ -667,12 +689,16 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                         )}
                       </td>
 
+                      )}
+
                       {/* Profit BRL */}
-                      <td className="py-3.5 px-4 text-right">
-                        <div className="font-bold text-emerald-700">
-                          +{formatCurrency(profitBrl)}
-                        </div>
-                      </td>
+                      {canViewCosts && (
+                        <td className="py-3.5 px-4 text-right">
+                          <div className="font-bold text-emerald-700">
+                            +{formatCurrency(profitBrl)}
+                          </div>
+                        </td>
+                      )}
 
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-center">

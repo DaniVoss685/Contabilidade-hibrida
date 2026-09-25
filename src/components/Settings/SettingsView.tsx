@@ -40,6 +40,7 @@ import { formatCnpj, normalizeCnpj } from '../../types/contabilexIntegration';
 import { db } from '../../lib/db';
 import { useToast, CurrencyInput, ConfirmDialog, Switch } from '../UI';
 import { CardFeesCard } from './CardFeesCard';
+import { PricingSettingsCard } from './PricingSettingsCard';
 import { TeamManagementTab } from './TeamManagementTab';
 import { hasPermission } from '../../lib/permissions';
 
@@ -836,6 +837,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* Taxas de Cartão & Maquininha (por bandeira) — largura total, fora do form de perfil */}
       <CardFeesCard resetKey={professional} onSaved={onRefreshData} />
+
+      {/* Precificação de procedimentos — parâmetros da clínica (visível só com acesso financeiro) */}
+      <PricingSettingsCard onSaved={onRefreshData} />
       </>
       )}
 

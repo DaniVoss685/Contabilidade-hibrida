@@ -404,15 +404,16 @@ export interface ClinicalInput {
   brand?: string;
   category: string; // Dentística, Biossegurança, Anestésicos, Cirurgia, Moldagem, Endodontia, Prótese, Implantodontia, Ortodontia, Geral
   
-  // Embalagem de compra
-  purchasePackageName: string; // Ex: "Caixa com 50 tubetes", "Frasco de 1 Litro (1000 ml)", "Seringa 4g"
-  packageQuantity: number; // Quantidade de consumo contida na embalagem
+  // COMO O INSUMO É COMPRADO (embalagem do fornecedor)
+  packageType?: string; // Tipo de embalagem: "Caixa", "Embalagem", "Frasco"... (ausente em cadastros antigos)
+  purchasePackageName: string; // Descrição gerada da embalagem, ex.: "Caixa com 100 un" (legado: texto livre)
+  packageQuantity: number; // Quantidade contida na embalagem, EM UNIDADE BASE
   purchasePrice: number; // Preço pago na embalagem (R$)
-  purchaseUnitType?: 'tubete' | 'L' | 'ml' | 'kg' | 'g' | 'dose' | 'kit' | 'un'; // Tipo de unidade da embalagem comprada
-  
-  // Unidade de aplicação e custo unitário
-  usageUnit: InputUsageUnit; // 'tubete' | 'ml' | 'g' | 'dose' | 'kit' | 'un'
-  unitCost: number; // Custo por unidade de consumo (calculado automaticamente por divisão)
+  purchaseUnitType?: 'tubete' | 'L' | 'ml' | 'kg' | 'g' | 'dose' | 'kit' | 'un'; // Legado (não usado pela UI atual)
+
+  // UNIDADE BASE de consumo e custo unitário. O procedimento herda a unidade base daqui — nunca a escolhe de novo.
+  usageUnit: InputUsageUnit; // Unidade base: 'tubete' | 'ml' | 'g' | 'dose' | 'kit' | 'un'
+  unitCost: number; // Custo por unidade base = purchasePrice / packageQuantity (precisão de até 6 casas; a UI arredonda só na exibição)
   
   active: boolean;
   notes?: string;
@@ -457,6 +458,8 @@ export interface DentalProcedure {
   suggestedMarginPercent?: number;
   estimatedTaxesPercent?: number; // Estimativa de impostos (ex: 6% Simples ou 15% Carnê-Leão)
   suggestedPrice?: number; // Preço sugerido calculado
+  /** Custo/hora da estrutura (cadeira) usado neste procedimento — snapshot dos parâmetros da clínica; ausente = 0. */
+  structureCostPerHour?: number;
   defaultPrice: number; // Preço de tabela / Venda praticado
 
   active: boolean;
@@ -1005,6 +1008,18 @@ export interface CardFeeSettings {
 }
 
 // 18. System Operational Preferences & Privacy
+/**
+ * Parâmetros de precificação da CLÍNICA (Configurações). Alimentam todo procedimento novo; ninguém redigita
+ * hora clínica/margem em cada cadastro. Ausente = a clínica ainda não configurou (valem os padrões históricos
+ * do sistema e NENHUM julgamento de margem é exibido).
+ */
+export interface PricingSettings {
+  clinicalHourRate: number; // Valor da hora clínica do dentista (R$/h)
+  structureCostPerHour: number; // Custo/hora da estrutura ou cadeira (R$/h), somado à hora clínica
+  targetMarginPercent: number; // Margem padrão desejada (% sobre o preço)
+  updatedAt?: string;
+}
+
 export interface SystemPreferences {
   hideCpf?: boolean; // Legado; CPF agora é exibido integralmente por padrão
   alertFatorR: boolean; // default: true
@@ -1014,6 +1029,7 @@ export interface SystemPreferences {
   lunchBreakStart?: string; // ex: '11:00'
   lunchBreakEnd?: string; // ex: '13:00'
   cardFees?: CardFeeSettings;
+  pricing?: PricingSettings; // Parâmetros de precificação (Configurações → Precificação)
   dismissedOnboarding?: boolean; // Se o checklist de primeiros passos foi fechado manualmente pelo usuário
 }
 
