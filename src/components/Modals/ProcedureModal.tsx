@@ -27,16 +27,23 @@ import {
   computePriceMargin,
   computeProcedureCosts,
   computeSuggestedPrice,
+  DURATION_SLIDER_MAX,
+  DURATION_SLIDER_MIN,
+  DURATION_SLIDER_STEP,
+  durationToSliderPosition,
   evaluateMargin,
+  formatDurationMinutes,
   formatMarginPercent,
   formatQuantity,
   formatUnitCost,
   isCatalogItem,
+  joinDuration,
   resolvePricingParams,
+  splitDuration,
   updateProcedureItem,
 } from '../../lib/procedureCosting';
 import { ClinicalInputModal } from './ClinicalInputModal';
-import { CurrencyInput, CustomSelect, useToast, SuccessDialog } from '../UI';
+import { CurrencyInput, CustomSelect, Slider, useToast, SuccessDialog } from '../UI';
 
 interface ProcedureModalProps {
   isOpen: boolean;
@@ -71,15 +78,8 @@ const CATEGORY_LABELS: Record<DentalProcedure['category'], string> = {
   OUTROS: 'Outros Procedimentos',
 };
 
-const DURATION_PRESETS = [15, 30, 45, 60, 90, 120];
-
-const formatDuration = (minutes: number) => {
-  if (!minutes || minutes <= 0) return '—';
-  if (minutes < 60) return `${minutes} minutos`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m === 0 ? `${h} h` : `${h} h ${m} min`;
-};
+const durationFieldClass =
+  'w-16 text-center text-sm font-bold rounded-xl border border-slate-200 px-2 py-2 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all';
 
 const inputClass =
   'w-full text-xs rounded-xl border border-slate-200 px-3 py-2.5 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium';
@@ -136,6 +136,9 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [savedProcedureName, setSavedProcedureName] = useState('');
+
+  // Horas + minutos exibidos são derivados do MESMO estado (minutos) que o slider e o cálculo usam.
+  const durationParts = splitDuration(clinicalDurationMinutes);
 
   // --- Custos, preço sugerido e margem (lógica única em lib/procedureCosting) ---
   const costs = useMemo(
@@ -326,46 +329,78 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
             </div>
           </div>
 
-          {/* 2. Duração — o campo operacional que sempre fica evidente */}
-          <div className="p-4.5 rounded-2xl border border-indigo-100 bg-indigo-50/40 space-y-3">
-            <span className="text-xs font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-indigo-600" />
-              2. Duração do procedimento
-            </span>
-            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
-              <div className="w-full sm:w-48">
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Tempo de atendimento (minutos)</label>
-                <input
-                  type="number"
-                  min={5}
-                  step={5}
-                  inputMode="numeric"
-                  data-testid="proc-duration"
-                  value={clinicalDurationMinutes || ''}
-                  onChange={(e) => setClinicalDurationMinutes(parseInt(e.target.value, 10) || 0)}
-                  className={`${inputClass} text-sm font-bold`}
-                />
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {DURATION_PRESETS.map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setClinicalDurationMinutes(m)}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
-                      clinicalDurationMinutes === m
-                        ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'
-                    }`}
-                  >
-                    {m < 60 ? `${m} min` : `${m / 60} h`}
-                  </button>
-                ))}
-              </div>
-              <span className="text-xs font-semibold text-indigo-900 sm:ml-auto" data-testid="proc-duration-label">
-                {formatDuration(clinicalDurationMinutes)}
+          {/* 2. Duração — o campo operacional que sempre fica evidente. Controle principal: slider (mesmo componente do
+              design system usado antes nesta tela); o campo numérico permite qualquer valor e os dois ficam sincronizados. */}
+          <div className="p-4.5 rounded-2xl border border-indigo-100 bg-indigo-50/40 space-y-3" data-testid="proc-duration-section">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-xs font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+                <Clock className="w-4 h-4 text-indigo-600" />
+                2. Duração do procedimento
+              </span>
+              <span className="text-sm font-black text-indigo-900 whitespace-nowrap" data-testid="proc-duration-label" aria-live="polite">
+                {formatDurationMinutes(clinicalDurationMinutes)}
               </span>
             </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <span id="proc-duration-title" className="text-xs font-semibold text-slate-700">
+                Tempo de atendimento
+              </span>
+              <div className="flex items-center gap-1.5 shrink-0" role="group" aria-labelledby="proc-duration-title">
+                <input
+                  type="number"
+                  min={0}
+                  max={24}
+                  step={1}
+                  inputMode="numeric"
+                  aria-label="Horas"
+                  data-testid="proc-duration-hours"
+                  value={durationParts.hours}
+                  onChange={(e) => setClinicalDurationMinutes(joinDuration(e.target.value, durationParts.minutes))}
+                  className={durationFieldClass}
+                />
+                <span className="text-xs font-semibold text-slate-500">h</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  step={5}
+                  inputMode="numeric"
+                  aria-label="Minutos"
+                  data-testid="proc-duration-minutes"
+                  value={durationParts.minutes}
+                  onChange={(e) => setClinicalDurationMinutes(joinDuration(durationParts.hours, e.target.value))}
+                  className={durationFieldClass}
+                />
+                <span className="text-xs font-semibold text-slate-500">min</span>
+              </div>
+            </div>
+
+            <Slider
+              min={DURATION_SLIDER_MIN}
+              max={DURATION_SLIDER_MAX}
+              step={DURATION_SLIDER_STEP}
+              value={durationToSliderPosition(clinicalDurationMinutes)}
+              onChange={setClinicalDurationMinutes}
+              ariaLabel="Duração do procedimento em minutos"
+              ariaValueText={formatDurationMinutes(clinicalDurationMinutes)}
+              valueFormatter={formatDurationMinutes}
+              marks={[
+                { value: 15, label: '15m' },
+                { value: 60, label: '1h' },
+                { value: 120, label: '2h' },
+                { value: 240, label: '4h' },
+              ]}
+              color="indigo"
+              comfortable
+            />
+
+            {canViewCosts && (
+              <p className="text-[11px] text-slate-500" data-testid="proc-duration-cost">
+                Tempo clínico: {formatDurationMinutes(clinicalDurationMinutes)} × {formatCurrency(hourlyRate)}/h ={' '}
+                <strong className="text-slate-700 font-mono">{formatCurrency(costs.professionalCost)}</strong>
+              </p>
+            )}
           </div>
 
           {/* 3. Insumos utilizados */}
@@ -685,7 +720,7 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
                   <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
                     <div className="flex justify-between px-3 py-2">
                       <span className="text-slate-600">
-                        Tempo clínico ({formatDuration(clinicalDurationMinutes)} × {formatCurrency(hourlyRate)}/h)
+                        Tempo clínico ({formatDurationMinutes(clinicalDurationMinutes)} × {formatCurrency(hourlyRate)}/h)
                         {!rateDiffersFromClinic && (
                           <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 text-slate-500">PARÂMETRO DA CLÍNICA</span>
                         )}

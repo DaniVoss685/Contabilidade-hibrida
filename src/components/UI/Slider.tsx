@@ -12,6 +12,12 @@ export interface SliderProps {
   disabled?: boolean;
   className?: string;
   color?: 'emerald' | 'indigo' | 'blue';
+  /** Nome acessível quando não há `label` visível. */
+  ariaLabel?: string;
+  /** Texto anunciado por leitores de tela para o valor atual (ex.: "1h 15min"). */
+  ariaValueText?: string;
+  /** Área de toque e polegar maiores (mobile). Padrão: tamanho compacto histórico. */
+  comfortable?: boolean;
 }
 
 export const Slider: React.FC<SliderProps> = ({
@@ -26,6 +32,9 @@ export const Slider: React.FC<SliderProps> = ({
   disabled = false,
   className = '',
   color = 'indigo',
+  ariaLabel,
+  ariaValueText,
+  comfortable = false,
 }) => {
   const percentage = Math.min(
     100,
@@ -63,7 +72,7 @@ export const Slider: React.FC<SliderProps> = ({
         </div>
       )}
 
-      <div className="relative py-2 flex items-center">
+      <div className={`relative flex items-center ${comfortable ? 'py-[18px]' : 'py-2'}`}>
         {/* Track Container */}
         <div className="relative w-full h-2 rounded-full bg-slate-200/80 overflow-hidden">
           {/* Filled active track */}
@@ -82,16 +91,20 @@ export const Slider: React.FC<SliderProps> = ({
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
           disabled={disabled}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-20"
-          aria-label={label || 'Slider'}
+          className="peer absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-20"
+          style={{ touchAction: 'pan-y' }}
+          aria-label={ariaLabel || label || 'Slider'}
           aria-valuemin={min}
           aria-valuemax={max}
           aria-valuenow={value}
+          aria-valuetext={ariaValueText}
         />
 
         {/* Custom Visual Thumb */}
         <div
-          className={`absolute pointer-events-none top-1/2 -translate-y-1/2 -translate-x-1/2 w-4.5 h-4.5 rounded-full bg-white border-2 shadow-sm transition-transform duration-75 z-10 ${colorStyles.thumb}`}
+          className={`absolute pointer-events-none top-1/2 -translate-y-1/2 -translate-x-1/2 ${
+            comfortable ? 'w-6 h-6' : 'w-4.5 h-4.5'
+          } rounded-full bg-white border-2 shadow-sm transition-transform duration-75 z-10 peer-focus-visible:ring-4 ${colorStyles.thumb.replace('focus-visible:ring-', 'peer-focus-visible:ring-')}`}
           style={{ left: `${percentage}%` }}
         />
       </div>

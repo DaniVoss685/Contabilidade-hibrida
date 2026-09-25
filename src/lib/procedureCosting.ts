@@ -246,3 +246,50 @@ export function formatMarginPercent(marginPercent: number | null): string {
     ? `${marginPercent}%`
     : `${marginPercent.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
 }
+
+// ---------------------------------------------------------------------------
+// Duração do procedimento (UX do slider — o modelo continua sendo MINUTOS inteiros)
+// ---------------------------------------------------------------------------
+
+/** Faixa do slider: a mesma que o sistema já usava nesta tela (15 min a 4 h); step de 5 min para permitir 20, 35, 50, 75… */
+export const DURATION_SLIDER_MIN = 15;
+export const DURATION_SLIDER_MAX = 240;
+export const DURATION_SLIDER_STEP = 5;
+
+/** Duração digitada → minutos inteiros (vazio/inválido = 0; nunca NaN). NÃO limita à faixa do slider. */
+export function parseDurationMinutes(raw: string | number): number {
+  const n = typeof raw === 'number' ? raw : parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+/** Posição exibida no slider: o valor real pode estar fora da faixa (dados antigos) — o slider só o limita visualmente. */
+export function durationToSliderPosition(minutes: number): number {
+  if (!Number.isFinite(minutes) || minutes <= 0) return DURATION_SLIDER_MIN;
+  return Math.min(DURATION_SLIDER_MAX, Math.max(DURATION_SLIDER_MIN, minutes));
+}
+
+/** 15 minutos · 45 minutos · 1 hora · 1h 15min · 1h 30min · 2 horas */
+export function formatDurationMinutes(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return '—';
+  const m = Math.round(minutes);
+  if (m < 60) return m === 1 ? '1 minuto' : `${m} minutos`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  if (rest === 0) return h === 1 ? '1 hora' : `${h} horas`;
+  return `${h}h ${rest}min`;
+}
+
+/** Campo de duração em HORAS + MINUTOS (o total em minutos continua sendo o valor interno salvo). */
+export const DURATION_MAX_HOURS = 24;
+
+export function splitDuration(totalMinutes: number): { hours: number; minutes: number } {
+  const total = Number.isFinite(totalMinutes) && totalMinutes > 0 ? Math.round(totalMinutes) : 0;
+  return { hours: Math.floor(total / 60), minutes: total % 60 };
+}
+
+/** horas + minutos digitados → total em minutos. Minutos ficam em 0–59 e horas em 0–24; vazio/inválido = 0. */
+export function joinDuration(hours: string | number, minutes: string | number): number {
+  const h = Math.min(DURATION_MAX_HOURS, parseDurationMinutes(hours));
+  const m = Math.min(59, parseDurationMinutes(minutes));
+  return h * 60 + m;
+}

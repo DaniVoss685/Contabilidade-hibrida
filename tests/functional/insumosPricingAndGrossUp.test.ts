@@ -282,7 +282,7 @@ async function main() {
   assert(procModal.split('BASE_UNITS.map').length === 2, 'há exatamente UM seletor de unidade no formulário do procedimento (o do item avulso)');
   assert(/canViewCosts &&/.test(procModal) && !/professionalHourlyRate\s*\}?\s*<\/?label/.test(procModal), 'custo/hora/margem só renderizados com canViewCosts');
   assert(!/label="Valor da Hora Clínica do Dentista"/.test(procModal) && !/Margem de Lucro Desejada/.test(procModal), 'T08: o formulário de procedimento não pede mais hora clínica nem margem desejada');
-  assert(/Duração do procedimento/.test(procModal) && /data-testid="proc-duration"/.test(procModal), 'a duração do procedimento fica em evidência');
+  assert(/Duração do procedimento/.test(procModal) && /data-testid="proc-duration-hours"/.test(procModal), 'a duração do procedimento fica em evidência');
   const priceIdx = procModal.indexOf('4. Preço do procedimento');
   const compIdx = procModal.indexOf('Ver composição do custo');
   assert(priceIdx > 0 && compIdx > priceIdx, 'T11: "Preço do procedimento" vem antes e fora da composição do custo (que fica recolhida no fim)');
