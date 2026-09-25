@@ -23,10 +23,11 @@ import {
 } from '../../types';
 import {
   calculateCpfMonthlyTax,
-  calculateSimplesNacionalMonthlyTax,
   getMonthlyReceivablesSummary,
   getMonthlyExpensesSummary,
 } from '../../lib/taxEngine';
+import { estimateSimplesFromBase, formatCompetencyShortName } from '../../lib/fiscalBase';
+import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { formatCurrency, formatCpf, formatDateBr, formatPercent } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { PeriodPicker, useToast } from '../UI';
@@ -114,17 +115,28 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     );
   }, [sales, expenses, competenceStr, effectiveYear, taxRulesPf, professional]);
 
-  const cnpjTax = useMemo(() => {
-    return calculateSimplesNacionalMonthlyTax(
-      sales,
-      competenceStr,
-      effectiveYear,
-      taxRulesSimples,
-      payrollHistory,
-      professional.rbt12Inicial,
-      professional.folha12MesesInicial
-    );
-  }, [sales, competenceStr, effectiveYear, taxRulesSimples, payrollHistory, professional]);
+  // Simples Nacional: mesma BASE FISCAL CANÔNICA do Dashboard e da tela Motores (última competência fechada).
+  const fiscalBase = useFiscalBase({
+    professional,
+    sales,
+    payrollHistory,
+    taxRulesSimples,
+    year: effectiveYear,
+  });
+  const cnpjTax = useMemo(
+    () =>
+      estimateSimplesFromBase(fiscalBase, {
+        sales,
+        revenueCompetence: competenceStr,
+        year: effectiveYear,
+        taxRules: taxRulesSimples,
+      }),
+    [fiscalBase, sales, competenceStr, effectiveYear, taxRulesSimples]
+  );
+  const fiscalBaseNote = cnpjTax.available
+    ? `Base fiscal: última competência fechada (${formatCompetencyShortName(fiscalBase.referenceCompetency)})`
+    : fiscalBase.reasonMessage || 'Base fiscal indisponível';
+  const UNAVAILABLE_TEXT = 'Base fiscal indisponível';
 
   const receivables = useMemo(() => {
     return getMonthlyReceivablesSummary(sales, competenceStr);
@@ -230,13 +242,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         [''],
         ['2. OPERAÇÃO PESSOA JURÍDICA (SIMPLES NACIONAL / PGDAS-D)'],
         ['Faturamento Bruto no Mês (NFS-e) (R$)', cnpjTax.monthlyRevenueNfse],
-        ['RBT12 Acumulado (R$)', cnpjTax.rbt12],
-        ['FS12 Acumulada (Folha/Pró-labore) (R$)', cnpjTax.fs12],
-        ['Fator R (FS12 / RBT12)', `${cnpjTax.fatorRPercent.toFixed(2)}%`],
-        ['Anexo Enquadrado', cnpjTax.effectiveAnnex],
-        ['Faixa Simples', cnpjTax.bracketNumber],
-        ['Alíquota Efetiva', `${cnpjTax.effectiveTaxRate.toFixed(2)}%`],
-        ['DAS Estimado do Mês (R$)', cnpjTax.dasEstimated],
+        ['Base Fiscal (competência de referência)', cnpjTax.available ? fiscalBaseNote : UNAVAILABLE_TEXT],
+        ['RBT12 Acumulado (R$)', cnpjTax.available ? cnpjTax.rbt12 : UNAVAILABLE_TEXT],
+        ['FS12 Acumulada (Folha/Pró-labore) (R$)', cnpjTax.available ? cnpjTax.fs12 : UNAVAILABLE_TEXT],
+        ['Fator R (FS12 / RBT12)', cnpjTax.available ? `${cnpjTax.fatorRPercent.toFixed(2)}%` : UNAVAILABLE_TEXT],
+        ['Anexo Enquadrado', cnpjTax.available ? cnpjTax.effectiveAnnex : UNAVAILABLE_TEXT],
+        ['Faixa Simples', cnpjTax.available ? cnpjTax.bracketNumber : UNAVAILABLE_TEXT],
+        ['Alíquota Efetiva', cnpjTax.available ? `${cnpjTax.effectiveTaxRate.toFixed(2)}%` : UNAVAILABLE_TEXT],
+        ['DAS Estimado do Mês (R$)', cnpjTax.available ? cnpjTax.dasEstimated : UNAVAILABLE_TEXT],
       ];
       exportToCsv(`relatorio_mensal_contador_${competenceStr}`, rows);
     } else {
@@ -413,20 +426,23 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                   </div>
                   <div className="flex justify-between py-1 border-b border-blue-100">
                     <span>RBT12 Acumulado (12m):</span>
-                    <span className="font-bold">{formatCurrency(cnpjTax.rbt12)}</span>
+                    <span className="font-bold">{cnpjTax.available ? formatCurrency(cnpjTax.rbt12) : '—'}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-blue-100">
                     <span>FS12 Folha / Pró-labore (12m):</span>
-                    <span className="font-bold">{formatCurrency(cnpjTax.fs12)}</span>
+                    <span className="font-bold">{cnpjTax.available ? formatCurrency(cnpjTax.fs12) : '—'}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-blue-100">
                     <span>Fator R Apurado:</span>
-                    <span className="font-bold text-blue-800">{cnpjTax.fatorRPercent.toFixed(2)}% ({cnpjTax.effectiveAnnex})</span>
+                    <span className="font-bold text-blue-800">
+                      {cnpjTax.available ? `${cnpjTax.fatorRPercent.toFixed(2)}% (${cnpjTax.effectiveAnnex})` : UNAVAILABLE_TEXT}
+                    </span>
                   </div>
                   <div className="flex justify-between py-1 font-bold text-blue-900 pt-1">
                     <span>DAS Estimado do Mês:</span>
-                    <span>{formatCurrency(cnpjTax.dasEstimated)}</span>
+                    <span>{cnpjTax.available ? formatCurrency(cnpjTax.dasEstimated) : '—'}</span>
                   </div>
+                  <div className="pt-1 text-[10.5px] text-blue-800/80">{fiscalBaseNote}</div>
                 </div>
               </div>
             </div>
@@ -491,7 +507,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     </tr>
                     <tr>
                       <td className="p-2.5 pl-6 text-slate-600">• DAS Simples Nacional (PJ)</td>
-                      <td className="p-2.5 text-right">- {formatCurrency(cnpjTax.dasEstimated)}</td>
+                      <td className="p-2.5 text-right">
+                        {cnpjTax.available ? `- ${formatCurrency(cnpjTax.dasEstimated)}` : `— (${UNAVAILABLE_TEXT})`}
+                      </td>
                     </tr>
                     <tr className="bg-teal-600 text-white font-black text-sm">
                       <td className="p-3">(=) RESULTADO LÍQUIDO DO PERÍODO</td>

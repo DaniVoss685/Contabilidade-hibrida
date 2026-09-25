@@ -25,13 +25,14 @@ import {
 } from '../../types';
 import {
   calculateCpfMonthlyTax,
-  calculateSimplesNacionalMonthlyTax,
   getMonthlyReceivablesSummary,
   getMonthlyExpensesSummary,
   calculateDashboardProjection,
 } from '../../lib/taxEngine';
 import { formatCurrency, formatPercent } from '../../lib/masks';
 import { db } from '../../lib/db';
+import { estimateSimplesFromBase, factorRBadgeLabel, fiscalBaseStatusLabel, formatCompetencyShortName } from '../../lib/fiscalBase';
+import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { FirstStepsChecklist } from './FirstStepsChecklist';
 
 interface DashboardViewProps {
@@ -114,23 +115,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     );
   }, [sales, expenses, competenceStr, effectiveYear, taxRulesPf, professional]);
 
-  // Baseline configuration state
-  const isBaselineConfigured = Boolean(professional.baselineConfigured);
   const patientsCount = useMemo(() => db.getPatients().length, [sales]);
   const appointmentsCount = useMemo(() => db.getAppointments().length, [sales]);
 
-  // Calculate CNPJ Simples Nacional Tax
-  const cnpjTax = useMemo(() => {
-    return calculateSimplesNacionalMonthlyTax(
-      sales,
-      competenceStr,
-      effectiveYear,
-      taxRulesSimples,
-      payrollHistory,
-      professional.rbt12Inicial || 0,
-      professional.folha12MesesInicial || 0
-    );
-  }, [sales, competenceStr, effectiveYear, taxRulesSimples, payrollHistory, professional]);
+  // Simples Nacional (CNPJ): RBT12 / FS12 / Fator R / Anexo / alíquota vêm da BASE FISCAL CANÔNICA
+  // (mesma fonte da tela Motores): a última competência fiscal fechada. O mês operacional selecionado no
+  // Dashboard (ex.: setembro, em andamento) só fornece o faturamento sobre o qual o enquadramento é aplicado.
+  const fiscalBase = useFiscalBase({
+    professional,
+    sales,
+    payrollHistory,
+    taxRulesSimples,
+    year: effectiveYear,
+  });
+  const cnpjTax = useMemo(
+    () =>
+      estimateSimplesFromBase(fiscalBase, {
+        sales,
+        revenueCompetence: competenceStr,
+        year: effectiveYear,
+        taxRules: taxRulesSimples,
+      }),
+    [fiscalBase, sales, competenceStr, effectiveYear, taxRulesSimples]
+  );
+  const fiscalBaseLabel = formatCompetencyShortName(fiscalBase.referenceCompetency);
+  const fiscalBaseSourceLabel =
+    fiscalBase.source === 'CONTABILEX' ? 'Base oficial Contaju' : fiscalBase.source === 'NONE' ? '' : 'Base informada manualmente';
 
   // Cash flow summaries and unified projection
   const totalTaxesEstimated = cpfTax.carneLeaoEstimated + cnpjTax.dasEstimated;
@@ -336,9 +346,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </span>
               <span className="text-indigo-300">•</span>
               <span>
-                DAS PJ: <strong className="text-slate-800 font-mono">{formatCurrency(cnpjTax.dasEstimated)}</strong>
+                DAS PJ:{' '}
+                <strong className="text-slate-800 font-mono" data-testid="provision-das">
+                  {cnpjTax.available ? formatCurrency(cnpjTax.dasEstimated) : 'indisponível'}
+                </strong>
               </span>
             </div>
+            {!cnpjTax.available && (
+              <p className="text-[10.5px] text-amber-700 leading-snug">
+                Total sem o DAS: {fiscalBase.status === 'LOADING' ? 'carregando a base fiscal…' : 'base fiscal indisponível.'}
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -651,13 +669,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
               <span
+                data-testid="pj-annex-badge"
                 className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border shadow-2xs ${
-                  cnpjTax.effectiveAnnex === 'ANEXO_III'
+                  !cnpjTax.available
+                    ? 'bg-slate-100 text-slate-600 border-slate-200'
+                    : cnpjTax.effectiveAnnex === 'ANEXO_III'
                     ? 'bg-emerald-50 text-emerald-800 border-emerald-200/80'
                     : 'bg-amber-50 text-amber-800 border-amber-200/80'
                 }`}
               >
-                {cnpjTax.effectiveAnnex === 'ANEXO_III' ? 'Anexo III (6%~)' : 'Anexo V (15.5%~)'}
+                {!cnpjTax.available
+                  ? fiscalBaseStatusLabel(fiscalBase)
+                  : cnpjTax.effectiveAnnex === 'ANEXO_III'
+                  ? 'Anexo III'
+                  : 'Anexo V'}
               </span>
             </div>
 
@@ -672,11 +697,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </span>
               </div>
               <div className="text-right">
-                <span className="text-2xl font-black text-white font-mono tabular-nums tracking-tight">
-                  {formatCurrency(cnpjTax.dasEstimated)}
+                <span data-testid="pj-das-value" className="text-2xl font-black text-white font-mono tabular-nums tracking-tight">
+                  {cnpjTax.available ? formatCurrency(cnpjTax.dasEstimated) : '—'}
                 </span>
-                <span className="block text-[11px] text-blue-200 font-medium mt-0.5">
-                  Alíquota Efetiva: {formatPercent(cnpjTax.effectiveTaxRate)}
+                <span data-testid="pj-effective-rate" className="block text-[11px] text-blue-200 font-medium mt-0.5">
+                  {cnpjTax.available
+                    ? `Alíquota Efetiva: ${formatPercent(cnpjTax.effectiveTaxRate)}`
+                    : 'Sem estimativa de DAS'}
                 </span>
               </div>
             </div>
@@ -686,23 +713,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-700">Razão Fator R (FS12 ÷ RBT12):</span>
                 <div className="flex items-center gap-1.5">
-                  <span className="font-black text-slate-900 font-mono tabular-nums">
-                    {isBaselineConfigured ? formatPercent(cnpjTax.fatorRPercent) : '0,0%'}
+                  <span data-testid="pj-factor-r-value" className="font-black text-slate-900 font-mono tabular-nums">
+                    {cnpjTax.available ? formatPercent(cnpjTax.fatorRPercent) : '—'}
                   </span>
                   <span
+                    data-testid="pj-factor-r-badge"
                     className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
-                      !isBaselineConfigured
+                      !cnpjTax.available
                         ? 'bg-slate-200 text-slate-700'
-                        : cnpjTax.fatorR >= 0.28
+                        : cnpjTax.isAnexoIII
                         ? 'bg-emerald-100 text-emerald-800'
                         : 'bg-amber-100 text-amber-800'
                     }`}
                   >
-                    {!isBaselineConfigured
-                      ? 'Bases Pendentes'
-                      : cnpjTax.fatorR >= 0.28
-                      ? 'Meta ≥ 28% Atingida'
-                      : 'Abaixo de 28%'}
+                    {factorRBadgeLabel(fiscalBase)}
                   </span>
                 </div>
               </div>
@@ -711,14 +735,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden relative">
                 <div
                   className={`h-full rounded-full transition-all duration-300 ${
-                    !isBaselineConfigured
+                    !cnpjTax.available
                       ? 'bg-slate-300'
-                      : cnpjTax.fatorR >= 0.28
+                      : cnpjTax.isAnexoIII
                       ? 'bg-emerald-600'
                       : 'bg-amber-500'
                   }`}
                   style={{
-                    width: isBaselineConfigured
+                    width: cnpjTax.available
                       ? `${Math.min(Math.max(cnpjTax.fatorR * 100, 0), 100)}%`
                       : '0%',
                   }}
@@ -729,6 +753,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <span>0%</span>
                 <span className="text-slate-600 font-bold">Meta: 28.0% (Anexo III)</span>
                 <span>50%+</span>
+              </div>
+
+              <div data-testid="pj-base-note" className="pt-1.5 mt-0.5 border-t border-slate-200/80 text-[10.5px] text-slate-500 leading-snug">
+                {cnpjTax.available ? (
+                  <>
+                    <strong className="text-slate-700">Base: última competência fechada ({fiscalBaseLabel})</strong>
+                    {fiscalBaseSourceLabel ? ` • ${fiscalBaseSourceLabel}` : ''}
+                    {fiscalBase.isPartialHistory && fiscalBase.source === 'CONTABILEX' ? ' • histórico parcial' : ''}
+                  </>
+                ) : (
+                  <span>{fiscalBase.reasonMessage}</span>
+                )}
               </div>
             </div>
 
@@ -743,15 +779,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               <div className="flex justify-between items-center text-slate-600">
                 <span>RBT12 (Receita Bruta 12 Meses):</span>
-                <span className="font-bold text-slate-700 font-mono tabular-nums">
-                  {formatCurrency(cnpjTax.rbt12)}
+                <span data-testid="pj-rbt12" className="font-bold text-slate-700 font-mono tabular-nums">
+                  {cnpjTax.available ? formatCurrency(cnpjTax.rbt12) : '—'}
                 </span>
               </div>
 
               <div className="flex justify-between items-center text-slate-600">
                 <span>FS12 (Folha de Pagamento 12 Meses):</span>
-                <span className="font-bold text-slate-700 font-mono tabular-nums">
-                  {formatCurrency(cnpjTax.fs12)}
+                <span data-testid="pj-fs12" className="font-bold text-slate-700 font-mono tabular-nums">
+                  {cnpjTax.available ? formatCurrency(cnpjTax.fs12) : '—'}
                 </span>
               </div>
             </div>
@@ -799,7 +835,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="text-slate-300 text-base font-bold">+</div>
             <div>
               <span className="block text-[10px] uppercase tracking-wider text-slate-400 font-medium">DAS Simples (PJ)</span>
-              <span className="text-sm font-bold text-blue-800 font-mono">{formatCurrency(cnpjTax.dasEstimated)}</span>
+              <span className="text-sm font-bold text-blue-800 font-mono">
+                {cnpjTax.available ? formatCurrency(cnpjTax.dasEstimated) : '—'}
+              </span>
             </div>
             <div className="text-slate-300 text-base font-bold">=</div>
             <div>

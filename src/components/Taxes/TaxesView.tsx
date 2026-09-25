@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Calculator,
   User,
@@ -48,7 +48,6 @@ import {
 } from '../../types';
 import {
   calculateCpfMonthlyTax,
-  calculateSimplesNacionalMonthlyTax,
   computeRolling12MonthsData,
   getRolling12Months,
   calculateSimplesForParameters,
@@ -61,6 +60,14 @@ import { supabase } from '../../lib/supabaseClient';
 import { getLastClosedCompetence, getTodayCivilDate } from '../../lib/statusHelper';
 import { PeriodPicker, CurrencyInput, useToast, ConfirmDialog } from '../UI';
 import { ContabilexIntegrationService } from '../../services/contabilexIntegrationService';
+import { publishFiscalContabilex } from '../../services/fiscalBaseStore';
+import {
+  estimateSimplesFromBase,
+  fiscalBaseStatusLabel,
+  formatCompetencyShortName,
+  isCompetency,
+  resolveFiscalBase,
+} from '../../lib/fiscalBase';
 import {
   IntegrationClientLink,
   ContabilexSnapshotPayload,
@@ -241,6 +248,12 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   const [contabilexSnapshots, setContabilexSnapshots] = useState<ContabilexSnapshotPayload[]>([]);
   const [contabilexConfirmations, setContabilexConfirmations] = useState<Record<string, CompetencyConfirmationRecord>>({});
   const [isLoadingSnapshots, setIsLoadingSnapshots] = useState(false);
+  // A base oficial só é considerada "carregada" depois da primeira leitura da clínica ATIVA (nunca zeros por padrão).
+  const [contabilexLoaded, setContabilexLoaded] = useState(false);
+  const [contabilexLoadError, setContabilexLoadError] = useState(false);
+  // Clínica ativa "agora": respostas atrasadas de uma clínica anterior são descartadas.
+  const activeTenantRef = useRef(activeTenantId);
+  activeTenantRef.current = activeTenantId;
 
   // Regra Oficial baselineConfigured:
   // Se CONTABILEX: só é considerada configurada se ACTIVE E existirem snapshots válidos (snapshots.length > 0).
@@ -262,10 +275,20 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   const [isSyncingWithContaju, setIsSyncingWithContaju] = useState(false);
 
   const loadContabilexData = async (tenantId: string) => {
-    if (!tenantId || tenantId === 'tenant_demo') return;
+    if (!tenantId || tenantId === 'tenant_demo') {
+      setContabilexLoaded(true);
+      return;
+    }
     setIsLoadingLink(true);
     const linkRes = await ContabilexIntegrationService.getLinkStatus(tenantId);
+    if (activeTenantRef.current !== tenantId) return; // trocou de clínica durante a leitura
     setIsLoadingLink(false);
+    if (linkRes.error) {
+      // Falha de leitura: mantém a última base conhecida em vez de zerar a tela.
+      setContabilexLoadError(true);
+      setContabilexLoaded(true);
+      return;
+    }
     if (linkRes.link) {
       setContabilexLink(linkRes.link);
       if (linkRes.link.status === 'ACTIVE') {
@@ -274,9 +297,18 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
           ContabilexIntegrationService.getPublishedSnapshots(tenantId, 12),
           ContabilexIntegrationService.getConfirmations(tenantId),
         ]);
+        if (activeTenantRef.current !== tenantId) return;
         setIsLoadingSnapshots(false);
+        if (snapRes.error) {
+          setContabilexLoadError(true);
+          setContabilexLoaded(true);
+          return;
+        }
+        setContabilexLoadError(false);
         if (snapRes.snapshots) {
           setContabilexSnapshots(snapRes.snapshots);
+          // Mantém Dashboard / Simulador / Relatórios / DRE na MESMA base que esta tela acabou de ler.
+          publishFiscalContabilex(tenantId, linkRes.link, snapRes.snapshots);
           // Regra Oficial: Ao concluir integração com sucesso e ter snapshots,
           // o Contaju vira AUTOMATICAMENTE a fonte fiscal oficial sem qualquer ação manual.
           if (snapRes.snapshots.length > 0) {
@@ -294,12 +326,16 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       } else {
         setContabilexSnapshots([]);
         setContabilexConfirmations({});
+        publishFiscalContabilex(tenantId, linkRes.link, []);
       }
     } else {
       setContabilexLink(null);
       setContabilexSnapshots([]);
       setContabilexConfirmations({});
+      publishFiscalContabilex(tenantId, null, []);
     }
+    setContabilexLoadError(false);
+    setContabilexLoaded(true);
   };
 
   const handleSyncWithContaju = async () => {
@@ -330,8 +366,13 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     return (contabilexSnapshots || []).slice(0, 12);
   }, [contabilexSnapshots]);
 
-  // 1. Carregamento inicial ao alternar de clínica
+  // 1. Carregamento inicial ao alternar de clínica — nunca exibe a base da clínica anterior enquanto lê a nova
   useEffect(() => {
+    setContabilexLink(null);
+    setContabilexSnapshots([]);
+    setContabilexConfirmations({});
+    setContabilexLoaded(false);
+    setContabilexLoadError(false);
     loadContabilexData(activeTenantId);
   }, [activeTenantId]);
 
@@ -388,13 +429,6 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     });
     return sorted[0].updated_at || sorted[0].published_at || null;
   }, [contabilexSnapshots]);
-
-  const contabilexFactorR = useMemo(() => {
-    if (activeFiscalMode !== 'CONTABILEX' || contabilexSnapshots.length === 0) {
-      return null;
-    }
-    return ContabilexIntegrationService.calculateFactorR(contabilexSnapshots, competenceStr);
-  }, [activeFiscalMode, contabilexSnapshots, competenceStr]);
 
   const handleRequestContabilexLink = async () => {
     const targetCnpj = savedCnpj || normalizeCnpj(contabilexCnpjInput);
@@ -552,20 +586,51 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     );
   }, [sales, competenceStr, payrollHistory, professional, isConsolidatedActive]);
 
-  // CNPJ Calculation (Simples Nacional)
-  const cnpjTax = useMemo(() => {
-    return calculateSimplesNacionalMonthlyTax(
+  // CNPJ (Simples Nacional): BASE FISCAL CANÔNICA — a mesma função que o Dashboard usa. Só quando o usuário
+  // escolhe uma competência DIFERENTE da última fechada ela vira competência de referência explícita;
+  // no caso padrão a resolução é a canônica (última competência oficial fechada disponível).
+  const fiscalBase = useMemo(
+    () =>
+      resolveFiscalBase({
+        todayStr: getTodayCivilDate(),
+        professional,
+        sales,
+        payrollHistory,
+        taxRules: taxRulesSimples,
+        year: effectiveYear,
+        contabilex: {
+          loaded: contabilexLoaded,
+          loadError: contabilexLoadError,
+          linkStatus: contabilexLink?.status ?? null,
+          snapshots: contabilexSnapshots,
+        },
+        referenceCompetencyOverride:
+          isCompetency(competenceStr) && competenceStr !== lastClosed.competenceStr ? competenceStr : null,
+      }),
+    [
+      professional,
       sales,
-      competenceStr,
-      effectiveYear,
-      taxRulesSimples,
       payrollHistory,
-      professional.rbt12Inicial || 0,
-      professional.folha12MesesInicial || 0,
-      professional.initialFiscalHistory,
-      isConsolidatedActive
-    );
-  }, [sales, competenceStr, effectiveYear, taxRulesSimples, payrollHistory, professional, isConsolidatedActive]);
+      taxRulesSimples,
+      effectiveYear,
+      contabilexLoaded,
+      contabilexLoadError,
+      contabilexLink?.status,
+      contabilexSnapshots,
+      competenceStr,
+      lastClosed.competenceStr,
+    ]
+  );
+  const cnpjTax = useMemo(
+    () =>
+      estimateSimplesFromBase(fiscalBase, {
+        sales,
+        revenueCompetence: competenceStr,
+        year: effectiveYear,
+        taxRules: taxRulesSimples,
+      }),
+    [fiscalBase, sales, competenceStr, effectiveYear, taxRulesSimples]
+  );
 
   // Inicializar e abrir modal das bases fiscais
   const handleOpenBasesModal = (forceChooseMode = false) => {
@@ -713,28 +778,22 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   // Valores oficiais a exibir no Card Principal de Bases:
   // Se não configurado: estritamente R$ 0,00 e status "Bases fiscais não configuradas"
   const isContabilexActive = activeFiscalMode === 'CONTABILEX' && contabilexLink?.status === 'ACTIVE';
-  const displayRbt12 = isBaselineConfigured
-    ? isContabilexActive && contabilexFactorR
-      ? contabilexFactorR.rbt12
-      : cnpjTax.rbt12
-    : 0;
-  const displayFs12 = isBaselineConfigured
-    ? isContabilexActive && contabilexFactorR
-      ? contabilexFactorR.fs12
-      : cnpjTax.fs12
-    : 0;
-  const displayFatorRPercent = isBaselineConfigured && displayRbt12 > 0
-    ? isContabilexActive && contabilexFactorR
-      ? contabilexFactorR.factorRPercent
-      : cnpjTax.fatorRPercent
-    : 0;
-  const isAnexoIIIEffective = isContabilexActive && contabilexFactorR
-    ? contabilexFactorR.isAnexoIII
-    : cnpjTax.isAnexoIII;
-
-  const currentMonthSnapshot = useMemo(() => {
-    return contabilexSnapshots.find((s) => s.competency === competenceStr);
-  }, [contabilexSnapshots, competenceStr]);
+  const displayRbt12 = isBaselineConfigured ? fiscalBase.rbt12 : 0;
+  const displayFs12 = isBaselineConfigured ? fiscalBase.fs12 : 0;
+  const displayFatorRPercent =
+    isBaselineConfigured && fiscalBase.status === 'AVAILABLE' && displayRbt12 > 0
+      ? fiscalBase.factorRPercent ?? 0
+      : 0;
+  const isAnexoIIIEffective = fiscalBase.isAnexoIII === true;
+  const fiscalBaseLabel = formatCompetencyShortName(fiscalBase.referenceCompetency);
+  // O Contaju publica a própria alíquota da competência; só destacamos quando difere da apurada pelo motor.
+  const officialRateNote =
+    isContabilexActive &&
+    cnpjTax.available &&
+    fiscalBase.officialEffectiveRate !== null &&
+    Math.abs(fiscalBase.officialEffectiveRate - cnpjTax.effectiveTaxRate) > 0.005
+      ? ` • Contaju publicou ${formatPercent(fiscalBase.officialEffectiveRate, 2)}`
+      : '';
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto pb-12">
@@ -926,6 +985,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                       ? `${new Date(latestSnapshotPublishedAt).toLocaleDateString('pt-BR')} às ${new Date(latestSnapshotPublishedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
                       : 'Recente'}{' '}
                     • Histórico: {displayedSnapshots.length} de 12 competências disponíveis
+                    {fiscalBase.status === 'AVAILABLE' ? ` • Competência-base: ${fiscalBaseLabel}` : ''}
                   </>
                 )
               ) : (
@@ -977,7 +1037,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
               Fator R
             </span>
             <div className="text-sm sm:text-base font-bold font-mono text-slate-900">
-              {formatPercent(displayFatorRPercent)}
+              {isBaselineConfigured && fiscalBase.status !== 'AVAILABLE' ? '—' : formatPercent(displayFatorRPercent)}
             </div>
             <span className="text-[10px] text-slate-400 block">FS12 ÷ RBT12</span>
           </div>
@@ -990,6 +1050,10 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
             <div className="pt-0.5">
               {!isBaselineConfigured ? (
                 <span className="text-xs font-bold text-slate-400">Pendente</span>
+              ) : fiscalBase.status === 'LOADING' ? (
+                <span className="text-xs font-bold text-slate-400">Carregando…</span>
+              ) : fiscalBase.status !== 'AVAILABLE' ? (
+                <span className="text-xs font-bold text-amber-700" title={fiscalBase.reasonMessage || undefined}>Base insuficiente</span>
               ) : displayRbt12 === 0 ? (
                 <span className="text-xs font-bold text-blue-700">Anexo III (Início)</span>
               ) : isAnexoIIIEffective ? (
@@ -1013,14 +1077,10 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
               Alíquota Efetiva
             </span>
             <div className="text-sm sm:text-base font-bold font-mono text-blue-900">
-              {isBaselineConfigured
-                ? isContabilexActive && currentMonthSnapshot?.effective_rate !== null && currentMonthSnapshot?.effective_rate !== undefined
-                  ? formatPercent(currentMonthSnapshot.effective_rate)
-                  : formatPercent(cnpjTax.effectiveTaxRate)
-                : '0,00%'}
+              {isBaselineConfigured && cnpjTax.available ? formatPercent(cnpjTax.effectiveTaxRate) : '—'}
             </div>
             <span className="text-[10px] text-slate-400 block">
-              {isContabilexActive ? 'Oficial Contaju' : 'Simples Nacional'}
+              {(isContabilexActive ? 'Base oficial Contaju' : 'Simples Nacional') + officialRateNote}
             </span>
           </div>
         </div>
@@ -1481,7 +1541,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
               </div>
               <span
                 className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold ${
-                  !isBaselineConfigured
+                  !isBaselineConfigured || !cnpjTax.available
                     ? 'bg-slate-100 text-slate-600 border border-slate-200'
                     : cnpjTax.isAnexoIII
                     ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
@@ -1490,6 +1550,8 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
               >
                 {!isBaselineConfigured
                   ? 'Bases Pendentes'
+                  : !cnpjTax.available
+                  ? fiscalBaseStatusLabel(fiscalBase)
                   : cnpjTax.isAnexoIII
                   ? 'Anexo III (Alíquota Reduzida)'
                   : 'Anexo V (Alíquota Majorada)'}
@@ -1530,7 +1592,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                   <span className="font-bold text-slate-800">Fator R Apurado (FS12 ÷ RBT12):</span>
                 </div>
                 <span className="font-bold text-slate-900 font-mono text-sm">
-                  {formatPercent(displayFatorRPercent)}
+                  {isBaselineConfigured && fiscalBase.status !== 'AVAILABLE' ? '—' : formatPercent(displayFatorRPercent)}
                 </span>
               </div>
 
@@ -1542,7 +1604,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                   <span className="font-medium">Faixa Enquadrada:</span>
                 </div>
                 <span className="font-bold text-slate-800 font-mono">
-                  {isBaselineConfigured
+                  {isBaselineConfigured && cnpjTax.available
                     ? `Faixa ${cnpjTax.bracketNumber} (${formatPercent(cnpjTax.nominalRate * 100)} nominal)`
                     : 'Aguardando configuração'}
                 </span>
@@ -1556,7 +1618,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                   <span className="font-medium">Alíquota Efetiva Apurada:</span>
                 </div>
                 <span className="font-bold text-blue-900 text-sm font-mono">
-                  {isBaselineConfigured ? formatPercent(cnpjTax.effectiveTaxRate) : '0,00%'}
+                  {isBaselineConfigured && cnpjTax.available ? formatPercent(cnpjTax.effectiveTaxRate) : '—'}
                 </span>
               </div>
 
@@ -1582,12 +1644,12 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
                     <span className="block text-xs text-blue-900 font-bold">DAS Estimado do Mês:</span>
                     <span className="text-[10px] text-blue-700 font-normal">
                       {formatCurrency(cnpjTax.monthlyRevenueNfse)} ×{' '}
-                      {isBaselineConfigured ? formatPercent(cnpjTax.effectiveTaxRate) : '0,00%'}
+                      {isBaselineConfigured && cnpjTax.available ? formatPercent(cnpjTax.effectiveTaxRate) : '—'}
                     </span>
                   </div>
                 </div>
                 <span className="text-lg font-bold font-mono text-blue-900">
-                  {formatCurrency(isBaselineConfigured ? cnpjTax.dasEstimated : 0)}
+                  {isBaselineConfigured && cnpjTax.available ? formatCurrency(cnpjTax.dasEstimated) : '—'}
                 </span>
               </div>
             </div>

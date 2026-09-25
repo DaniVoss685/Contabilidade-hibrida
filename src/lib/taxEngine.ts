@@ -715,6 +715,38 @@ export function calculateCpfMonthlyTax(
   };
 }
 
+export const DEFAULT_FATOR_R_THRESHOLD = 0.28;
+
+/**
+ * Regra do limiar do Fator R: FS12 / RBT12 >= limiar → Anexo III (inclusive no 28,00% exato).
+ * A comparação é feita em centavos inteiros (nunca por divisão em ponto flutuante), para que
+ * valores como 28,00% não caiam para 27,999…% por erro de representação.
+ * RBT12 <= 0 nunca classifica: não existe Fator R sem receita (o chamador trata o estado explicitamente).
+ */
+export function isFatorRAtOrAboveThreshold(
+  fs12: number,
+  rbt12: number,
+  threshold: number = DEFAULT_FATOR_R_THRESHOLD
+): boolean {
+  const rbtCents = Math.round(Math.max(0, rbt12) * 100);
+  const fsCents = Math.round(Math.max(0, fs12) * 100);
+  if (rbtCents <= 0) return false;
+  const thresholdBps = Math.round(threshold * 10000);
+  return fsCents * 10000 >= thresholdBps * rbtCents;
+}
+
+/** Faturamento PJ (NFS-e) da competência — usado pelo motor e pela estimativa canônica. */
+export function sumCnpjRevenueForCompetence(sales: Sale[], yearMonth: string): number {
+  let total = 0;
+  for (const sale of sales) {
+    if (sale.taxOrigin !== 'CNPJ') continue;
+    if ((sale.serviceDate || '').startsWith(yearMonth)) {
+      total += sale.totalValue;
+    }
+  }
+  return total;
+}
+
 export function calculateSimplesForParameters(
   rbt12: number,
   fs12: number,
@@ -734,8 +766,8 @@ export function calculateSimplesForParameters(
   // Fator R = FS12 / RBT12
   const fatorR = safeRbt12 > 0 ? safeFs12 / safeRbt12 : 0;
   const fatorRPercent = fatorR * 100;
-  const threshold = typeof rules.fatorRThreshold === 'number' ? rules.fatorRThreshold : 0.28;
-  const isAnexoIII = fatorR >= threshold;
+  const threshold = typeof rules.fatorRThreshold === 'number' ? rules.fatorRThreshold : DEFAULT_FATOR_R_THRESHOLD;
+  const isAnexoIII = isFatorRAtOrAboveThreshold(safeFs12, safeRbt12, threshold);
   const effectiveAnnex: 'ANEXO_III' | 'ANEXO_V' = isAnexoIII ? 'ANEXO_III' : 'ANEXO_V';
   const rawRanges = isAnexoIII ? (rules.annexIII || rules.anexoIII) : (rules.annexV || rules.anexoV);
   const tableRanges =
@@ -970,13 +1002,7 @@ export function calculateSimplesNacionalMonthlyTax(
   initialFiscalHistory?: MonthlyFiscalHistoryEntry[],
   isConsolidated?: boolean
 ) {
-  let monthlyRevenueNfse = 0;
-  for (const sale of sales) {
-    if (sale.taxOrigin !== 'CNPJ') continue;
-    if (sale.serviceDate.startsWith(yearMonth)) {
-      monthlyRevenueNfse += sale.totalValue;
-    }
-  }
+  const monthlyRevenueNfse = sumCnpjRevenueForCompetence(sales, yearMonth);
 
   const rolling = computeRolling12MonthsData(
     sales,

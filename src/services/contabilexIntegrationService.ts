@@ -7,6 +7,8 @@
  */
 
 import { SUPABASE_URL, SUPABASE_ANON_KEY, supabase } from '../lib/supabaseClient';
+import { computeSnapshotWindow } from '../lib/fiscalBase';
+import { isFatorRAtOrAboveThreshold } from '../lib/taxEngine';
 import {
   IntegrationClientLink,
   ContabilexSnapshotPayload,
@@ -384,27 +386,13 @@ export const ContabilexIntegrationService = {
     snapshots: ContabilexSnapshotPayload[],
     targetCompetency?: string
   ): FactorRCalculationResult {
-    // Ordena competências cronologicamente ('YYYY-MM')
-    const sorted = [...snapshots].sort((a, b) => a.competency.localeCompare(b.competency));
-
-    let windowSnapshots = sorted;
-
-    if (targetCompetency) {
-      // Considera os snapshots estritamente anteriores à competência alvo (até 12 meses)
-      const previousMonths = sorted.filter((s) => s.competency < targetCompetency);
-      windowSnapshots = previousMonths.slice(-12);
-    } else {
-      windowSnapshots = sorted.slice(-12);
-    }
-
-    const count = windowSnapshots.length;
-
-    const rbt12 = windowSnapshots.reduce((acc, curr) => acc + (Number(curr.gross_revenue) || 0), 0);
-    const fs12 = windowSnapshots.reduce((acc, curr) => acc + (Number(curr.factor_r_payroll_base) || 0), 0);
+    // Janela única compartilhada com a base canônica (src/lib/fiscalBase.ts): 12 meses estritamente
+    // anteriores à competência alvo, sem completar meses ausentes com R$ 0,00.
+    const { rbt12, fs12, count } = computeSnapshotWindow(snapshots, targetCompetency);
 
     const factorR = rbt12 > 0 ? fs12 / rbt12 : 0;
     const factorRPercent = Number((factorR * 100).toFixed(2));
-    const isAnexoIII = factorR >= 0.28;
+    const isAnexoIII = isFatorRAtOrAboveThreshold(fs12, rbt12);
     const annex: 'ANEXO_III' | 'ANEXO_V' = isAnexoIII ? 'ANEXO_III' : 'ANEXO_V';
 
     const missingMonthsMessage =

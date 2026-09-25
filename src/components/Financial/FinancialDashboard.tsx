@@ -29,6 +29,7 @@ import {
   exportDreToCsv,
   exportCategoriesControlToCsv,
 } from '../../lib/financialExport';
+import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { CashFlowTable } from './CashFlowTable';
 import { DreTable } from './DreTable';
 import { CategoryControlTable } from './CategoryControlTable';
@@ -85,6 +86,9 @@ export const FinancialDashboard: React.FC<FinancialDashboardProps> = ({
     return buildAnnualCashFlow(year, sales, expenses, bankAccounts, entityFilter);
   }, [year, sales, expenses, bankAccounts, entityFilter]);
 
+  // Tributos do Simples no DRE usam a MESMA base fiscal canônica do Dashboard e da tela Motores.
+  const fiscalBase = useFiscalBase({ professional, sales, payrollHistory, taxRulesSimples, year });
+
   const dreSummary = useMemo(() => {
     return buildAnnualDre(
       year,
@@ -94,9 +98,10 @@ export const FinancialDashboard: React.FC<FinancialDashboardProps> = ({
       taxRulesSimples,
       professional,
       payrollHistory,
-      entityFilter
+      entityFilter,
+      fiscalBase
     );
-  }, [year, sales, expenses, taxRulesPf, taxRulesSimples, professional, payrollHistory, entityFilter]);
+  }, [year, sales, expenses, taxRulesPf, taxRulesSimples, professional, payrollHistory, entityFilter, fiscalBase]);
 
   const categoryControlItems = useMemo(() => {
     return buildCategoryAnnualControl(year, sales, expenses, categories, entityFilter);
@@ -349,6 +354,16 @@ export const FinancialDashboard: React.FC<FinancialDashboardProps> = ({
         />
       )}
 
+      {activeTab === 'DRE' && dreSummary.simplesBaseUnavailable && (
+        <div
+          data-testid="dre-simples-unavailable"
+          className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900"
+        >
+          <strong>Tributos do Simples Nacional não estimados:</strong>{' '}
+          {dreSummary.simplesBaseReason || 'base fiscal indisponível.'} O DAS aparece como R$ 0,00 até a base fiscal
+          estar disponível — não é um cálculo sobre zeros.
+        </div>
+      )}
       {activeTab === 'DRE' && <DreTable data={dreSummary} />}
 
       {activeTab === 'CATEGORIES_CONTROL' && (

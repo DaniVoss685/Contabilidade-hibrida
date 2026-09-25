@@ -141,6 +141,9 @@ export interface MonthlyDreCol {
 export interface AnnualDreSummary {
   year: number;
   months: MonthlyDreCol[];
+  /** true → havia receita PJ no ano mas a base fiscal canônica do Simples estava indisponível (tributos PJ não estimados). */
+  simplesBaseUnavailable?: boolean;
+  simplesBaseReason?: string | null;
   totalGrossRevenue: number;
   totalCpfGrossRevenue: number;
   totalCnpjGrossRevenue: number;

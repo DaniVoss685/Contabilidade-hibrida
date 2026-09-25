@@ -18,6 +18,7 @@ import {
   FinancialItemDetail,
 } from '../types/financial';
 import { calculateCpfMonthlyTax, calculateSimplesNacionalMonthlyTax } from './taxEngine';
+import { CanonicalFiscalBase, estimateSimplesFromBase } from './fiscalBase';
 import {
   OPERATIONAL_EXPENSE_GROUPS,
   getOperationalGroup,
@@ -338,8 +339,14 @@ export function buildAnnualDre(
   taxRulesSimples: TaxRulesSimples,
   professional: Professional,
   payrollHistory: PayrollHistoryEntry[],
-  entityFilter: FinancialEntityFilter = 'ALL'
+  entityFilter: FinancialEntityFilter = 'ALL',
+  /**
+   * Base fiscal CANÔNICA (mesma do Dashboard/Motores). Quando informada, o DAS estimado de cada mês usa o
+   * enquadramento dela; sem ela (chamadas legadas) o cálculo local antigo é preservado.
+   */
+  fiscalBase?: CanonicalFiscalBase
 ): AnnualDreSummary {
+  let simplesBaseUnavailable = false;
   const months: MonthlyDreCol[] = [];
   const allProceduresSet = new Set<string>();
   const variableGroupsMap = new Map<string, string>();
@@ -416,18 +423,32 @@ export function buildAnnualDre(
       professional.inssProprioMensal
     );
 
-    const cnpjTaxCalc = calculateSimplesNacionalMonthlyTax(
-      sales,
-      monthKey,
-      year,
-      taxRulesSimples,
-      payrollHistory,
-      professional.rbt12Inicial,
-      professional.folha12MesesInicial
-    );
+    let cnpjDasEstimated: number;
+    if (fiscalBase) {
+      const cnpjEstimate = estimateSimplesFromBase(fiscalBase, {
+        sales,
+        revenueCompetence: monthKey,
+        year,
+        taxRules: taxRulesSimples,
+      });
+      cnpjDasEstimated = cnpjEstimate.dasEstimated;
+      if (!cnpjEstimate.available && cnpjEstimate.monthlyRevenueNfse > 0 && entityFilter !== 'CPF') {
+        simplesBaseUnavailable = true;
+      }
+    } else {
+      cnpjDasEstimated = calculateSimplesNacionalMonthlyTax(
+        sales,
+        monthKey,
+        year,
+        taxRulesSimples,
+        payrollHistory,
+        professional.rbt12Inicial,
+        professional.folha12MesesInicial
+      ).dasEstimated;
+    }
 
     const cpfTaxes = entityFilter === 'CNPJ' ? 0 : cpfTaxCalc.carneLeaoEstimated;
-    const cnpjTaxes = entityFilter === 'CPF' ? 0 : cnpjTaxCalc.dasEstimated;
+    const cnpjTaxes = entityFilter === 'CPF' ? 0 : cnpjDasEstimated;
     const directTaxes = cpfTaxes + cnpjTaxes;
 
     // 3. Receita Líquida
@@ -539,6 +560,8 @@ export function buildAnnualDre(
   return {
     year,
     months,
+    simplesBaseUnavailable,
+    simplesBaseReason: simplesBaseUnavailable && fiscalBase ? fiscalBase.reasonMessage : null,
     totalGrossRevenue,
     totalCpfGrossRevenue,
     totalCnpjGrossRevenue,

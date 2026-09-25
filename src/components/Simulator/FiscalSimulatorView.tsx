@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   SlidersHorizontal,
   Calculator,
@@ -38,7 +38,17 @@ import {
   calculateRollingRbt12,
 } from '../../lib/taxEngine';
 import { db } from '../../lib/db';
+import { fiscalBaseStatusLabel, formatCompetencyShortName } from '../../lib/fiscalBase';
+import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { CurrencyInput, CustomSelect, ConfirmDialog, useToast } from '../UI';
+
+/** Rótulo do enquadramento com a alíquota efetiva CALCULADA (nunca um percentual escrito na tela). */
+function annexWithRate(isAnexoIII: boolean, effectiveTaxRate?: number | null): string {
+  const name = isAnexoIII ? 'Anexo III' : 'Anexo V';
+  return typeof effectiveTaxRate === 'number' && Number.isFinite(effectiveTaxRate)
+    ? `${name} (${formatPercent(effectiveTaxRate)})`
+    : name;
+}
 
 interface FiscalSimulatorViewProps {
   professional: Professional;
@@ -62,15 +72,22 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
   // Active Tab: 'current' | 'new_simulation' | 'saved_scenarios'
   const [activeTab, setActiveTab] = useState<'current' | 'new_simulation' | 'saved_scenarios'>('new_simulation');
 
-  // Baseline Data (Situação Atual Oficial do Consultório)
+  // Baseline (Situação Atual Oficial do Consultório): a MESMA base fiscal canônica do Dashboard e da tela Motores
+  // (última competência fiscal fechada). Sem base disponível NÃO se inventa RBT12/FS12 nem enquadramento.
+  const taxRulesSimples = useMemo(() => db.getTaxRulesSimples(selectedYear), [selectedYear]);
+  const fiscalBase = useFiscalBase({
+    professional,
+    sales,
+    payrollHistory,
+    taxRulesSimples,
+    year: selectedYear,
+  });
+  const baseAvailable = fiscalBase.status === 'AVAILABLE';
+  const fiscalBaseLabel = formatCompetencyShortName(fiscalBase.referenceCompetency);
+
   const baselineData = useMemo(() => {
-    const rbt12 = professional.rbt12Inicial || 0;
-    let calculatedFs12 = 0;
-    if (payrollHistory && payrollHistory.length > 0) {
-      const last12 = payrollHistory.slice(-12);
-      calculatedFs12 = last12.reduce((acc, curr) => acc + curr.totalPayroll, 0);
-    }
-    const fs12 = calculatedFs12 > 0 ? calculatedFs12 : (professional.folha12MesesInicial || 0);
+    const rbt12 = baseAvailable ? fiscalBase.rbt12 : 0;
+    const fs12 = baseAvailable ? fiscalBase.fs12 : 0;
 
     // Faturamento do mês vigente selecionado
     let currentMonthRevenue = 0;
@@ -88,16 +105,17 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
     const monthlyRevenue = currentMonthRevenue > 0 ? currentMonthRevenue : 0;
     const proLabore = professional.proLaboreMensal || 0;
 
-    const calc = calculateSimplesForParameters(rbt12, fs12, monthlyRevenue, selectedYear);
+    const calc = calculateSimplesForParameters(rbt12, fs12, monthlyRevenue, selectedYear, taxRulesSimples);
 
     return {
       rbt12,
       fs12,
       monthlyRevenue,
       proLabore,
+      baseAvailable,
       ...calc,
     };
-  }, [professional, payrollHistory, sales, selectedYear, selectedMonth]);
+  }, [professional, sales, selectedYear, selectedMonth, baseAvailable, fiscalBase.rbt12, fiscalBase.fs12, taxRulesSimples]);
 
   // Salário Mínimo Oficial Vigente
   const officialMinWage = useMemo(() => {
@@ -121,6 +139,28 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
 
   // Preset ativo de Pró-labore
   const [activePreset, setActivePreset] = useState<'1SM' | '2SM' | '3SM' | 'CUSTOM'>('CUSTOM');
+
+  // A base oficial pode chegar depois da montagem (leitura assíncrona) ou mudar (troca de clínica / nova
+  // competência publicada): acompanha a baseline apenas nos campos que o usuário ainda não alterou.
+  const lastBaselineRef = useRef({ rbt12: baselineData.rbt12, fs12: baselineData.fs12, monthlyRevenue: baselineData.monthlyRevenue });
+  useEffect(() => {
+    const prev = lastBaselineRef.current;
+    if (
+      prev.rbt12 === baselineData.rbt12 &&
+      prev.fs12 === baselineData.fs12 &&
+      prev.monthlyRevenue === baselineData.monthlyRevenue
+    ) {
+      return;
+    }
+    setSimRbt12Base((v) => (v === prev.rbt12 ? baselineData.rbt12 : v));
+    setSimFs12((v) => (v === prev.fs12 ? baselineData.fs12 : v));
+    setSimMonthlyRevenue((v) => (v === prev.monthlyRevenue ? baselineData.monthlyRevenue : v));
+    lastBaselineRef.current = {
+      rbt12: baselineData.rbt12,
+      fs12: baselineData.fs12,
+      monthlyRevenue: baselineData.monthlyRevenue,
+    };
+  }, [baselineData.rbt12, baselineData.fs12, baselineData.monthlyRevenue]);
 
   // Handle Pró-labore change (manual ou por preset)
   const handleProLaboreChange = (val: number, presetType?: '1SM' | '2SM' | '3SM' | 'CUSTOM') => {
@@ -165,9 +205,10 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
       effectiveSimRbt12,
       simFs12,
       simMonthlyRevenue,
-      selectedYear
+      selectedYear,
+      taxRulesSimples
     );
-  }, [effectiveSimRbt12, simFs12, simMonthlyRevenue, selectedYear]);
+  }, [effectiveSimRbt12, simFs12, simMonthlyRevenue, selectedYear, taxRulesSimples]);
 
   // Comparative Deltas
   const monthlySavingsDelta = useMemo(() => {
@@ -415,23 +456,38 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                     Parâmetros Vigentes • Competência {selectedYear}
                   </span>
                   <span
+                    data-testid="sim-annex-badge"
                     className={`px-2.5 py-1 rounded-full text-[11px] font-bold border ${
-                      baselineData.isAnexoIII
+                      !baselineData.baseAvailable
+                        ? 'bg-slate-500/20 text-slate-300 border-slate-500/40'
+                        : baselineData.isAnexoIII
                         ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
                         : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                     }`}
                   >
-                    {baselineData.isAnexoIII ? 'Enquadrado no Anexo III' : 'Tributado no Anexo V'}
+                    {!baselineData.baseAvailable
+                      ? fiscalBaseStatusLabel(fiscalBase)
+                      : baselineData.isAnexoIII
+                      ? 'Enquadrado no Anexo III'
+                      : 'Tributado no Anexo V'}
                   </span>
                 </div>
-                <h3 className="text-2xl font-black tracking-tight text-white">
-                  Fator R Atual: {baselineData.fatorRPercent.toFixed(1)}%
+                <h3 data-testid="sim-factor-r-title" className="text-2xl font-black tracking-tight text-white">
+                  Fator R Atual: {baselineData.baseAvailable ? `${baselineData.fatorRPercent.toFixed(1)}%` : '—'}
                 </h3>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  {baselineData.isAnexoIII
+                  {!baselineData.baseAvailable
+                    ? `${fiscalBase.reasonMessage || 'Base fiscal indisponível.'} Você ainda pode simular informando os valores manualmente na aba "Nova Simulação".`
+                    : baselineData.isAnexoIII
                     ? 'Excelente! Sua relação entre folha de salários/pró-labore e faturamento está acima do limite legal de 28%, garantindo a menor alíquota do Simples Nacional.'
                     : 'Atenção! Sua folha acumulada representa menos de 28% do faturamento, gerando tributação majorada pelo Anexo V (a partir de 15,5%). Uma simulação de pró-labore pode gerar grande economia.'}
                 </p>
+                {baselineData.baseAvailable && (
+                  <p data-testid="sim-base-note" className="text-[11px] text-slate-400">
+                    Base: última competência fechada ({fiscalBaseLabel})
+                    {fiscalBase.source === 'CONTABILEX' ? ' • Base oficial Contaju' : ' • Base informada manualmente'}
+                  </p>
+                )}
               </div>
 
               {/* Action Button */}
@@ -838,7 +894,9 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                           <Lock className="w-2.5 h-2.5" /> Atual
                         </span>
                         <strong className="text-slate-700">
-                          {baselineData.isAnexoIII ? 'Anexo III (6%)' : 'Anexo V (15,5%)'}
+                          {baselineData.baseAvailable
+                            ? `${baselineData.isAnexoIII ? 'Anexo III' : 'Anexo V'} (${formatPercent(baselineData.effectiveTaxRate)})`
+                            : 'Base indisponível'}
                         </strong>
                       </div>
                       <ArrowRight className="w-4 h-4 text-slate-300" />
@@ -851,7 +909,7 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                             simulationResult.isAnexoIII ? 'text-emerald-700' : 'text-amber-700'
                           }`}
                         >
-                          {simulationResult.isAnexoIII ? 'Anexo III (6%)' : 'Anexo V (15,5%)'}
+                          {annexWithRate(simulationResult.isAnexoIII, simulationResult.effectiveTaxRate)}
                         </strong>
                       </div>
                     </div>
@@ -1134,7 +1192,7 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                                   : 'bg-amber-100 text-amber-800 border border-amber-200'
                               }`}
                             >
-                              {isIII ? 'Anexo III (6%)' : 'Anexo V (15,5%)'}
+                              {annexWithRate(isIII, scen.results.effectiveTaxRate)}
                             </span>
                             <span className="text-[10px] text-slate-400 font-mono">
                               Fator R: {scen.results.fatorRPercent.toFixed(1)}%
@@ -1355,7 +1413,7 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                     <div className="flex justify-between">
                       <span className="text-slate-500">Enquadramento:</span>
                       <strong className={simulationResult.isAnexoIII ? 'text-emerald-700' : 'text-amber-700'}>
-                        {simulationResult.effectiveAnnex === 'ANEXO_III' ? 'Anexo III (6%)' : 'Anexo V (15,5%)'}
+                        {annexWithRate(simulationResult.effectiveAnnex === 'ANEXO_III', simulationResult.effectiveTaxRate)}
                       </strong>
                     </div>
                     <div className="flex justify-between">
@@ -1583,14 +1641,13 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                         <div className="grid grid-cols-3 p-3 items-center">
                           <span className="text-slate-500 font-medium">Enquadramento</span>
                           <span className="font-bold text-slate-900">
-                            {compareTargetScenario.results.effectiveAnnex === 'ANEXO_III'
-                              ? 'Anexo III (6%)'
-                              : 'Anexo V (15,5%)'}
+                            {annexWithRate(
+                              compareTargetScenario.results.effectiveAnnex === 'ANEXO_III',
+                              compareTargetScenario.results.effectiveTaxRate
+                            )}
                           </span>
                           <span className="font-bold text-slate-900">
-                            {sec.results.effectiveAnnex === 'ANEXO_III'
-                              ? 'Anexo III (6%)'
-                              : 'Anexo V (15,5%)'}
+                            {annexWithRate(sec.results.effectiveAnnex === 'ANEXO_III', sec.results.effectiveTaxRate)}
                           </span>
                         </div>
 
