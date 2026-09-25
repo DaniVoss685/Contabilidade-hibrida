@@ -176,6 +176,7 @@ function AppContent() {
   const [consultingTab, setConsultingTab] = useState<ConsultingNavTab>('portfolio');
   const [summaryClient, setSummaryClient] = useState<ConsultingClientSummary | null>(null);
   const [isConsultingSidebarCollapsed, setIsConsultingSidebarCollapsed] = useState(false);
+  const [isConsultingMobileMenuOpen, setIsConsultingMobileMenuOpen] = useState(false);
 
   const fetchConsultingData = async () => {
     if (!isPrimaryAccount) return;
@@ -648,6 +649,8 @@ function AppContent() {
             }
             isCollapsed={isConsultingSidebarCollapsed}
             onToggleCollapse={setIsConsultingSidebarCollapsed}
+            isOpenMobile={isConsultingMobileMenuOpen}
+            onCloseMobile={() => setIsConsultingMobileMenuOpen(false)}
             onLogout={handleLogout}
           />
 
@@ -665,6 +668,7 @@ function AppContent() {
               onAccessClinic={(tenantId, clinicName) => handleSelectClinic(tenantId, clinicName)}
               title={getConsultingTitle(consultingTab)}
               onLogout={handleLogout}
+              onOpenMobileMenu={() => setIsConsultingMobileMenuOpen(true)}
             />
 
             <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">

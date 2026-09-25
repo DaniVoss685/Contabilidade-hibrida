@@ -269,6 +269,7 @@ Botão "Anexar ao prontuário" em `MediaViewerModal.tsx` (documento/imagem, cont
 - Selects: `CustomSelect`/Popover existentes. Confirmações destrutivas: `ConfirmDialog` (variant `danger`, botão vermelho).
 - Idioma: português em toda a UI. Roles técnicas nunca visíveis ao cliente final.
 - Reutilizar services/helpers/design system existentes — não criar arquitetura paralela.
+- **Barra lateral do Modo Consultoria** (`ConsultingSidebar`) segue o mesmo comportamento da barra da clínica: recolhe sozinha ~5 s depois de aberta no desktop (regra única em `src/lib/sidebarAutoCollapse.ts` + hook `useSidebarAutoCollapse`: mouse em cima pausa, clique manual desliga o automático pela sessão) e, abaixo de `lg`, é uma GAVETA (fora da tela e `inert` até abrir pelo botão de menu do `ConsultingHeader`; fundo escurecido, ESC, botão X e escolher um item fecham; trava a rolagem só enquanto aberta). O topo tem "Dental Finance" numa linha só e o crachá "Consultoria" na linha de baixo (ao lado o nome quebrava letra por letra). O bloco de ações do cabeçalho (clínica, busca, período, sair) quebra linha no celular — antes estourava a largura da página. A barra da clínica (`Sidebar.tsx`) ainda tem a mesma lógica de 5 s inline e pode migrar para o hook. Teste: `consultingSidebarBehavior.test.ts`.
 
 ## Testing
 - Sem test runner formal; cada teste é um script TS executado com `npx tsx <arquivo>`.

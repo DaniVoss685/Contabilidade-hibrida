@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   Eye,
   Check,
+  Menu,
 } from 'lucide-react';
 import { ConsultingClientSummary } from '../../types';
 import { PeriodPicker } from '../UI';
@@ -23,6 +24,8 @@ interface ConsultingHeaderProps {
   onAccessClinic: (tenantId: string, clinicName: string) => void;
   title?: string;
   onLogout?: () => void;
+  /** Mobile/tablet: abre a gaveta do menu da consultoria. */
+  onOpenMobileMenu?: () => void;
 }
 
 export const ConsultingHeader: React.FC<ConsultingHeaderProps> = ({
@@ -34,6 +37,7 @@ export const ConsultingHeader: React.FC<ConsultingHeaderProps> = ({
   onAccessClinic,
   title = 'Visão da Carteira',
   onLogout,
+  onOpenMobileMenu,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -85,6 +89,18 @@ export const ConsultingHeader: React.FC<ConsultingHeaderProps> = ({
       <div className="flex items-center justify-between gap-3 sm:gap-4 flex-wrap">
         {/* Lado Esquerdo: Identificação & Título */}
         <div className="flex items-center gap-3 min-w-0">
+          {onOpenMobileMenu && (
+            <button
+              type="button"
+              onClick={onOpenMobileMenu}
+              className="lg:hidden -ml-1 shrink-0 inline-flex items-center justify-center w-11 h-11 rounded-xl text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              title="Abrir menu"
+              aria-label="Abrir menu"
+              data-testid="consulting-open-menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          )}
           <div className="p-2 bg-gradient-to-br from-emerald-600 to-teal-700 text-white rounded-xl shadow-xs shrink-0 flex items-center justify-center">
             <Briefcase className="w-4.5 h-4.5" />
           </div>
@@ -104,7 +120,7 @@ export const ConsultingHeader: React.FC<ConsultingHeaderProps> = ({
         </div>
 
         {/* Lado Direito: Seletor de Clínicas, Busca, Seletor de Período Oficial & Operador */}
-        <div className="flex items-center gap-2.5 sm:gap-3 shrink-0 flex-wrap justify-end">
+        <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap w-full sm:w-auto sm:shrink-0 min-w-0 justify-start sm:justify-end" data-testid="consulting-header-actions">
           {/* Seletor Rápido de Clínicas Autorizadas */}
           <div className="relative" ref={clinicDropdownRef}>
             <button

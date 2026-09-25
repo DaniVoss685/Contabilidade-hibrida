@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   LayoutDashboard,
   Building2,
@@ -14,8 +14,11 @@ import {
   ChevronRight,
   LogOut,
   Stethoscope,
+  X,
 } from 'lucide-react';
 import { ConsultingNavTab } from '../../types';
+import { useIsDesktop } from '../../hooks/useMediaQuery';
+import { useSidebarAutoCollapse } from '../../hooks/useSidebarAutoCollapse';
 
 interface ConsultingSidebarProps {
   currentTab: ConsultingNavTab;
@@ -24,6 +27,9 @@ interface ConsultingSidebarProps {
   overdueClinicsCount?: number;
   isCollapsed?: boolean;
   onToggleCollapse?: (collapsed: boolean) => void;
+  /** Mobile/tablet: a barra é uma gaveta (drawer) aberta pelo botão de menu do cabeçalho. */
+  isOpenMobile?: boolean;
+  onCloseMobile?: () => void;
   onLogout?: () => void;
 }
 
@@ -43,10 +49,45 @@ export const ConsultingSidebar: React.FC<ConsultingSidebarProps> = ({
   onSelectTab,
   pendingAlertsCount = 0,
   overdueClinicsCount = 0,
-  isCollapsed = false,
+  isCollapsed: isCollapsedPref = false,
   onToggleCollapse,
+  isOpenMobile = false,
+  onCloseMobile,
   onLogout,
 }) => {
+  // Abaixo de `lg` a barra é uma gaveta: sempre expandida, escondida até o usuário abrir (nunca cobre o conteúdo).
+  const isDesktop = useIsDesktop();
+  const isCollapsed = isCollapsedPref && isDesktop;
+  const isDrawerOpen = !isDesktop && isOpenMobile;
+  const closeMobile = () => onCloseMobile?.();
+
+  // Mesma regra da barra da clínica: recolhe sozinha ~5 s depois de aberta, até o usuário mexer.
+  const { handleManualToggle, handleMouseEnter, handleMouseLeave } = useSidebarAutoCollapse({
+    enabled: isDesktop,
+    isCollapsed: isCollapsedPref,
+    onToggleCollapse,
+  });
+
+  // Voltou para desktop (rotação/resize): fecha a gaveta para não deixar estado preso.
+  useEffect(() => {
+    if (isDesktop && isOpenMobile) onCloseMobile?.();
+  }, [isDesktop, isOpenMobile, onCloseMobile]);
+
+  // Gaveta aberta: ESC fecha e a rolagem da página fica travada (sempre destravada no cleanup).
+  useEffect(() => {
+    if (!isDrawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCloseMobile?.();
+    };
+    document.addEventListener('keydown', onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isDrawerOpen, onCloseMobile]);
+
   const sections: NavSection[] = [
     {
       title: 'VISÃO GERAL',
@@ -130,64 +171,89 @@ export const ConsultingSidebar: React.FC<ConsultingSidebarProps> = ({
   ];
 
   return (
-    <aside
-      className={`fixed top-0 bottom-0 left-0 bg-white text-slate-800 z-40 flex flex-col transition-all duration-300 border-r border-slate-200/90 select-none shadow-xs ${
-        isCollapsed ? 'w-[112px]' : 'w-[280px]'
-      }`}
-    >
-      {/* Botão de alternância flutuante de colapso */}
-      {onToggleCollapse && (
-        <button
-          type="button"
-          onClick={() => onToggleCollapse(!isCollapsed)}
-          title={isCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
-          aria-label={isCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
-          className="hidden lg:flex items-center justify-center absolute -right-3.5 top-5 w-7 h-7 rounded-full bg-white border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 shadow-md transition-all hover:scale-110 cursor-pointer z-50 focus:outline-none"
-        >
-          {isCollapsed ? (
-            <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
-          ) : (
-            <ChevronLeft className="w-3.5 h-3.5 stroke-[2.5]" />
-          )}
-        </button>
+    <>
+      {/* Fundo escurecido da gaveta (mobile/tablet) */}
+      {isDrawerOpen && (
+        <div
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-40 lg:hidden"
+          onClick={closeMobile}
+          aria-hidden="true"
+          data-testid="consulting-sidebar-backdrop"
+        />
       )}
 
-      {/* Brand Header */}
-      {isCollapsed ? (
-        <div className="p-2.5 border-b border-slate-100 flex flex-col items-center justify-center gap-1 min-h-[65px]">
+      <aside
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        aria-label="Menu da consultoria"
+        inert={!isDesktop && !isOpenMobile}
+        data-testid="consulting-sidebar"
+        className={`fixed top-0 bottom-0 left-0 z-50 bg-white text-slate-800 flex flex-col border-r border-slate-200/90 select-none shadow-xs transition-[transform,width] duration-300 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] ${
+          isCollapsed ? 'w-[112px]' : 'w-[min(86vw,300px)] lg:w-[280px]'
+        } ${isOpenMobile ? 'translate-x-0 shadow-2xl lg:shadow-none' : '-translate-x-full lg:translate-x-0'}`}
+      >
+        {/* Botão de alternância flutuante de colapso (desktop) */}
+        {onToggleCollapse && (
           <button
-            onClick={() => onToggleCollapse?.(false)}
-            title="Clique para expandir o menu lateral"
-            className="w-9 h-9 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-xs hover:scale-105 transition-transform cursor-pointer"
+            type="button"
+            onClick={() => handleManualToggle(!isCollapsed)}
+            title={isCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+            aria-label={isCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+            className="hidden lg:flex items-center justify-center absolute -right-3.5 top-5 w-7 h-7 rounded-full bg-white border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-50 shadow-md transition-all hover:scale-110 cursor-pointer z-50 focus:outline-none"
           >
-            <Stethoscope className="w-4.5 h-4.5" />
+            {isCollapsed ? (
+              <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
+            ) : (
+              <ChevronLeft className="w-3.5 h-3.5 stroke-[2.5]" />
+            )}
           </button>
-          <span className="text-[8.5px] uppercase font-black tracking-wider px-1.5 py-0.2 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200/60">
-            CONSU
-          </span>
-        </div>
-      ) : (
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between min-h-[65px]">
-          <div className="flex items-center space-x-3 min-w-0">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-xs shrink-0">
-              <Stethoscope className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <div className="font-extrabold text-sm tracking-tight text-slate-900 flex items-center gap-1.5">
-                <span>Dental</span>
-                <span className="text-emerald-700">Finance</span>
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                <span className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200/60 ml-0.5">
-                  CONSULTORIA
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 font-medium truncate">
-                Supervisão & Carteira Contaju
-              </p>
-            </div>
+        )}
+
+        {/* Brand Header */}
+        {isCollapsed ? (
+          <div className="p-2.5 border-b border-slate-100 flex flex-col items-center justify-center gap-1 min-h-[65px]">
+            <button
+              onClick={() => handleManualToggle(false)}
+              title="Clique para expandir o menu lateral"
+              className="w-9 h-9 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-xs hover:scale-105 transition-transform cursor-pointer"
+            >
+              <Stethoscope className="w-4.5 h-4.5" />
+            </button>
+            <span className="text-[8px] uppercase font-black px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200/60 whitespace-nowrap">
+              Consultoria
+            </span>
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="p-4 border-b border-slate-100 flex items-center justify-between gap-2 min-h-[65px]" data-testid="consulting-sidebar-brand">
+            <div className="flex items-center space-x-3 min-w-0">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white shadow-xs shrink-0">
+                <Stethoscope className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                {/* Nome numa linha só (nowrap); o crachá vai para a linha de baixo — não cabe ao lado sem quebrar as letras */}
+                <div className="font-extrabold text-sm tracking-tight text-slate-900 flex items-center gap-1.5 whitespace-nowrap">
+                  <span>Dental</span>
+                  <span className="text-emerald-700">Finance</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                  <span className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200/60 whitespace-nowrap shrink-0">
+                    Consultoria
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-medium truncate">Carteira Contaju</span>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={closeMobile}
+              aria-label="Fechar menu"
+              className="lg:hidden shrink-0 inline-flex items-center justify-center w-11 h-11 -mr-2 rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        )}
 
       {/* Navigation Menu */}
       <nav
@@ -215,7 +281,10 @@ export const ConsultingSidebar: React.FC<ConsultingSidebarProps> = ({
                   <button
                     key={item.id}
                     id={`nav-${item.id}`}
-                    onClick={() => onSelectTab(item.id)}
+                    onClick={() => {
+                      onSelectTab(item.id);
+                      closeMobile();
+                    }}
                     title={item.label}
                     className={`w-full flex flex-col items-center justify-center py-2 px-1 rounded-xl transition-all cursor-pointer group relative text-center ${
                       isActive
@@ -257,8 +326,11 @@ export const ConsultingSidebar: React.FC<ConsultingSidebarProps> = ({
                 <button
                   key={item.id}
                   id={`nav-${item.id}`}
-                  onClick={() => onSelectTab(item.id)}
-                  className={`w-full flex items-center justify-between py-2.5 text-xs transition-all cursor-pointer group ${
+                  onClick={() => {
+                    onSelectTab(item.id);
+                    closeMobile();
+                  }}
+                  className={`w-full flex items-center justify-between py-3 lg:py-2.5 text-sm lg:text-xs transition-all cursor-pointer group ${
                     isActive
                       ? 'bg-slate-100/90 text-slate-900 font-bold pl-3.5 pr-2.5 rounded-xl relative before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:bg-emerald-600 before:rounded-r-full shadow-2xs'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50/90 px-3 rounded-xl font-medium'
@@ -308,6 +380,7 @@ export const ConsultingSidebar: React.FC<ConsultingSidebarProps> = ({
           </button>
         </div>
       )}
-    </aside>
+      </aside>
+    </>
   );
 };
