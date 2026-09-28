@@ -174,6 +174,8 @@ export interface CanonicalFiscalBase {
   /** Razão FS12/RBT12 (decimal). null quando não há base. */
   factorR: number | null;
   factorRPercent: number | null;
+  /** Limiar do Fator R usado na classificação (decimal, ex.: 0,28). */
+  factorRThreshold: number;
   isAnexoIII: boolean | null;
   annex: 'ANEXO_III' | 'ANEXO_V' | null;
   /** Alíquota efetiva (%), calculada pelo motor de Simples por faixa. null quando não há base. */
@@ -235,6 +237,7 @@ function emptyBase(
     fs12: 0,
     factorR: null,
     factorRPercent: null,
+    factorRThreshold: DEFAULT_FATOR_R_THRESHOLD,
     isAnexoIII: null,
     annex: null,
     effectiveRate: null,
@@ -260,6 +263,7 @@ function classifyBase(
   return {
     factorR: calc.fatorR,
     factorRPercent: calc.fatorRPercent,
+    factorRThreshold: calc.fatorRThreshold,
     isAnexoIII: calc.isAnexoIII,
     annex: calc.effectiveAnnex,
     effectiveRate: calc.effectiveTaxRate,
@@ -467,6 +471,67 @@ export function factorRBadgeLabel(base: Pick<CanonicalFiscalBase, 'status' | 'fa
   if (base.status !== 'AVAILABLE' || base.isAnexoIII === null) return fiscalBaseStatusLabel(base);
   if (!base.isAnexoIII) return 'Abaixo de 28%';
   return (base.factorRPercent ?? 0) > DEFAULT_FATOR_R_THRESHOLD * 100 ? 'Acima de 28%' : 'No limite de 28%';
+}
+
+// ---------------------------------------------------------------------------
+// Progresso do Fator R em relação à meta (barra do Dashboard)
+// ---------------------------------------------------------------------------
+
+export interface FatorRProgress {
+  /** REACHED = já está na faixa do Anexo III · BELOW = ainda abaixo da meta · UNAVAILABLE = sem base fiscal. */
+  state: 'REACHED' | 'BELOW' | 'UNAVAILABLE';
+  percent: number | null;
+  thresholdPercent: number;
+  /** Distância até a meta, em pontos percentuais (1 casa): quanto passou (REACHED) ou quanto falta (BELOW). */
+  diffPoints: number;
+  /** true quando está exatamente na meta (diferença < 0,05 ponto). */
+  atLimit: boolean;
+  /** Fim da escala da barra (%): sempre >= 50 e múltiplo de 10, para o marcador da meta e o valor caberem juntos. */
+  scaleMax: number;
+  /** Posição do valor e do marcador da meta na barra (0–100% da largura). */
+  fillPercent: number;
+  markerPercent: number;
+  /** R$ de folha (FS12) que faltam para atingir a meta, com o RBT12 atual. null fora do estado BELOW. */
+  missingPayroll: number | null;
+}
+
+export function describeFatorRProgress(
+  base: Pick<CanonicalFiscalBase, 'status' | 'factorRPercent' | 'factorRThreshold' | 'isAnexoIII' | 'rbt12' | 'fs12'>
+): FatorRProgress {
+  const thresholdPercent = Number((base.factorRThreshold * 100).toFixed(2));
+  const ok = base.status === 'AVAILABLE' && base.factorRPercent !== null && base.isAnexoIII !== null;
+  const percent = ok ? (base.factorRPercent as number) : null;
+
+  const scaleMax = Math.min(100, Math.max(50, Math.ceil((percent ?? 0) / 10) * 10));
+  const pos = (v: number) => Math.min(100, Math.max(0, (v / scaleMax) * 100));
+  const markerPercent = pos(thresholdPercent);
+
+  if (!ok || percent === null) {
+    return { state: 'UNAVAILABLE', percent: null, thresholdPercent, diffPoints: 0, atLimit: false, scaleMax, fillPercent: 0, markerPercent, missingPayroll: null };
+  }
+
+  const reached = base.isAnexoIII === true;
+  const diffPoints = Number(Math.abs(percent - thresholdPercent).toFixed(1));
+
+  let missingPayroll: number | null = null;
+  if (!reached) {
+    // folha mínima em centavos inteiros: FS12 / RBT12 >= limiar  ⇔  FS12 >= limiar × RBT12
+    const thresholdBps = Math.round(base.factorRThreshold * 10000);
+    const neededCents = Math.ceil((thresholdBps * Math.round(Math.max(0, base.rbt12) * 100)) / 10000);
+    missingPayroll = Math.max(0, neededCents - Math.round(Math.max(0, base.fs12) * 100)) / 100;
+  }
+
+  return {
+    state: reached ? 'REACHED' : 'BELOW',
+    percent,
+    thresholdPercent,
+    diffPoints,
+    atLimit: reached && diffPoints < 0.05,
+    scaleMax,
+    fillPercent: pos(percent),
+    markerPercent,
+    missingPayroll,
+  };
 }
 
 export { isFatorRAtOrAboveThreshold };

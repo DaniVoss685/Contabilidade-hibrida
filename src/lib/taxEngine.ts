@@ -833,6 +833,7 @@ export function calculateSimplesForParameters(
     fs12: safeFs12,
     fatorR,
     fatorRPercent,
+    fatorRThreshold: threshold,
     isAnexoIII,
     effectiveAnnex,
     bracketNumber,

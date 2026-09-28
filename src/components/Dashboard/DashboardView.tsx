@@ -31,9 +31,10 @@ import {
 } from '../../lib/taxEngine';
 import { formatCurrency, formatPercent } from '../../lib/masks';
 import { db } from '../../lib/db';
-import { estimateSimplesFromBase, factorRBadgeLabel, fiscalBaseStatusLabel, formatCompetencyShortName } from '../../lib/fiscalBase';
+import { estimateSimplesFromBase, fiscalBaseStatusLabel, formatCompetencyShortName } from '../../lib/fiscalBase';
 import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { FirstStepsChecklist } from './FirstStepsChecklist';
+import { FatorRProgress } from './FatorRProgress';
 
 interface DashboardViewProps {
   sales: Sale[];
@@ -708,65 +709,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* FATOR R VISUAL PROGRESS BAR GAUGE */}
-            <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-slate-700">Razão Fator R (FS12 ÷ RBT12):</span>
-                <div className="flex items-center gap-1.5">
-                  <span data-testid="pj-factor-r-value" className="font-black text-slate-900 font-mono tabular-nums">
-                    {cnpjTax.available ? formatPercent(cnpjTax.fatorRPercent) : '—'}
-                  </span>
-                  <span
-                    data-testid="pj-factor-r-badge"
-                    className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
-                      !cnpjTax.available
-                        ? 'bg-slate-200 text-slate-700'
-                        : cnpjTax.isAnexoIII
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-amber-100 text-amber-800'
-                    }`}
-                  >
-                    {factorRBadgeLabel(fiscalBase)}
-                  </span>
+            {/* Fator R contra a META (28%): régua única, check quando já bateu, "faltam N pontos" quando não */}
+            <FatorRProgress
+              base={fiscalBase}
+              footer={
+                <div data-testid="pj-base-note" className="text-[10.5px] text-slate-500 leading-snug">
+                  {cnpjTax.available ? (
+                    <>
+                      <strong className="text-slate-700">Base: última competência fechada ({fiscalBaseLabel})</strong>
+                      {fiscalBaseSourceLabel ? ` • ${fiscalBaseSourceLabel}` : ''}
+                      {fiscalBase.isPartialHistory && fiscalBase.source === 'CONTABILEX' ? ' • histórico parcial' : ''}
+                    </>
+                  ) : (
+                    <span>{fiscalBase.reasonMessage}</span>
+                  )}
                 </div>
-              </div>
-
-              {/* Progress track */}
-              <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden relative">
-                <div
-                  className={`h-full rounded-full transition-all duration-300 ${
-                    !cnpjTax.available
-                      ? 'bg-slate-300'
-                      : cnpjTax.isAnexoIII
-                      ? 'bg-emerald-600'
-                      : 'bg-amber-500'
-                  }`}
-                  style={{
-                    width: cnpjTax.available
-                      ? `${Math.min(Math.max(cnpjTax.fatorR * 100, 0), 100)}%`
-                      : '0%',
-                  }}
-                ></div>
-              </div>
-
-              <div className="flex justify-between text-[10.5px] text-slate-400 font-mono">
-                <span>0%</span>
-                <span className="text-slate-600 font-bold">Meta: 28.0% (Anexo III)</span>
-                <span>50%+</span>
-              </div>
-
-              <div data-testid="pj-base-note" className="pt-1.5 mt-0.5 border-t border-slate-200/80 text-[10.5px] text-slate-500 leading-snug">
-                {cnpjTax.available ? (
-                  <>
-                    <strong className="text-slate-700">Base: última competência fechada ({fiscalBaseLabel})</strong>
-                    {fiscalBaseSourceLabel ? ` • ${fiscalBaseSourceLabel}` : ''}
-                    {fiscalBase.isPartialHistory && fiscalBase.source === 'CONTABILEX' ? ' • histórico parcial' : ''}
-                  </>
-                ) : (
-                  <span>{fiscalBase.reasonMessage}</span>
-                )}
-              </div>
-            </div>
+              }
+            />
 
             {/* Progressive Calculation Metrics Strip */}
             <div className="space-y-2 text-xs mt-4">
