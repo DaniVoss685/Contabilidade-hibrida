@@ -458,6 +458,10 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   const defaultDocumentBase = allocations.reduce((t, al) => t + (defaultCoverageMap ? defaultCoverageMap[al.n] ?? al.amount : al.amount), 0);
   const documentEffectiveBase = fiscalPartial ? covered1 + (splitEnabled ? covered2 : 0) : defaultDocumentBase;
   const documentNotApplicable = documentEffectiveBase <= 0.004;
+  // Ajuste manual só faz sentido quando há dinheiro na venda (é a única forma que pode ficar fora do documento).
+  // Pix/cartão/boleto/transferência sempre entram por completo — sem opção de cobertura parcial para eles.
+  const hasCashAllocation = allocations.some((al) => al.method === 'DINHEIRO');
+  const showManualCoverageOption = hasCashAllocation || fiscalPartial;
   const plan2Rows = splitEnabled && a2.isCard && a2.feeRule
     ? planAllocation({ method: method2, amount: amount2, ev: a2, brandBased: Boolean(brand2), saleDate: serviceDate, profile: settlementProfile })
     : null;
@@ -1500,7 +1504,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
 
             {defaultCoverageMap && !fiscalPartial && (
               <div className="mb-3 p-3 rounded-xl bg-indigo-50/60 border border-indigo-200/70 text-[11px] text-indigo-950 leading-relaxed" role="status">
-                Dinheiro {taxOrigin === 'CNPJ' ? 'não gera nota fiscal' : 'sem documento solicitado fica fora do documento e do Carnê-Leão'}: base do documento{' '}
+                Dinheiro {taxOrigin === 'CNPJ' ? 'não gera nota fiscal' : 'sem documento solicitado fica automaticamente fora do documento e do Carnê-Leão'}: base do documento{' '}
                 <strong>{formatCurrency(defaultDocumentBase)}</strong> de <strong>{formatCurrency(totalValue)}</strong>. O valor total continua no faturamento.
                 {documentNotApplicable && <strong> Nenhum documento a emitir nesta venda.</strong>}
               </div>
@@ -1577,54 +1581,72 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
               </div>
             )}
 
-            {/* Cobertura do documento fiscal — independente da forma de pagamento e do faturamento */}
-            <div className="mt-3 p-4 bg-white border border-slate-200 rounded-2xl space-y-3 text-xs">
-              <Switch
-                id="fiscal-partial"
-                checked={fiscalPartial}
-                onChange={handleToggleFiscalPartial}
-                label="O documento cobre somente parte da venda"
-                description="Por padrão o documento cobre o valor total. A escolha é sua e não depende da forma de pagamento."
-                showStatusBadge={false}
-              />
-              {fiscalPartial && (
-                <div className="space-y-3 animate-in fade-in">
-                  <div className={`grid grid-cols-1 ${splitEnabled ? 'sm:grid-cols-2' : ''} gap-3`}>
-                    {allocations.map((al) => (
-                      <CurrencyInput
-                        key={al.n}
-                        label={
-                          splitEnabled
-                            ? `Coberto pelo documento — Pagamento ${al.n} (${paymentOptions.find((o) => o.value === al.method)?.label} • ${formatCurrency(al.amount)})`
-                            : 'Valor do documento fiscal'
-                        }
-                        value={al.n === 1 ? covered1 : covered2}
-                        onChange={(v) => {
-                          if (al.n === 1) setCovered1(v);
-                          else setCovered2(v);
-                          setIsDirty(true);
-                        }}
-                      />
-                    ))}
-                  </div>
-                  {(() => {
-                    const fv = validateFiscalCoverage(totalValue, allocations.map((al) => al.amount), allocations.map((al) => (al.n === 1 ? covered1 : covered2)));
-                    return (
-                      <div
-                        className={`p-3 rounded-xl border flex flex-wrap gap-x-6 gap-y-1 ${fv.ok ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-amber-50 border-amber-300 text-amber-900'}`}
-                        role="status"
+            {/* Cobertura do documento fiscal: 100% automática (dinheiro sem recibo solicitado fica fora,
+                as demais formas sempre entram por completo). Sem dinheiro na venda não há o que ajustar —
+                Pix/cartão/boleto/transferência são sempre integralmente cobertos, então nem mostramos a opção. */}
+            {showManualCoverageOption && (
+              <div className="mt-3">
+                {!fiscalPartial ? (
+                  <button
+                    type="button"
+                    onClick={() => handleToggleFiscalPartial(true)}
+                    className="text-[11px] font-bold text-slate-500 hover:text-slate-700 hover:underline cursor-pointer"
+                  >
+                    + Ajustar cobertura do documento manualmente
+                  </button>
+                ) : (
+                  <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3 text-xs animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-900">Cobertura manual do documento</span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleFiscalPartial(false)}
+                        className="text-[11px] font-bold text-rose-600 hover:underline cursor-pointer"
                       >
-                        <span>Venda: <strong>{formatCurrency(totalValue)}</strong></span>
-                        <span>Documento: <strong>{formatCurrency(fv.total)}</strong></span>
-                        <span>Não coberto pelo documento: <strong>{formatCurrency(Math.max(0, fv.uncovered))}</strong></span>
-                        {!fv.ok && fv.message && <span className="font-bold">{fv.message}</span>}
-                        <span className="w-full text-[10.5px] text-slate-500">O faturamento gerencial continua sendo o valor total da venda.</span>
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
-            </div>
+                        Voltar para o automático
+                      </button>
+                    </div>
+                    <p className="text-[10.5px] text-slate-500 leading-relaxed">
+                      Por padrão o sistema já decide sozinho: dinheiro sem recibo solicitado fica fora do documento, as demais
+                      formas sempre entram por completo. Use isto só se precisar de um valor diferente do padrão.
+                    </p>
+                    <div className={`grid grid-cols-1 ${splitEnabled ? 'sm:grid-cols-2' : ''} gap-3`}>
+                      {allocations.map((al) => (
+                        <CurrencyInput
+                          key={al.n}
+                          label={
+                            splitEnabled
+                              ? `Coberto pelo documento — Pagamento ${al.n} (${paymentOptions.find((o) => o.value === al.method)?.label} • ${formatCurrency(al.amount)})`
+                              : 'Valor do documento fiscal'
+                          }
+                          value={al.n === 1 ? covered1 : covered2}
+                          onChange={(v) => {
+                            if (al.n === 1) setCovered1(v);
+                            else setCovered2(v);
+                            setIsDirty(true);
+                          }}
+                        />
+                      ))}
+                    </div>
+                    {(() => {
+                      const fv = validateFiscalCoverage(totalValue, allocations.map((al) => al.amount), allocations.map((al) => (al.n === 1 ? covered1 : covered2)));
+                      return (
+                        <div
+                          className={`p-3 rounded-xl border flex flex-wrap gap-x-6 gap-y-1 ${fv.ok ? 'bg-slate-50 border-slate-200 text-slate-800' : 'bg-amber-50 border-amber-300 text-amber-900'}`}
+                          role="status"
+                        >
+                          <span>Venda: <strong>{formatCurrency(totalValue)}</strong></span>
+                          <span>Documento: <strong>{formatCurrency(fv.total)}</strong></span>
+                          <span>Não coberto pelo documento: <strong>{formatCurrency(Math.max(0, fv.uncovered))}</strong></span>
+                          {!fv.ok && fv.message && <span className="font-bold">{fv.message}</span>}
+                          <span className="w-full text-[10.5px] text-slate-500">O faturamento gerencial continua sendo o valor total da venda.</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Footer Action Buttons */}
