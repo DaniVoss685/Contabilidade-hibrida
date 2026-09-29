@@ -32,6 +32,7 @@ import {
 import { formatCurrency, formatPercent } from '../../lib/masks';
 import { db } from '../../lib/db';
 import { estimateSimplesFromBase, fiscalBaseStatusLabel, formatCompetencyShortName } from '../../lib/fiscalBase';
+import { getLastClosedCompetence } from '../../lib/statusHelper';
 import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { FirstStepsChecklist } from './FirstStepsChecklist';
 import { FatorRProgress } from './FatorRProgress';
@@ -103,7 +104,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       ? `${effectiveYear}`
       : `${effectiveYear}-${String(effectiveMonth).padStart(2, '0')}`;
 
-  // Calculate CPF Tax
+  // CPF (Carnê-Leão) — dado AO VIVO do mês operacional selecionado (ex.: setembro, em andamento).
+  // Alimenta só o painel "Limite de Isenção" (Atual/Previsto) e a tira de cálculo abaixo dele — nunca
+  // o card de guia/DARF nem o total consolidado (ver cpfTaxDue abaixo, motivo em REGRA DE COMPETÊNCIA).
   const cpfTax = useMemo(() => {
     return calculateCpfMonthlyTax(
       sales,
@@ -120,8 +123,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const appointmentsCount = useMemo(() => db.getAppointments().length, [sales]);
 
   // Simples Nacional (CNPJ): RBT12 / FS12 / Fator R / Anexo / alíquota vêm da BASE FISCAL CANÔNICA
-  // (mesma fonte da tela Motores): a última competência fiscal fechada. O mês operacional selecionado no
-  // Dashboard (ex.: setembro, em andamento) só fornece o faturamento sobre o qual o enquadramento é aplicado.
+  // (mesma fonte da tela Motores): a última competência fiscal fechada.
   const fiscalBase = useFiscalBase({
     professional,
     sales,
@@ -129,22 +131,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     taxRulesSimples,
     year: effectiveYear,
   });
+
+  // REGRA DE COMPETÊNCIA (guia/DARF que efetivamente vence "agora"): tanto o DAS quanto o Carnê-Leão
+  // devidos numa guia têm por base o faturamento/recebimento do mês ANTERIOR ao vencimento — nunca o
+  // faturamento do próprio mês em andamento (LC 123/2006 art. 18 para o DAS; Carnê-Leão vence no
+  // último dia útil do mês seguinte ao recebimento). Por isso o faturamento que entra no DAS usa a
+  // MESMA competência fechada de onde já vem a alíquota (fiscalBase.referenceCompetency — nunca uma
+  // competência diferente da que gerou o Anexo/Fator R), e o Carnê-Leão usa o mês civil fechado mais
+  // recente (getLastClosedCompetence — mesma regra e mesma função que a tela Motores já usa e que
+  // impede o usuário de escolher lá o mês em andamento). O painel "Limite de Isenção" acima continua
+  // com o cpfTax do mês corrente (é um acompanhamento AO VIVO do mês, propósito diferente de "quanto
+  // vence agora").
+  const dueCompetenceStr = getLastClosedCompetence().competenceStr;
+  const cpfTaxDue = useMemo(() => {
+    return calculateCpfMonthlyTax(
+      sales,
+      expenses,
+      dueCompetenceStr,
+      effectiveYear,
+      taxRulesPf,
+      professional.numDependentes,
+      professional.inssProprioMensal
+    );
+  }, [sales, expenses, dueCompetenceStr, effectiveYear, taxRulesPf, professional]);
   const cnpjTax = useMemo(
     () =>
       estimateSimplesFromBase(fiscalBase, {
         sales,
-        revenueCompetence: competenceStr,
+        revenueCompetence: fiscalBase.referenceCompetency,
         year: effectiveYear,
         taxRules: taxRulesSimples,
       }),
-    [fiscalBase, sales, competenceStr, effectiveYear, taxRulesSimples]
+    [fiscalBase, sales, effectiveYear, taxRulesSimples]
   );
   const fiscalBaseLabel = formatCompetencyShortName(fiscalBase.referenceCompetency);
+  const dueCompetenceLabel = formatCompetencyShortName(dueCompetenceStr);
   const fiscalBaseSourceLabel =
     fiscalBase.source === 'CONTABILEX' ? 'Base oficial Contaju' : fiscalBase.source === 'NONE' ? '' : 'Base informada manualmente';
 
-  // Cash flow summaries and unified projection
-  const totalTaxesEstimated = cpfTax.carneLeaoEstimated + cnpjTax.dasEstimated;
+  // Cash flow summaries and unified projection. Impostos = guia/DARF que efetivamente vence agora
+  // (cpfTaxDue/cnpjTax, ambos na competência fechada correspondente) — nunca a provisão do mês em
+  // andamento, coerente com o restante do card ser Realizado (Caixa).
+  const totalTaxesEstimated = cpfTaxDue.carneLeaoEstimated + cnpjTax.dasEstimated;
 
   const projection = useMemo(() => {
     return calculateDashboardProjection({
@@ -385,22 +413,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </span>
             </div>
 
-            {/* Primary Indicator: IRPF Estimado (Solid Teal Highlight) */}
+            {/* Primary Indicator: IRPF Estimado (Solid Teal Highlight). Competência do recebimento = mês
+                anterior ao vencimento (Carnê-Leão vence no último dia útil do mês seguinte ao recebimento) —
+                nunca o mês em andamento mostrado no restante da tela. */}
             <div className="my-5 p-4.5 rounded-2xl bg-teal-600 text-white shadow-sm flex items-center justify-between">
               <div>
                 <span className="text-xs font-bold text-teal-100 uppercase tracking-wider block">
-                  IRPF Estimado a Recolher (Mês):
+                  IRPF Estimado a Recolher:
                 </span>
                 <span className="text-[11px] text-teal-100/80 font-medium mt-0.5 block">
-                  DARF Cód. 0190 • Regime de Caixa Estrito
+                  DARF Cód. 0190 • Sobre recebimentos de {dueCompetenceLabel}
                 </span>
               </div>
               <div className="text-right">
                 <span className="text-2xl font-black text-white font-mono tabular-nums tracking-tight">
-                  {formatCurrency(cpfTax.carneLeaoEstimated)}
+                  {formatCurrency(cpfTaxDue.carneLeaoEstimated)}
                 </span>
                 <span className="block text-[11px] text-teal-200 font-medium mt-0.5">
-                  Alíquota Efetiva: {formatPercent(cpfTax.effectiveTaxRate)}
+                  Alíquota Efetiva: {formatPercent(cpfTaxDue.effectiveTaxRate)}
                 </span>
               </div>
             </div>
@@ -687,14 +717,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </span>
             </div>
 
-            {/* Primary Indicator: DAS Estimado (Solid Blue Highlight) */}
+            {/* Primary Indicator: DAS Estimado (Solid Blue Highlight). Faturamento e alíquota são SEMPRE
+                da mesma competência fechada (fiscalBase.referenceCompetency) — nunca o mês em andamento. */}
             <div className="my-5 p-4.5 rounded-2xl bg-blue-600 text-white shadow-sm flex items-center justify-between">
               <div>
                 <span className="text-xs font-bold text-blue-100 uppercase tracking-wider block">
-                  DAS Estimado do Mês (Simples):
+                  DAS Estimado (Simples):
                 </span>
                 <span className="text-[11px] text-blue-100/80 font-medium mt-0.5 block">
-                  Guia Única DAS • Vencimento dia 20
+                  Guia Única DAS • Vencimento dia 20 • Sobre {fiscalBaseLabel}
                 </span>
               </div>
               <div className="text-right">
@@ -730,7 +761,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {/* Progressive Calculation Metrics Strip */}
             <div className="space-y-2 text-xs mt-4">
               <div className="flex justify-between items-center text-slate-600">
-                <span>Faturamento no Mês (NFS-e):</span>
+                <span>Faturamento em {fiscalBaseLabel} (NFS-e):</span>
                 <span className="font-bold text-slate-900 font-mono tabular-nums">
                   {formatCurrency(cnpjTax.monthlyRevenueNfse)}
                 </span>
@@ -789,7 +820,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex flex-wrap items-center gap-3 shrink-0 bg-slate-50/90 p-3.5 rounded-2xl border border-slate-200/80">
             <div>
               <span className="block text-[10px] uppercase tracking-wider text-slate-400 font-medium">Carnê-Leão (PF)</span>
-              <span className="text-sm font-bold text-emerald-800 font-mono">{formatCurrency(cpfTax.carneLeaoEstimated)}</span>
+              <span className="text-sm font-bold text-emerald-800 font-mono">{formatCurrency(cpfTaxDue.carneLeaoEstimated)}</span>
             </div>
             <div className="text-slate-300 text-base font-bold">+</div>
             <div>
