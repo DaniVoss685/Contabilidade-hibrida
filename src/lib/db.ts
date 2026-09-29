@@ -3587,39 +3587,56 @@ export class DentalFinanceDB {
     }
   }
 
+  // Remoção local de UMA venda: reverte no banco tudo que ela tinha creditado (reconcileBankBalances,
+  // a MESMA rotina de updateSale — nunca uma segunda lógica), filtra, persiste, audita e notifica.
+  // Único ponto usado por deleteSale/deleteSaleAsync/batchDeleteSales — nunca duplicado entre eles.
+  private removeSaleFromState(found: Sale): void {
+    this.reconcileBankBalances(found, undefined);
+    this.sales = this.sales.filter((s) => s.id !== found.id);
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    this.log('EXCLUSAO_RECEITA', 'SALE', found.id, `Receita excluída.`);
+    this.notify();
+  }
+
   public async deleteSaleAsync(id: string): Promise<{ success: boolean; error?: string }> {
+    const found = this.sales.find((s) => s.id === id);
+    if (!found) return { success: false, error: 'Receita não encontrada' };
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
       const res = await SupabaseService.deleteSale(id, this.activeTenantId);
       if (!res.success) {
         return { success: false, error: res.error || 'Erro ao excluir venda no servidor' };
       }
     }
-    this.sales = this.sales.filter((s) => s.id !== id);
-    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
-    this.log('EXCLUSAO_RECEITA', 'SALE', id, `Receita excluída.`);
-    this.notify();
+    this.removeSaleFromState(found);
     return { success: true };
   }
 
   public deleteSale(id: string): boolean {
-    this.deleteSaleAsync(id).catch(console.warn);
-    this.sales = this.sales.filter((s) => s.id !== id);
-    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
-    this.notify();
+    const found = this.sales.find((s) => s.id === id);
+    if (!found) return false;
+    this.removeSaleFromState(found);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      SupabaseService.deleteSale(id, this.activeTenantId).catch(console.warn);
+    }
     return true;
   }
 
   public batchDeleteSales(ids: string[]): number {
     const idSet = new Set(ids);
-    const prevLen = this.sales.length;
+    const toDelete = this.sales.filter((s) => idSet.has(s.id));
+    if (toDelete.length === 0) return 0;
+    // Reverte no banco a contribuição de CADA venda removida antes de persistir (mesma rotina canônica).
+    toDelete.forEach((sale) => this.reconcileBankBalances(sale, undefined));
     this.sales = this.sales.filter((s) => !idSet.has(s.id));
-    const deletedCount = prevLen - this.sales.length;
-    if (deletedCount > 0) {
-      saveItem(STORAGE_KEYS.SALES, this.sales);
-      this.log('EXCLUSAO_RECEITA_LOTE', 'SALE', 'batch', `${deletedCount} receitas excluídas em lote.`);
-      this.notify();
+    saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      // Bug relacionado corrigido aqui: a exclusão em lote nunca chamava o servidor — as vendas
+      // "excluídas" voltavam ao recarregar a página (só saíam do cache local). Agora exclui de fato.
+      toDelete.forEach((sale) => SupabaseService.deleteSale(sale.id, this.activeTenantId).catch(console.warn));
     }
-    return deletedCount;
+    this.log('EXCLUSAO_RECEITA_LOTE', 'SALE', 'batch', `${toDelete.length} receitas excluídas em lote.`);
+    this.notify();
+    return toDelete.length;
   }
 
   public batchUpdateSales(ids: string[], updates: Partial<Sale>): number {
@@ -3643,7 +3660,9 @@ export class DentalFinanceDB {
   // Ajusta o saldo das contas pela DIFERENÇA entre o estado antigo e o novo da venda
   // (parcelas recebidas: banco + valor efetivamente recebido). Edição de forma/conta/valor
   // de um recebimento já liquidado precisa refletir no saldo, como baixa e estorno já fazem.
-  private reconcileBankBalances(oldSale: Sale | undefined, newSale: Sale): void {
+  // newSale undefined = venda excluída (toda a contribuição dela reverte para 0) — MESMA rotina
+  // usada por updateSale, agora também por delete/exclusão em lote (nunca uma lógica paralela).
+  private reconcileBankBalances(oldSale: Sale | undefined, newSale: Sale | undefined): void {
     const contribution = (sale: Sale | undefined) => receivedByAccount(sale?.installments || []);
     const before = contribution(oldSale);
     const after = contribution(newSale);
@@ -3882,7 +3901,8 @@ export class DentalFinanceDB {
   public deleteReceivableInstallment(installmentId: string): boolean {
     let affected = false;
     const updatedSales: Sale[] = [];
-    let removedSaleId: string | null = null;
+    let removedSale: Sale | null = null;
+    let originalSale: Sale | null = null;
     let modifiedSale: Sale | null = null;
 
     for (const sale of this.sales) {
@@ -3897,7 +3917,7 @@ export class DentalFinanceDB {
 
       // Se a venda não tem mais nenhuma parcela, exclui a venda
       if (remainingInstallments.length === 0) {
-        removedSaleId = sale.id;
+        removedSale = sale;
         this.log('EXCLUSAO_RECEIVABLE', 'INSTALLMENT', installmentId, `Última parcela da venda "${sale.procedureName}" excluída. Venda removida.`);
         continue;
       }
@@ -3911,6 +3931,7 @@ export class DentalFinanceDB {
 
       const newTotalValue = renumbered.reduce((sum, inst) => sum + inst.value, 0);
 
+      originalSale = sale;
       modifiedSale = {
         ...sale,
         totalValue: newTotalValue,
@@ -3928,11 +3949,16 @@ export class DentalFinanceDB {
     }
 
     if (affected) {
+      // A parcela excluída pode já estar RECEBIDA (vinculada a uma conta bancária) — reverte no
+      // banco antes de persistir, mesma rotina canônica de updateSale (reconcileBankBalances).
+      if (removedSale) this.reconcileBankBalances(removedSale, undefined);
+      if (modifiedSale) this.reconcileBankBalances(originalSale || undefined, modifiedSale);
+
       this.sales = updatedSales;
       saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
       if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
-        if (removedSaleId) {
-          SupabaseService.deleteSale(removedSaleId, this.activeTenantId).catch(console.warn);
+        if (removedSale) {
+          SupabaseService.deleteSale(removedSale.id, this.activeTenantId).catch(console.warn);
         } else if (modifiedSale) {
           SupabaseService.saveSale(modifiedSale, this.activeTenantId).catch(console.warn);
         }
@@ -3947,8 +3973,9 @@ export class DentalFinanceDB {
     const idSet = new Set(installmentIds);
     let deletedCount = 0;
     const updatedSales: Sale[] = [];
-    const removedSaleIds: string[] = [];
+    const removedSales: Sale[] = [];
     const changedSales: Sale[] = [];
+    const changedPairs: Array<{ old: Sale; upd: Sale }> = [];
 
     for (const sale of this.sales) {
       const matched = sale.installments.filter((inst) => idSet.has(inst.id));
@@ -3961,7 +3988,7 @@ export class DentalFinanceDB {
       const remaining = sale.installments.filter((inst) => !idSet.has(inst.id));
 
       if (remaining.length === 0) {
-        removedSaleIds.push(sale.id);
+        removedSales.push(sale);
         continue; // Venda inteira removida
       }
 
@@ -3980,14 +4007,20 @@ export class DentalFinanceDB {
         installments: renumbered,
       };
       changedSales.push(upd);
+      changedPairs.push({ old: sale, upd });
       updatedSales.push(upd);
     }
 
     if (deletedCount > 0) {
+      // Qualquer parcela excluída que já estivesse RECEBIDA reverte no banco antes de persistir —
+      // mesma rotina canônica de updateSale (reconcileBankBalances), uma vez por venda afetada.
+      removedSales.forEach((sale) => this.reconcileBankBalances(sale, undefined));
+      changedPairs.forEach(({ old, upd }) => this.reconcileBankBalances(old, upd));
+
       this.sales = updatedSales;
       saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
       if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
-        removedSaleIds.forEach((id) => SupabaseService.deleteSale(id, this.activeTenantId).catch(console.warn));
+        removedSales.forEach((sale) => SupabaseService.deleteSale(sale.id, this.activeTenantId).catch(console.warn));
         changedSales.forEach((s) => SupabaseService.saveSale(s, this.activeTenantId).catch(console.warn));
       }
       this.log(
@@ -5344,6 +5377,9 @@ export class DentalFinanceDB {
         const sale = this.sales.find((s) => s.id === apt.saleId);
         const hasReceived = sale?.installments.some((i) => i.status === 'RECEBIDO');
         if (sale && !hasReceived) {
+          // Sem parcela recebida a reconciliação é sempre um no-op — mantido por consistência
+          // com a mesma rotina canônica usada em qualquer outra remoção de venda.
+          this.reconcileBankBalances(sale, undefined);
           this.sales = this.sales.filter((s) => s.id !== apt.saleId);
           saveItem(STORAGE_KEYS.SALES, this.sales, this.activeTenantId);
           SupabaseService.deleteSale(apt.saleId, this.activeTenantId).catch(console.error);
