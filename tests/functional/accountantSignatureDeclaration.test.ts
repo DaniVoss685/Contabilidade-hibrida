@@ -71,8 +71,12 @@ console.log('\n=== 5. Declaração (Relatórios) — gate Contábilex ATIVO e fo
   assert(!code.includes('sumCnpjRevenueForCompetence') && !/\bsales\s*\.\s*reduce/.test(code), 'não recalcula faturamento a partir dos lançamentos do Dental Finance (evita divergir do que o contador assinou)');
   assert(code.includes('AccountantSignatureService.isComplete(signature)') && code.includes('signatureReady'), 'só mostra bloco de assinatura quando está genuinamente completa (nunca <img> quebrada nem nome sem imagem)');
   assert(code.includes('Assinatura do contador pendente de configuração'), 'quando falta a assinatura, o documento avisa em vez de fingir que está assinado');
-  assert(code.includes('disabled={snapshots.length === 0 || !signatureReady}'), 'botão de imprimir/baixar fica desabilitado sem dado ou sem assinatura completa');
-  assert(code.includes('@media print') && code.includes('declaracao-print-area') && code.includes('declaracao-no-print'), 'CSS de impressão isola só o documento (esconde o resto da aplicação ao imprimir/salvar PDF)');
+  assert((code.match(/disabled=\{snapshots\.length === 0 \|\| !signatureReady\}/g) || []).length === 2, 'os DOIS botões (Imprimir e Salvar PDF) ficam desabilitados sem dado ou sem assinatura completa');
+  assert(code.includes('@media print') && code.includes('declaracao-print-area') && code.includes('declaracao-no-print'), 'CSS de impressão isola só o documento (esconde o resto da aplicação ao imprimir)');
+  assert(code.includes("import jsPDF from 'jspdf'") && code.includes('new jsPDF('), 'Salvar PDF gera um PDF de verdade (jsPDF), não depende do diálogo de impressão do navegador');
+  assert(code.includes('doc.save(') , 'PDF é baixado direto (doc.save) — clique único, sem escolher "Salvar como PDF" na caixa de impressão');
+  assert(code.includes('doc.addImage(signature.signatureImageDataUrl') && code.includes('doc.getImageProperties('), 'assinatura (PNG cadastrado) é embutida de verdade no PDF, não só no preview em tela');
+  assert(code.includes("doc.splitTextToSize(declText"), 'texto da declaração quebra linha automaticamente no PDF (não corta nem estoura a margem)');
 }
 
 console.log('\n=== 6. Integração no Relatórios — gated, sem quebrar os relatórios existentes ===');

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Download, FileCheck2, Loader2, AlertCircle, ShieldAlert } from 'lucide-react';
+import jsPDF from 'jspdf';
+import { Download, Printer, FileCheck2, Loader2, AlertCircle, ShieldAlert } from 'lucide-react';
 import { Professional } from '../../types';
 import { CanonicalFiscalBase, formatCompetencyShortName } from '../../lib/fiscalBase';
 import { ContabilexSnapshotPayload } from '../../types/contabilexIntegration';
@@ -91,6 +92,144 @@ export const DeclaracaoFaturamentoView: React.FC<DeclaracaoFaturamentoViewProps>
   const regimeLabel = professional.regimeTributario === 'LUCRO_PRESUMIDO' ? 'Lucro Presumido' : 'Simples Nacional';
   const issuedDate = new Date(issuedAt);
 
+  // Gera o PDF direto (sem passar pelo diálogo de impressão do navegador) — a maior parte dos
+  // clientes usa este documento para enviar a bancos, então o pedido é "baixar", não "imprimir".
+  // Desenhado com a API nativa do jsPDF (texto/linhas/retângulos), não uma captura de tela do HTML
+  // (html2canvas): fica um PDF real, com texto selecionável, nítido em qualquer zoom, e bem menor.
+  const handleSavePdf = () => {
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const marginX = 22;
+    const contentWidth = pageWidth - marginX * 2;
+    let y = 24;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(15, 23, 42);
+    doc.text('DECLARAÇÃO DE FATURAMENTO', pageWidth / 2, y, { align: 'center' });
+    y += 6;
+    doc.text('DOS ÚLTIMOS 12 MESES', pageWidth / 2, y, { align: 'center' });
+    y += 12;
+
+    // Bloco Empresa / CNPJ / Regime
+    const boxH = 26;
+    doc.setDrawColor(226, 232, 240);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(marginX, y, contentWidth, boxH, 2, 2, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(148, 163, 184);
+    doc.text('EMPRESA / RAZÃO SOCIAL', pageWidth / 2, y + 7, { align: 'center' });
+    doc.setFontSize(12);
+    doc.setTextColor(15, 23, 42);
+    doc.text(razaoSocial, pageWidth / 2, y + 14, { align: 'center' });
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(148, 163, 184);
+    doc.text('CNPJ', marginX + contentWidth * 0.3, y + 20, { align: 'center' });
+    doc.text('REGIME TRIBUTÁRIO', marginX + contentWidth * 0.7, y + 20, { align: 'center' });
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(51, 65, 85);
+    doc.text(professional.cnpj || '—', marginX + contentWidth * 0.3, y + 24.5, { align: 'center' });
+    doc.setFont('helvetica', 'bold');
+    doc.text(regimeLabel, marginX + contentWidth * 0.7, y + 24.5, { align: 'center' });
+    y += boxH + 9;
+
+    // Tabela mês a mês
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text('MÊS / ANO DE COMPETÊNCIA', marginX, y);
+    doc.text('VALOR FATURADO (BRUTO)', marginX + contentWidth, y, { align: 'right' });
+    y += 2.5;
+    doc.setDrawColor(203, 213, 225);
+    doc.line(marginX, y, marginX + contentWidth, y);
+    y += 6;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9.5);
+    snapshots.forEach((s, idx) => {
+      if (idx > 0) {
+        doc.setDrawColor(241, 245, 249);
+        doc.line(marginX, y - 4, marginX + contentWidth, y - 4);
+      }
+      doc.setTextColor(51, 65, 85);
+      doc.text(formatCompetencyShortName(s.competency), marginX, y);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(15, 23, 42);
+      doc.text(formatCurrency(s.gross_revenue || 0), marginX + contentWidth, y, { align: 'right' });
+      doc.setFont('helvetica', 'normal');
+      y += 6.5;
+    });
+    y += 3;
+
+    // Total acumulado
+    const totalBarH = 11;
+    doc.setFillColor(15, 23, 42);
+    doc.roundedRect(marginX, y, contentWidth, totalBarH, 1.5, 1.5, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(255, 255, 255);
+    doc.text(`FATURAMENTO TOTAL ACUMULADO (${snapshots.length} MESES)`, marginX + 4, y + totalBarH / 2 + 1.3);
+    doc.setFontSize(11);
+    doc.text(formatCurrency(total), marginX + contentWidth - 4, y + totalBarH / 2 + 1.3, { align: 'right' });
+    y += totalBarH + 10;
+
+    // Texto da declaração
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    const declText =
+      'Declaramos, para os devidos fins de direito, que as informações acima transcritas guardam estrita ' +
+      'conformidade com os registros contábeis e fiscais desta empresa, sob nossa responsabilidade técnica.';
+    const declLines = doc.splitTextToSize(declText, contentWidth * 0.82);
+    declLines.forEach((line: string, i: number) => {
+      doc.text(line, pageWidth / 2, y + i * 4.6, { align: 'center' });
+    });
+    y += declLines.length * 4.6 + 10;
+
+    // Assinatura
+    if (signatureReady && signature?.signatureImageDataUrl) {
+      try {
+        const imgProps = doc.getImageProperties(signature.signatureImageDataUrl);
+        const imgW = 42;
+        const imgH = Math.min(22, (imgProps.height / imgProps.width) * imgW);
+        doc.addImage(signature.signatureImageDataUrl, imgProps.fileType, pageWidth / 2 - imgW / 2, y, imgW, imgH);
+        y += imgH + 3;
+      } catch {
+        // Imagem em formato não suportado pelo jsPDF (ex.: webp) — segue sem travar o PDF; a
+        // validação de upload já restringe a PNG/JPG, então isto é só uma rede de segurança.
+      }
+      doc.setDrawColor(148, 163, 184);
+      doc.line(pageWidth / 2 - 28, y, pageWidth / 2 + 28, y);
+      y += 5;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+      doc.text(signature.accountantName, pageWidth / 2, y, { align: 'center' });
+      y += 5;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(180, 83, 9);
+      doc.text(`${signature.crcRegistration} • CPF: ${signature.accountantCpf}`, pageWidth / 2, y, { align: 'center' });
+      y += 10;
+    }
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(148, 163, 184);
+    doc.text(
+      `Emitido em ${issuedDate.toLocaleDateString('pt-BR')} às ${issuedDate.toLocaleTimeString('pt-BR')}`,
+      pageWidth / 2,
+      y,
+      { align: 'center' }
+    );
+
+    const safeName = razaoSocial.replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_+|_+$/g, '');
+    doc.save(`Declaracao-Faturamento-${safeName}-${issuedDate.toISOString().slice(0, 10)}.pdf`);
+  };
+
   return (
     <div className="space-y-4">
       <style>{`
@@ -109,14 +248,24 @@ export const DeclaracaoFaturamentoView: React.FC<DeclaracaoFaturamentoViewProps>
             Faturamento oficial já publicado pelo Contábilex • Base: {formatCompetencyShortName(fiscalBase.referenceCompetency)}
           </p>
         </div>
-        <button
-          onClick={handlePrint}
-          disabled={snapshots.length === 0 || !signatureReady}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-sm transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <Download className="w-4 h-4" />
-          <span>Imprimir / Salvar PDF</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handlePrint}
+            disabled={snapshots.length === 0 || !signatureReady}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Imprimir</span>
+          </button>
+          <button
+            onClick={handleSavePdf}
+            disabled={snapshots.length === 0 || !signatureReady}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-sm transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download className="w-4 h-4" />
+            <span>Salvar PDF</span>
+          </button>
+        </div>
       </div>
 
       {snapshotsError && (
