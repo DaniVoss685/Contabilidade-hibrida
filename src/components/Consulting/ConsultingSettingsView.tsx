@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Building2,
   ShieldCheck,
@@ -14,9 +14,14 @@ import {
   AlertCircle,
   ExternalLink,
   Wifi,
+  PenTool,
+  Upload,
+  X,
 } from 'lucide-react';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
+import { AccountantSignatureService } from '../../services/accountantSignatureService';
 import { db } from '../../lib/db';
+import { maskCpfInput } from '../../lib/masks';
 
 export const ConsultingSettingsView: React.FC = () => {
   const currentSession = db.getCurrentSession();
@@ -38,9 +43,86 @@ export const ConsultingSettingsView: React.FC = () => {
     null
   );
 
+  // Estados da Assinatura do Contador (Declaração de Faturamento — clientes com Contábilex ativo)
+  const canEditSignature = Boolean(currentSession?.user?.isPrimary || currentSession?.user?.role === 'SUPER_ADMIN');
+  const [accountantName, setAccountantName] = useState('');
+  const [crcRegistration, setCrcRegistration] = useState('');
+  const [accountantCpf, setAccountantCpf] = useState('');
+  const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
+  const [signatureUpdatedAt, setSignatureUpdatedAt] = useState<string | null>(null);
+  const [signatureUpdatedByName, setSignatureUpdatedByName] = useState<string | null>(null);
+  const [loadingSignature, setLoadingSignature] = useState(true);
+  const [savingSignature, setSavingSignature] = useState(false);
+  const [signatureFeedback, setSignatureFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const signatureFileInputRef = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     loadGlobalConfig();
+    loadSignatureConfig();
   }, [currentTenantId]);
+
+  const loadSignatureConfig = async () => {
+    setLoadingSignature(true);
+    try {
+      const { config, error } = await AccountantSignatureService.getConfig();
+      setAccountantName(config.accountantName);
+      setCrcRegistration(config.crcRegistration);
+      setAccountantCpf(config.accountantCpf);
+      setSignatureDataUrl(config.signatureImageDataUrl);
+      setSignatureUpdatedAt(config.updatedAt);
+      setSignatureUpdatedByName(config.updatedByName);
+      if (error) console.warn('[ConsultingSettingsView] Erro ao carregar assinatura do contador:', error);
+    } catch (err: any) {
+      console.warn('[ConsultingSettingsView] Erro ao carregar assinatura do contador:', err);
+    } finally {
+      setLoadingSignature(false);
+    }
+  };
+
+  const handleSignatureFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!/^image\/(png|jpeg)$/.test(file.type)) {
+      setSignatureFeedback({ type: 'error', message: 'Envie a assinatura como imagem PNG ou JPG.' });
+      return;
+    }
+    if (file.size > 500 * 1024) {
+      setSignatureFeedback({ type: 'error', message: 'Imagem grande demais (máx. 500 KB) — recorte só a assinatura antes de enviar.' });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSignatureDataUrl(typeof reader.result === 'string' ? reader.result : null);
+      setSignatureFeedback(null);
+    };
+    reader.onerror = () => setSignatureFeedback({ type: 'error', message: 'Não foi possível ler o arquivo da assinatura.' });
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveSignature = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!accountantName.trim() || !crcRegistration.trim() || !accountantCpf.trim() || !signatureDataUrl) {
+      setSignatureFeedback({ type: 'error', message: 'Preencha nome, CRC, CPF e envie a imagem da assinatura antes de salvar.' });
+      return;
+    }
+    setSavingSignature(true);
+    setSignatureFeedback(null);
+    try {
+      const res = await AccountantSignatureService.saveConfig(
+        { accountantName, crcRegistration, accountantCpf, signatureImageDataUrl: signatureDataUrl },
+        { userId: currentSession?.user?.id, userName: currentSession?.user?.name }
+      );
+      if (!res.success) throw new Error(res.error || 'Falha ao salvar a assinatura do contador.');
+      setSignatureFeedback({ type: 'success', message: 'Assinatura salva — vale para todas as clínicas com Contábilex ativo.' });
+      setSignatureUpdatedAt(new Date().toISOString());
+      setSignatureUpdatedByName(currentSession?.user?.name || null);
+    } catch (err: any) {
+      setSignatureFeedback({ type: 'error', message: err?.message || 'Erro ao salvar a assinatura do contador.' });
+    } finally {
+      setSavingSignature(false);
+    }
+  };
 
   const loadGlobalConfig = async () => {
     setLoadingConfig(true);
@@ -374,6 +456,173 @@ export const ConsultingSettingsView: React.FC = () => {
                   <span>{savingConfig ? 'Salvando...' : 'Salvar Configuração Global'}</span>
                 </button>
               </div>
+            </div>
+          </form>
+        )}
+      </div>
+
+      {/* ASSINATURA DO CONTADOR — usada na Declaração de Faturamento (clientes com Contábilex ativo) */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4 mb-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl bg-amber-500 text-white shadow-xs">
+              <PenTool className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-900">
+                Assinatura do Contador (Declaração de Faturamento)
+              </h3>
+              <p className="text-xs text-slate-500">
+                Usada quando o cliente (com integração Contábilex ativa) emite sozinho a declaração de faturamento
+                para bancos — mesmo nome/CRC/CPF/imagem em uso hoje no Contábilex.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {signatureFeedback && (
+          <div
+            className={`p-3.5 rounded-xl text-xs mb-5 flex items-start gap-2.5 ${
+              signatureFeedback.type === 'success'
+                ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
+                : 'bg-rose-50 border border-rose-200 text-rose-800'
+            }`}
+          >
+            {signatureFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            )}
+            <span>{signatureFeedback.message}</span>
+          </div>
+        )}
+
+        {loadingSignature ? (
+          <div className="py-8 flex flex-col items-center justify-center text-center">
+            <RefreshCw className="w-6 h-6 text-emerald-600 animate-spin mb-2" />
+            <p className="text-xs text-slate-400">Carregando assinatura do contador...</p>
+          </div>
+        ) : !canEditSignature ? (
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600">
+            Só a conta primária do escritório pode cadastrar ou alterar a assinatura do contador.
+            {AccountantSignatureService.isComplete({
+              accountantName,
+              crcRegistration,
+              accountantCpf,
+              signatureImageDataUrl: signatureDataUrl,
+              updatedAt: signatureUpdatedAt,
+              updatedByName: signatureUpdatedByName,
+            }) ? (
+              <>
+                {' '}Hoje configurada para <strong>{accountantName}</strong> ({crcRegistration}).
+              </>
+            ) : (
+              ' Ainda não configurada.'
+            )}
+          </div>
+        ) : (
+          <form onSubmit={handleSaveSignature} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">Nome do Contador(a):</label>
+                <input
+                  type="text"
+                  value={accountantName}
+                  onChange={(e) => setAccountantName(e.target.value)}
+                  placeholder="Ex.: Priscila Souza Lima"
+                  required
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500 transition-all"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">CRC / Registro:</label>
+                <input
+                  type="text"
+                  value={crcRegistration}
+                  onChange={(e) => setCrcRegistration(e.target.value)}
+                  placeholder="Ex.: CRC/MG 121807/O"
+                  required
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500 font-mono transition-all"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">CPF do Contador(a):</label>
+                <input
+                  type="text"
+                  value={accountantCpf}
+                  onChange={(e) => setAccountantCpf(maskCpfInput(e.target.value))}
+                  placeholder="000.000.000-00"
+                  required
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500 font-mono transition-all"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">Prévia da assinatura:</label>
+              <input
+                ref={signatureFileInputRef}
+                type="file"
+                accept="image/png,image/jpeg"
+                className="hidden"
+                onChange={handleSignatureFileChange}
+              />
+              {signatureDataUrl ? (
+                <div className="inline-flex flex-col gap-2">
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl inline-block">
+                    <img src={signatureDataUrl} alt="Prévia da assinatura do contador" className="h-20 object-contain" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => signatureFileInputRef.current?.click()}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      Alterar Assinatura
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSignatureDataUrl(null)}
+                      className="px-2.5 py-1.5 text-rose-600 hover:bg-rose-50 text-[11px] font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      Remover
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => signatureFileInputRef.current?.click()}
+                  className="w-full sm:w-auto px-4 py-3 border-2 border-dashed border-slate-300 hover:border-emerald-400 rounded-xl text-xs font-bold text-slate-500 hover:text-emerald-700 transition-colors cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <Upload className="w-4 h-4" />
+                  Enviar imagem da assinatura (PNG ou JPG, fundo transparente/branco)
+                </button>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <span className="text-[11px] text-slate-400">
+                {signatureUpdatedAt ? (
+                  <>
+                    Última atualização: {new Date(signatureUpdatedAt).toLocaleString('pt-BR')}
+                    {signatureUpdatedByName ? ` por ${signatureUpdatedByName}` : ''}
+                  </>
+                ) : (
+                  <>Configuração inicial pendente</>
+                )}
+              </span>
+
+              <button
+                type="submit"
+                disabled={savingSignature}
+                className="w-full sm:w-auto px-5 py-2.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{savingSignature ? 'Salvando...' : 'Salvar para Todas as Clínicas'}</span>
+              </button>
             </div>
           </form>
         )}

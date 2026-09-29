@@ -31,6 +31,7 @@ import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { formatCurrency, formatCpf, formatDateBr, formatPercent } from '../../lib/masks';
 import { exportToCsv } from '../../lib/exportUtils';
 import { PeriodPicker, useToast } from '../UI';
+import { DeclaracaoFaturamentoView } from './DeclaracaoFaturamentoView';
 
 interface ReportsViewProps {
   sales: Sale[];
@@ -51,6 +52,7 @@ type ReportType =
   | 'LIVRO_CAIXA_PF'
   | 'RELATORIO_CONTADOR'
   | 'EXTRATO_FATURAMENTO_CNPJ'
+  | 'DECLARACAO_FATURAMENTO'
   | 'DESPESAS_ATRIBUTO'
   | 'DOCS_PENDENTES'
   | 'DRE_GERENCIAL'
@@ -161,6 +163,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       id: 'EXTRATO_FATURAMENTO_CNPJ',
       title: '3. Extrato de Faturamento CNPJ (Simples Nacional)',
       subtitle: 'Relação de NFS-e emitidas, RBT12, FS12 e cálculo do Fator R',
+    },
+    {
+      id: 'DECLARACAO_FATURAMENTO',
+      title: '3.1 Declaração de Faturamento dos Últimos 12 Meses',
+      subtitle: 'Documento pronto para banco, já assinado pelo contador — só com Contábilex ativo',
     },
     {
       id: 'DRE_GERENCIAL',
@@ -286,13 +293,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             allowAllMonths={true}
           />
 
-          <button
-            onClick={handleExportCsv}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-sm transition-all cursor-pointer"
-          >
-            <Download className="w-4 h-4" />
-            <span>Exportar CSV / Excel</span>
-          </button>
+          {selectedReport !== 'DECLARACAO_FATURAMENTO' && (
+            <button
+              onClick={handleExportCsv}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 shadow-sm transition-all cursor-pointer"
+            >
+              <Download className="w-4 h-4" />
+              <span>Exportar CSV / Excel</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -527,10 +536,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </div>
           )}
 
+          {selectedReport === 'DECLARACAO_FATURAMENTO' && (
+            <DeclaracaoFaturamentoView professional={professional} fiscalBase={fiscalBase} />
+          )}
+
           {/* Other reports preview fallback */}
           {selectedReport !== 'LIVRO_CAIXA_PF' &&
             selectedReport !== 'RELATORIO_CONTADOR' &&
-            selectedReport !== 'DRE_GERENCIAL' && (
+            selectedReport !== 'DRE_GERENCIAL' &&
+            selectedReport !== 'DECLARACAO_FATURAMENTO' && (
               <div className="space-y-4">
                 <h3 className="text-base font-bold text-slate-900">
                   {reportOptions.find((r) => r.id === selectedReport)?.title}
