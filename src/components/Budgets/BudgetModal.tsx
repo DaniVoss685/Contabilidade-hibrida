@@ -196,8 +196,8 @@ export const BudgetModal: React.FC<BudgetModalProps> = ({ isOpen, onClose, budge
             ) : (
               <div className="space-y-2.5">
                 {items.map((item) => (
-                  <div key={item.id} className="p-3 rounded-xl border border-slate-200 bg-slate-50/60 grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
-                    <div className="sm:col-span-4">
+                  <div key={item.id} className="p-3 rounded-xl border border-slate-200 bg-slate-50/60 grid grid-cols-1 sm:grid-cols-12 gap-2 sm:gap-2.5 items-end">
+                    <div className="sm:col-span-3 min-w-0">
                       <label className="block text-[10px] font-semibold text-slate-500 mb-1">Procedimento</label>
                       <CustomSelect
                         options={procedureOptions}
@@ -215,7 +215,7 @@ export const BudgetModal: React.FC<BudgetModalProps> = ({ isOpen, onClose, budge
                         />
                       )}
                     </div>
-                    <div className="sm:col-span-3">
+                    <div className="sm:col-span-3 min-w-0">
                       <label className="block text-[10px] font-semibold text-slate-500 mb-1">Profissional</label>
                       <CustomSelect
                         options={[{ value: '', label: 'Não definido' }, ...professionalOptions]}
@@ -226,7 +226,7 @@ export const BudgetModal: React.FC<BudgetModalProps> = ({ isOpen, onClose, budge
                         }}
                       />
                     </div>
-                    <div className="sm:col-span-1">
+                    <div className="sm:col-span-1 min-w-0">
                       <label className="block text-[10px] font-semibold text-slate-500 mb-1">Qtd.</label>
                       <input
                         type="number"
@@ -236,13 +236,17 @@ export const BudgetModal: React.FC<BudgetModalProps> = ({ isOpen, onClose, budge
                         className="w-full text-xs rounded-lg border border-slate-200 px-2 py-1.5 text-center"
                       />
                     </div>
-                    <div className="sm:col-span-2">
+                    <div className="sm:col-span-2 min-w-0">
                       <label className="block text-[10px] font-semibold text-slate-500 mb-1">Valor unit.</label>
                       <CurrencyInput value={item.unitPrice} onChange={(v) => handleItemChange(item.id, { unitPrice: v })} />
                     </div>
-                    <div className="sm:col-span-1 text-right">
+                    {/* Total do item: largura própria (col-span-2, min-w garantido) e whitespace-nowrap —
+                        nunca deixar o navegador quebrar "R$ 1.257,14" no meio do número (ver BudgetModal
+                        no relatório de auditoria: o `body` global tem overflow-wrap: anywhere, que só não
+                        se aplica dentro de table/input/textarea; nowrap é o que garante isso aqui). */}
+                    <div className="sm:col-span-2 min-w-[92px] text-right">
                       <label className="block text-[10px] font-semibold text-slate-500 mb-1">Total</label>
-                      <span className="text-xs font-bold text-slate-800">{formatCurrency(item.totalPrice)}</span>
+                      <span className="text-xs font-bold text-slate-800 whitespace-nowrap tabular-nums">{formatCurrency(item.totalPrice)}</span>
                     </div>
                     <div className="sm:col-span-1 flex justify-end">
                       <button type="button" onClick={() => handleRemoveItem(item.id)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer">
@@ -303,19 +307,19 @@ export const BudgetModal: React.FC<BudgetModalProps> = ({ isOpen, onClose, budge
           </div>
 
           <div className="p-4 bg-indigo-50/60 rounded-xl border border-indigo-100 space-y-1">
-            <div className="flex justify-between text-xs text-slate-600">
+            <div className="flex justify-between gap-3 text-xs text-slate-600">
               <span>Subtotal</span>
-              <span className="font-mono">{formatCurrency(totals.subtotal)}</span>
+              <span className="font-mono whitespace-nowrap tabular-nums">{formatCurrency(totals.subtotal)}</span>
             </div>
             {totals.discountAmount > 0 && (
-              <div className="flex justify-between text-xs text-rose-600">
+              <div className="flex justify-between gap-3 text-xs text-rose-600">
                 <span>Desconto</span>
-                <span className="font-mono">- {formatCurrency(totals.discountAmount)}</span>
+                <span className="font-mono whitespace-nowrap tabular-nums">- {formatCurrency(totals.discountAmount)}</span>
               </div>
             )}
-            <div className="flex justify-between text-sm font-bold text-slate-900 pt-1 border-t border-indigo-200/60">
+            <div className="flex justify-between gap-3 text-sm font-bold text-slate-900 pt-1 border-t border-indigo-200/60">
               <span>Total</span>
-              <span className="font-mono">{formatCurrency(totals.total)}</span>
+              <span className="font-mono whitespace-nowrap tabular-nums">{formatCurrency(totals.total)}</span>
             </div>
           </div>
         </div>

@@ -663,7 +663,9 @@ export interface Sale {
   createdAt: string;
   notes?: string;
   appointmentId?: string;
-  origin?: 'AGENDA' | 'MANUAL';
+  /** Orçamento de origem, quando a venda nasceu de uma conversão (aba Orçamentos). */
+  budgetId?: string;
+  origin?: 'AGENDA' | 'MANUAL' | 'ORCAMENTO';
   originalEstimatedValue?: number;
   priceHistory?: Array<{ date: string; from: number; to: number; note?: string }>;
 }
@@ -689,7 +691,7 @@ export interface AccountReceivableItem {
   totalInstallments: number;
   notes?: string;
   appointmentId?: string;
-  origin?: 'AGENDA' | 'MANUAL';
+  origin?: 'AGENDA' | 'MANUAL' | 'ORCAMENTO';
   serviceDate?: string;
   cardFeePercent?: number;
   cardFeeAmount?: number;
@@ -1049,6 +1051,10 @@ export interface Appointment {
   sendWhatsappReminder?: boolean;
   origin?: AppointmentOrigin;
   saleId?: string;
+  /** Orçamento que originou este agendamento (ação "Agendar tratamento"), quando aplicável. Um
+   * orçamento pode ter N consultas vinculadas — este campo vive só do lado do Appointment, sem
+   * precisar de tabela de junção nem de um campo "N" equivalente no Budget. */
+  budgetId?: string;
 
   // Rescheduling & Attendance Link
   rescheduledToId?: string;

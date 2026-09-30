@@ -1,16 +1,19 @@
 import React, { useMemo, useState } from 'react';
-import jsPDF from 'jspdf';
-import { ClipboardList, Plus, Search, Printer, ArrowRightCircle, ExternalLink, MessageCircle, Trash2, Pencil } from 'lucide-react';
+import { ClipboardList, Plus, Search, Printer, ArrowRightCircle, ExternalLink, MessageCircle, Trash2, Pencil, Eye, CalendarClock, User } from 'lucide-react';
 import { db } from '../../lib/db';
 import { Budget, BudgetStatus } from '../../types';
-import { BUDGET_STATUS_LABELS, canConvertToSale, isPastValidity } from '../../lib/budgets';
+import { BUDGET_STATUS_LABELS, canConvertToSale, isPastValidity, summarizeBudgetItemNames } from '../../lib/budgets';
+import { generateBudgetPdf, getBudgetDisplayCode } from '../../lib/budgetPdf';
 import { formatCurrency, formatDateBr } from '../../lib/masks';
 import { CustomSelect, ConfirmDialog, useToast } from '../UI';
 import { BudgetModal } from './BudgetModal';
+import { BudgetDetailModal } from './BudgetDetailModal';
 
 interface BudgetsViewProps {
   activeTenantId?: string;
   onConvertToSale: (budget: Budget) => void;
+  onViewSale: (budget: Budget) => void;
+  onAgendarTratamento: (budget: Budget) => void;
   onNavigateToWhatsApp?: (patientId: string) => void;
 }
 
@@ -23,7 +26,7 @@ const STATUS_BADGE: Record<BudgetStatus, string> = {
   CONVERTIDO: 'bg-indigo-100 text-indigo-800 border-indigo-200',
 };
 
-export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNavigateToWhatsApp }) => {
+export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onViewSale, onAgendarTratamento, onNavigateToWhatsApp }) => {
   const toast = useToast();
   const [budgets, setBudgets] = useState<Budget[]>(() => db.getBudgets());
   const [searchTerm, setSearchTerm] = useState('');
@@ -31,6 +34,7 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNav
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingBudget, setEditingBudget] = useState<Budget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Budget | null>(null);
+  const [viewingBudget, setViewingBudget] = useState<Budget | null>(null);
 
   React.useEffect(() => db.subscribe(() => setBudgets(db.getBudgets())), []);
 
@@ -70,105 +74,7 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNav
   };
 
   const handlePrint = (budget: Budget) => {
-    const professional = db.getProfessional();
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const marginX = 20;
-    const contentWidth = pageWidth - marginX * 2;
-    let y = 22;
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(14);
-    doc.setTextColor(15, 23, 42);
-    doc.text('ORÇAMENTO ODONTOLÓGICO', pageWidth / 2, y, { align: 'center' });
-    y += 10;
-
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(71, 85, 105);
-    doc.text(professional?.nomeFantasia || professional?.razaoSocial || 'Clínica Odontológica', pageWidth / 2, y, { align: 'center' });
-    y += 12;
-
-    doc.setDrawColor(226, 232, 240);
-    doc.line(marginX, y, marginX + contentWidth, y);
-    y += 8;
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.setTextColor(15, 23, 42);
-    doc.text(`Paciente: ${budget.patientName}`, marginX, y);
-    y += 6;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9);
-    doc.setTextColor(100, 116, 139);
-    doc.text(`Emitido em: ${new Date(budget.createdAt).toLocaleDateString('pt-BR')}`, marginX, y);
-    if (budget.validUntil) {
-      doc.text(`Válido até: ${formatDateBr(budget.validUntil)}`, marginX + contentWidth, y, { align: 'right' });
-    }
-    y += 10;
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8.5);
-    doc.setTextColor(100, 116, 139);
-    doc.text('PROCEDIMENTO', marginX, y);
-    doc.text('QTD', marginX + contentWidth * 0.62, y, { align: 'center' });
-    doc.text('VALOR', marginX + contentWidth, y, { align: 'right' });
-    y += 3;
-    doc.setDrawColor(203, 213, 225);
-    doc.line(marginX, y, marginX + contentWidth, y);
-    y += 6;
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9.5);
-    budget.items.forEach((item) => {
-      doc.setTextColor(51, 65, 85);
-      doc.text(item.procedureName, marginX, y);
-      if (item.professionalName) {
-        doc.setFontSize(7.5);
-        doc.setTextColor(148, 163, 184);
-        doc.text(item.professionalName, marginX, y + 4);
-        doc.setFontSize(9.5);
-      }
-      doc.setTextColor(51, 65, 85);
-      doc.text(String(item.quantity), marginX + contentWidth * 0.62, y, { align: 'center' });
-      doc.setFont('helvetica', 'bold');
-      doc.text(formatCurrency(item.totalPrice), marginX + contentWidth, y, { align: 'right' });
-      doc.setFont('helvetica', 'normal');
-      y += item.professionalName ? 10 : 7;
-    });
-
-    y += 4;
-    doc.setDrawColor(226, 232, 240);
-    doc.line(marginX, y, marginX + contentWidth, y);
-    y += 7;
-
-    doc.setFontSize(9);
-    doc.setTextColor(100, 116, 139);
-    doc.text('Subtotal', marginX + contentWidth * 0.75, y, { align: 'right' });
-    doc.text(formatCurrency(budget.subtotal), marginX + contentWidth, y, { align: 'right' });
-    y += 6;
-    if (budget.discountValue > 0) {
-      doc.text('Desconto', marginX + contentWidth * 0.75, y, { align: 'right' });
-      doc.text(`- ${formatCurrency(budget.subtotal - budget.total)}`, marginX + contentWidth, y, { align: 'right' });
-      y += 6;
-    }
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    doc.setTextColor(15, 23, 42);
-    doc.text('TOTAL', marginX + contentWidth * 0.75, y, { align: 'right' });
-    doc.text(formatCurrency(budget.total), marginX + contentWidth, y, { align: 'right' });
-    y += 12;
-
-    if (budget.notes) {
-      doc.setFont('helvetica', 'italic');
-      doc.setFontSize(8.5);
-      doc.setTextColor(100, 116, 139);
-      const lines = doc.splitTextToSize(budget.notes, contentWidth);
-      lines.forEach((line: string, i: number) => doc.text(line, marginX, y + i * 4.2));
-    }
-
-    const safeName = budget.patientName.replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_+|_+$/g, '');
-    doc.save(`Orcamento-${safeName}-${budget.id.slice(-6)}.pdf`);
+    generateBudgetPdf(budget, db.getProfessional(), db.getOrg());
   };
 
   return (
@@ -216,7 +122,7 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNav
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
               <th className="py-2.5 px-4 text-left font-bold text-slate-600">Paciente</th>
-              <th className="py-2.5 px-4 text-left font-bold text-slate-600">Itens</th>
+              <th className="py-2.5 px-4 text-left font-bold text-slate-600">Tratamento</th>
               <th className="py-2.5 px-4 text-right font-bold text-slate-600">Total</th>
               <th className="py-2.5 px-4 text-center font-bold text-slate-600">Validade</th>
               <th className="py-2.5 px-4 text-center font-bold text-slate-600">Status</th>
@@ -235,11 +141,32 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNav
                 const expired = isPastValidity(budget.validUntil, todayISO) && budget.status !== 'CONVERTIDO';
                 return (
                   <tr key={budget.id} className="hover:bg-slate-50/70">
-                    <td className="py-3 px-4 font-semibold text-slate-800">{budget.patientName}</td>
-                    <td className="py-3 px-4 text-slate-500">
-                      {budget.items.length} {budget.items.length === 1 ? 'item' : 'itens'}
+                    <td className="py-3 px-4">
+                      <button
+                        type="button"
+                        onClick={() => setViewingBudget(budget)}
+                        className="font-semibold text-slate-800 hover:text-indigo-700 hover:underline cursor-pointer text-left"
+                        title="Ver orçamento"
+                      >
+                        {budget.patientName}
+                      </button>
+                      <p className="text-[10px] text-slate-400 font-mono mt-0.5">{getBudgetDisplayCode(budget)}</p>
                     </td>
-                    <td className="py-3 px-4 text-right font-mono font-bold text-slate-800">{formatCurrency(budget.total)}</td>
+                    <td className="py-3 px-4 max-w-[240px]">
+                      <p className="text-slate-700 font-medium truncate" title={budget.items.map((i) => i.procedureName).join(', ')}>
+                        {summarizeBudgetItemNames(budget.items)}
+                      </p>
+                      <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5 truncate">
+                        <User className="w-3 h-3 shrink-0" />
+                        {(() => {
+                          const profNames = Array.from(new Set(budget.items.map((i) => i.professionalName).filter(Boolean)));
+                          return profNames.length > 0 ? profNames.join(' + ') : 'Profissional a definir';
+                        })()}
+                        <span className="text-slate-300 mx-0.5">•</span>
+                        {budget.items.length} {budget.items.length === 1 ? 'item' : 'itens'}
+                      </p>
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono font-bold text-slate-800 whitespace-nowrap tabular-nums">{formatCurrency(budget.total)}</td>
                     <td className="py-3 px-4 text-center">
                       {budget.validUntil ? (
                         <span className={expired ? 'text-rose-600 font-semibold' : 'text-slate-500'}>
@@ -256,6 +183,13 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNav
                     </td>
                     <td className="py-3 px-4">
                       <div className="flex items-center justify-center gap-1 flex-wrap">
+                        <button
+                          onClick={() => setViewingBudget(budget)}
+                          className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer"
+                          title="Ver orçamento"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
                         {budget.status === 'RASCUNHO' && (
                           <button onClick={() => handleStatusChange(budget, 'APRESENTADO')} className="px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-50 rounded-lg cursor-pointer">
                             Apresentar
@@ -271,6 +205,15 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNav
                             </button>
                           </>
                         )}
+                        {(budget.status === 'APROVADO' || budget.status === 'CONVERTIDO') && (
+                          <button
+                            onClick={() => onAgendarTratamento(budget)}
+                            className="flex items-center gap-1 px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-50 rounded-lg cursor-pointer"
+                            title="Agendar tratamento"
+                          >
+                            <CalendarClock className="w-3 h-3" /> Agendar
+                          </button>
+                        )}
                         {canConvertToSale(budget.status, budget.convertedSaleId) && (
                           <button
                             onClick={() => onConvertToSale(budget)}
@@ -281,9 +224,13 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNav
                           </button>
                         )}
                         {budget.convertedSaleId && (
-                          <span className="flex items-center gap-1 px-2 py-1 text-[10px] font-bold text-indigo-700">
-                            <ExternalLink className="w-3 h-3" /> Venda gerada
-                          </span>
+                          <button
+                            onClick={() => onViewSale(budget)}
+                            className="flex items-center gap-1 px-2 py-1 text-[10px] font-bold text-indigo-700 hover:bg-indigo-50 rounded-lg cursor-pointer"
+                            title="Ver venda gerada"
+                          >
+                            <ExternalLink className="w-3 h-3" /> Ver venda
+                          </button>
                         )}
                         <button onClick={() => handlePrint(budget)} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg cursor-pointer" title="Salvar PDF">
                           <Printer className="w-3.5 h-3.5" />
@@ -336,6 +283,20 @@ export const BudgetsView: React.FC<BudgetsViewProps> = ({ onConvertToSale, onNav
         }}
         budgetToEdit={editingBudget}
         onSaved={() => {}}
+      />
+
+      <BudgetDetailModal
+        isOpen={!!viewingBudget}
+        onClose={() => setViewingBudget(null)}
+        budget={viewingBudget}
+        onViewSale={(b) => {
+          setViewingBudget(null);
+          onViewSale(b);
+        }}
+        onAgendarTratamento={(b) => {
+          setViewingBudget(null);
+          onAgendarTratamento(b);
+        }}
       />
 
       <ConfirmDialog

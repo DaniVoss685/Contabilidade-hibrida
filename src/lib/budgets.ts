@@ -57,16 +57,39 @@ export const BUDGET_STATUS_LABELS: Record<BudgetStatus, string> = {
   CONVERTIDO: 'Convertido em venda',
 };
 
+/** "A, B e C" — nunca ", e" nem vírgula sobrando antes do último item. */
+function joinHumanList(parts: string[]): string {
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return `${parts[0]} e ${parts[1]}`;
+  return `${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}`;
+}
+
 /**
  * Payload de pré-preenchimento para Nova Receita — Sale é de UM procedimento só (mesmo modelo já
  * usado por Appointment/ClinicalRecord neste projeto), então um orçamento com vários itens vira um
- * resumo no nome + o detalhamento completo nas observações, para não perder a itemização mesmo sem
- * conseguir representá-la 1:1 no cadastro de venda atual.
+ * resumo no nome. A descrição é sempre texto 100% humano — nunca IDs técnicos (`budget_...`,
+ * `item_...`) nem valores crus sem formatação; quem precisa da itemização completa com preços
+ * consulta o orçamento original através do vínculo estruturado (`budgetId`, ver BUDGET-CONV-01/02),
+ * nunca precisou estar na descrição. O item já perdido (se algum dia precisar auditar) continua
+ * 100% preservado no próprio Budget — a conversão nunca o altera.
  */
 export interface SaleDraftFromBudget {
   procedureName: string;
   totalValue: number;
   notes: string;
+  budgetId: string;
+}
+
+/** Resumo curto dos procedimentos de um orçamento — fonte única usada tanto para pré-preencher o
+ * nome do procedimento na conversão em venda quanto no agendamento ("Agendar tratamento"). */
+export function summarizeBudgetItemNames(items: Pick<BudgetItem, 'procedureName'>[]): string {
+  const names = items.map((i) => i.procedureName).filter(Boolean);
+  return names.length <= 1
+    ? names[0] || 'Procedimentos do orçamento'
+    : names.length <= 3
+    ? names.join(' + ')
+    : `${names.slice(0, 2).join(' + ')} + ${names.length - 2} outro(s)`;
 }
 
 export function buildSaleDraftFromBudget(budget: {
@@ -75,23 +98,22 @@ export function buildSaleDraftFromBudget(budget: {
   id: string;
 }): SaleDraftFromBudget {
   const names = budget.items.map((i) => i.procedureName).filter(Boolean);
-  const procedureName =
-    names.length <= 1
-      ? names[0] || 'Procedimentos do orçamento'
-      : names.length <= 3
-      ? names.join(' + ')
-      : `${names.slice(0, 2).join(' + ')} + ${names.length - 2} outro(s)`;
+  const procedureName = summarizeBudgetItemNames(budget.items);
 
-  const breakdown = budget.items
-    .map((i) => {
-      const prof = i.professionalName ? ` — ${i.professionalName}` : '';
-      return `${i.quantity}x ${i.procedureName}${prof}: ${i.totalPrice.toFixed(2)}`;
-    })
-    .join('\n');
+  const humanList = joinHumanList(names);
+  let notes: string;
+  if (names.length <= 1) {
+    notes = 'Tratamento odontológico conforme orçamento aprovado.';
+  } else if (humanList.length <= 110) {
+    notes = `Tratamento conforme orçamento: ${humanList}.`;
+  } else {
+    notes = `Tratamento conforme orçamento — ${names.length} procedimentos.`;
+  }
 
   return {
     procedureName,
     totalValue: budget.total,
-    notes: `Convertido do orçamento ${budget.id}.\n${breakdown}`,
+    notes,
+    budgetId: budget.id,
   };
 }

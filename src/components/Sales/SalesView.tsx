@@ -55,6 +55,9 @@ interface SalesViewProps {
   selectedYear?: number;
   selectedMonth?: number | 'ALL';
   onResetPeriod?: () => void;
+  /** "Ver venda" a partir de um Orçamento convertido — filtra pelo nome do paciente pra achar a
+   * venda na hora, sem precisar de um mecanismo de scroll/realce numa lista que já é period-based. */
+  initialHighlightPatientName?: string;
 }
 
 export const SalesView: React.FC<SalesViewProps> = ({
@@ -65,10 +68,15 @@ export const SalesView: React.FC<SalesViewProps> = ({
   selectedYear,
   selectedMonth,
   onResetPeriod,
+  initialHighlightPatientName,
 }) => {
   const toast = useToast();
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
+
+  React.useEffect(() => {
+    if (initialHighlightPatientName) setSearchTerm(initialHighlightPatientName);
+  }, [initialHighlightPatientName]);
   const [isFeeSimulatorOpen, setIsFeeSimulatorOpen] = useState(false);
   const [taxOriginFilter, setTaxOriginFilter] = useState<'ALL' | TaxOrigin>('ALL');
   const [procedureFilter, setProcedureFilter] = useState<string>('ALL');
@@ -617,7 +625,11 @@ export const SalesView: React.FC<SalesViewProps> = ({
                           {sale.taxOrigin === 'CPF' ? 'CPF' : 'CNPJ'}
                         </span>
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9.5px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                          {sale.origin === 'AGENDA' || sale.appointmentId ? '📅 Via Agenda' : '✍️ Manual'}
+                          {sale.origin === 'ORCAMENTO' || sale.budgetId
+                            ? '📋 Via Orçamento'
+                            : sale.origin === 'AGENDA' || sale.appointmentId
+                            ? '📅 Via Agenda'
+                            : '✍️ Manual'}
                         </span>
                         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-slate-100 text-slate-700">
                           {sale.installmentsCount}x
@@ -818,7 +830,14 @@ export const SalesView: React.FC<SalesViewProps> = ({
 
                         <td className="py-3.5 px-4 text-center">
                           <div className="flex flex-col items-center gap-1">
-                            {sale.origin === 'AGENDA' || sale.appointmentId ? (
+                            {sale.origin === 'ORCAMENTO' || sale.budgetId ? (
+                              <span
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-bold text-[9px] bg-indigo-50 text-indigo-700 border border-indigo-200"
+                                title="Venda gerada a partir de um Orçamento aprovado"
+                              >
+                                📋 Via Orçamento
+                              </span>
+                            ) : sale.origin === 'AGENDA' || sale.appointmentId ? (
                               <span
                                 className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-bold text-[9px] bg-purple-50 text-purple-700 border border-purple-200"
                                 title="Venda gerada automaticamente via Agenda"

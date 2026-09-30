@@ -534,7 +534,8 @@ export function mapDbSaleToApp(db: any): Sale {
     installments,
     notes: db.notes || '',
     appointmentId: db.appointment_id || undefined,
-    origin: db.origin || (db.appointment_id ? 'AGENDA' : 'MANUAL'),
+    budgetId: db.budget_id || undefined,
+    origin: db.origin || (db.budget_id ? 'ORCAMENTO' : db.appointment_id ? 'AGENDA' : 'MANUAL'),
     originalEstimatedValue: db.original_estimated_value !== undefined ? Number(db.original_estimated_value) : undefined,
     priceHistory: Array.isArray(db.price_history) ? db.price_history : [],
     createdAt: db.created_at || new Date().toISOString(),
@@ -567,7 +568,8 @@ export function mapAppSaleToDb(app: Sale, tenantId: string): any {
     installments: app.installments || [],
     notes: app.notes || '',
     appointment_id: app.appointmentId || null,
-    origin: app.origin || (app.appointmentId ? 'AGENDA' : 'MANUAL'),
+    budget_id: app.budgetId || null,
+    origin: app.origin || (app.budgetId ? 'ORCAMENTO' : app.appointmentId ? 'AGENDA' : 'MANUAL'),
     created_at: app.createdAt || new Date().toISOString(),
   };
 }
@@ -869,6 +871,7 @@ export function mapDbAppointmentToApp(db: any): Appointment {
     sendWhatsappReminder: db.send_whatsapp_reminder !== false,
     origin: db.origin || 'RECEPCAO',
     saleId: db.sale_id || undefined,
+    budgetId: db.budget_id || undefined,
     createdAt: db.created_at || new Date().toISOString(),
     updatedAt: db.updated_at || new Date().toISOString(),
   };
@@ -898,6 +901,7 @@ export function mapAppAppointmentToDb(app: Appointment, tenantId: string): any {
     send_whatsapp_reminder: app.sendWhatsappReminder !== false,
     origin: app.origin || 'RECEPCAO',
     sale_id: app.saleId || null,
+    budget_id: app.budgetId || null,
     created_at: app.createdAt || new Date().toISOString(),
     updated_at: app.updatedAt || new Date().toISOString(),
   };

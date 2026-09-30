@@ -22,6 +22,7 @@ import { FinancialDashboard } from './components/Financial/FinancialDashboard';
 import { FiscalSimulatorView } from './components/Simulator/FiscalSimulatorView';
 import { BankAccountsView } from './components/BankAccounts/BankAccountsView';
 import { AppointmentsView } from './components/Appointments/AppointmentsView';
+import { AppointmentModal } from './components/Appointments/AppointmentModal';
 import { BudgetsView } from './components/Budgets/BudgetsView';
 import { LoginView } from './components/Auth/LoginView';
 import { AppLoadingSkeleton } from './components/UI/AppLoadingSkeleton';
@@ -417,6 +418,9 @@ function AppContent() {
   // Conversão de orçamento em venda (Fase D) — guarda qual orçamento está sendo convertido para,
   // após a Sale ser realmente salva, marcar o orçamento como CONVERTIDO (nunca antes disso).
   const [convertingBudget, setConvertingBudget] = useState<Budget | null>(null);
+  // "Ver venda"/"Agendar tratamento" a partir de um Orçamento (vínculo Orçamento <-> Venda <-> Agenda).
+  const [viewSalePatientName, setViewSalePatientName] = useState<string | undefined>(undefined);
+  const [agendaFromBudget, setAgendaFromBudget] = useState<Budget | null>(null);
   const [isNewExpenseOpen, setIsNewExpenseOpen] = useState(false);
   const [settleItem, setSettleItem] = useState<AccountReceivableItem | null>(null);
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false);
@@ -570,6 +574,28 @@ function AppContent() {
     setNewSalePatientId(budget.patientId);
     setConvertingBudget(budget);
     setIsNewSaleOpen(true);
+  };
+
+  // "Ver venda" (orçamento já convertido) — leva pra aba Receitas/Vendas, no período em que a
+  // venda foi de fato lançada (pode não ser o período atualmente selecionado no dashboard), e
+  // pré-filtra pelo paciente pra achar a venda na hora, sem precisar de scroll/realce por linha.
+  const handleViewSaleFromBudget = (budget: Budget) => {
+    if (!budget.convertedSaleId) return;
+    const sale = db.getSales().find((s) => s.id === budget.convertedSaleId);
+    if (!sale) {
+      toast.warning('Venda vinculada não foi encontrada (pode ter sido excluída).');
+      return;
+    }
+    const [y, m] = (sale.serviceDate || '').split('-').map(Number);
+    if (y && m) handleChangePeriod(y, m);
+    setViewSalePatientName(sale.patientName);
+    setCurrentTab('sales');
+  };
+
+  // "Agendar tratamento" a partir de um orçamento aprovado — abre Nova Consulta pré-preenchida.
+  // Nunca cria a consulta sozinho: o usuário ainda escolhe data/horário e confirma.
+  const handleAgendarFromBudget = (budget: Budget) => {
+    setAgendaFromBudget(budget);
   };
 
   const isRecoveryMode = db.getIsPasswordRecovery();
@@ -1056,6 +1082,7 @@ function AppContent() {
               selectedYear={selectedYear}
               selectedMonth={selectedMonth}
               onResetPeriod={handleResetPeriod}
+              initialHighlightPatientName={viewSalePatientName}
             />
           )}
 
@@ -1163,6 +1190,8 @@ function AppContent() {
             <BudgetsView
               activeTenantId={activeTenantId}
               onConvertToSale={handleConvertBudgetToSale}
+              onViewSale={handleViewSaleFromBudget}
+              onAgendarTratamento={handleAgendarFromBudget}
               onNavigateToWhatsApp={(patientId) => {
                 setInitialWhatsAppPatientId(patientId);
                 setCurrentTab('whatsapp');
@@ -1240,6 +1269,20 @@ function AppContent() {
       </div>
 
       {/* Global Modals */}
+      {/* "Agendar tratamento" a partir de um Orçamento aprovado — instância dedicada (mesmo padrão
+          do NewSaleModal acima para a conversão em venda), já que o fluxo é disparado pela aba
+          Orçamentos, não pela própria Agenda. */}
+      <AppointmentModal
+        isOpen={!!agendaFromBudget}
+        onClose={() => setAgendaFromBudget(null)}
+        initialBudget={agendaFromBudget}
+        activeTenantId={activeTenantId}
+        onSaved={() => {
+          toast.success('Consulta agendada a partir do orçamento.');
+          setAgendaFromBudget(null);
+        }}
+      />
+
       <NewSaleModal
         isOpen={isNewSaleOpen}
         onClose={() => {

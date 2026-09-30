@@ -10,7 +10,9 @@ import {
   canConvertToSale,
   isPastValidity,
   buildSaleDraftFromBudget,
+  summarizeBudgetItemNames,
 } from '../../src/lib/budgets';
+import { getBudgetDisplayCode } from '../../src/lib/budgetPdf';
 
 let passed = 0;
 function assert(condition: boolean, message: string) {
@@ -67,19 +69,42 @@ console.log('\n=== isPastValidity: só para exibição (badge "Vencido"), nunca 
   assert(isPastValidity(null, '2026-09-29') === false, 'sem validade definida nunca é considerado vencido');
 }
 
-console.log('\n=== buildSaleDraftFromBudget: pré-preenche Nova Receita sem perder a itemização ===');
+console.log('\n=== buildSaleDraftFromBudget: pré-preenche Nova Receita com descrição 100% humana ===');
 {
   const draft = buildSaleDraftFromBudget({
-    id: 'budget_abc123',
+    id: 'budget_1790786182020_ulsr',
     total: 450,
     items: [
-      { id: '1', procedureName: 'Restauração', professionalName: 'Dra. Bruna', quantity: 1, unitPrice: 300, totalPrice: 300 },
-      { id: '2', procedureName: 'Limpeza', quantity: 1, unitPrice: 150, totalPrice: 150 },
+      { id: 'bitem_1', procedureName: 'Restauração', professionalName: 'Dra. Bruna', quantity: 1, unitPrice: 300, totalPrice: 300 },
+      { id: 'bitem_2', procedureName: 'Limpeza', quantity: 1, unitPrice: 150, totalPrice: 150 },
     ],
   });
   assert(draft.totalValue === 450, 'valor pré-preenchido é o TOTAL do orçamento (já com desconto aplicado)');
   assert(draft.procedureName.includes('Restauração') && draft.procedureName.includes('Limpeza'), 'nome do procedimento resume os itens do orçamento');
-  assert(draft.notes.includes('Dra. Bruna') && draft.notes.includes('Restauração') && draft.notes.includes('Limpeza'), 'observações preservam a itemização completa (procedimento + profissional) mesmo Sale sendo de 1 linha só');
+  assert(draft.budgetId === 'budget_1790786182020_ulsr', 'BUDGET-CONV-02: vínculo estruturado (budgetId) é devolvido separado da descrição, não embutido em texto');
+  // BUDGET-CONV-01: nenhum ID técnico nem valor cru na descrição — só texto humano.
+  assert(!draft.notes.includes('budget_'), 'BUDGET-CONV-01: descrição nunca contém o ID técnico do orçamento (budget_...)');
+  assert(!draft.notes.includes('bitem_'), 'BUDGET-CONV-01: descrição nunca contém ID técnico de item (bitem_...)');
+  assert(!/\d+\.\d{2}(?!\d)/.test(draft.notes), 'BUDGET-CONV-01: descrição nunca contém valor cru sem formatação (ex.: 300.00) — o valor já tem campo próprio');
+  assert(draft.notes.includes('Restauração') && draft.notes.includes('Limpeza'), 'descrição continua citando os procedimentos em linguagem humana');
+}
+
+console.log('\n=== buildSaleDraftFromBudget: 1 item só vira frase curta, muitos itens resumem sem ficar gigante ===');
+{
+  const oneItem = buildSaleDraftFromBudget({
+    id: 'budget_x', total: 1200,
+    items: [{ id: 'i1', procedureName: 'Implante dentário', quantity: 1, unitPrice: 1200, totalPrice: 1200 }],
+  });
+  assert(!oneItem.notes.includes('budget_') && !/\d+\.\d{2}/.test(oneItem.notes), 'BUDGET-CONV-01: mesmo com 1 item, nenhum ID/valor cru vaza para a descrição');
+
+  const manyItems = buildSaleDraftFromBudget({
+    id: 'budget_y', total: 5000,
+    items: Array.from({ length: 8 }, (_, i) => ({
+      id: `i${i}`, procedureName: `Procedimento longo número ${i + 1} com nome bem extenso`, quantity: 1, unitPrice: 600, totalPrice: 600,
+    })),
+  });
+  assert(manyItems.notes.length < 200, 'com muitos itens de nomes longos, a descrição resume (não vira um bloco de texto gigante)');
+  assert(manyItems.notes.includes('8'), 'resumo cita a quantidade de procedimentos quando não cabe listar todos');
 }
 
 console.log('\n=== CRIAÇÃO: orçamento NUNCA gera efeito financeiro/fiscal/estoque ===');
@@ -141,7 +166,10 @@ console.log('\n=== UI: botão "Converter" só aparece quando canConvertToSale pe
     code.includes('canConvertToSale(budget.status, budget.convertedSaleId)') && code.includes('onConvertToSale(budget)'),
     'a UI usa a mesma regra pura para decidir quando exibir o botão de conversão'
   );
-  assert(code.includes("budget.convertedSaleId") && code.includes('Venda gerada'), 'orçamento já convertido mostra "Venda gerada" em vez do botão de converter de novo');
+  assert(
+    code.includes('budget.convertedSaleId && (') && code.includes("onClick={() => onViewSale(budget)}") && code.includes('Ver venda'),
+    'BUDGET-CONV-03/duplicação: orçamento já convertido mostra botão "Ver venda" (navega pra venda de verdade) em vez do botão de converter de novo'
+  );
 }
 
 console.log('\n=== RBAC: budgets:view/manage existem e estão mapeados na sidebar ===');
@@ -151,6 +179,78 @@ console.log('\n=== RBAC: budgets:view/manage existem e estão mapeados na sideba
   assert(permCode.includes("budgets: ['budgets:view', 'budgets:manage']"), 'aba budgets mapeada no bundle de permissões da sidebar');
   const sidebarCode = src('src/components/Layout/Sidebar.tsx');
   assert(sidebarCode.includes("{ id: 'budgets', label: 'Orçamentos'"), 'item de menu "Orçamentos" existe na sidebar');
+}
+
+console.log('\n=== BUDGET-LIST-01/02: resumo dos procedimentos na listagem (summarizeBudgetItemNames) ===');
+{
+  const one = summarizeBudgetItemNames([{ procedureName: 'Implante dentário' }]);
+  assert(one === 'Implante dentário', 'BUDGET-LIST-01: 1 procedimento — listagem mostra o nome dele puro');
+
+  const two = summarizeBudgetItemNames([{ procedureName: 'Implante dentário' }, { procedureName: 'Restauração' }]);
+  assert(two === 'Implante dentário + Restauração', '2 procedimentos — resume com "+"');
+
+  const three = summarizeBudgetItemNames([
+    { procedureName: 'Implante dentário' }, { procedureName: 'Restauração' }, { procedureName: 'Profilaxia' },
+  ]);
+  assert(three === 'Implante dentário + Restauração + Profilaxia', 'BUDGET-LIST-02: 3 procedimentos — ainda lista todos, sem estourar linha');
+
+  const many = summarizeBudgetItemNames(
+    Array.from({ length: 6 }, (_, i) => ({ procedureName: `Procedimento ${i + 1}` }))
+  );
+  assert(many === 'Procedimento 1 + Procedimento 2 + 4 outro(s)', 'com muitos itens, resume em "+N outro(s)" em vez de listar tudo');
+}
+
+console.log('\n=== Código amigável do orçamento (getBudgetDisplayCode) — nunca expõe o ID técnico ===');
+{
+  const code1 = getBudgetDisplayCode({ id: 'budget_1790786182020_ulsr', createdAt: '2026-09-29T12:00:00.000Z' });
+  assert(/^ORÇ-2026-[A-Z0-9]{6}$/.test(code1), `código amigável no formato ORÇ-AAAA-XXXXXX (recebido: ${code1})`);
+  assert(!code1.includes('budget_') && !code1.includes('1790786182020'), 'nunca expõe o ID técnico completo nem o timestamp cru');
+
+  const code2 = getBudgetDisplayCode({ id: 'budget_1790786182020_ulsr', createdAt: '2026-09-29T12:00:00.000Z' });
+  assert(code1 === code2, 'determinístico: o mesmo orçamento sempre gera o mesmo código (não é aleatório a cada render)');
+}
+
+console.log('\n=== BUDGET-AGENDA: "Agendar tratamento" — botão, pré-preenchimento e financeiro isolado ===');
+{
+  const viewCode = src('src/components/Budgets/BudgetsView.tsx');
+  assert(
+    viewCode.includes("(budget.status === 'APROVADO' || budget.status === 'CONVERTIDO') &&") && viewCode.includes('onAgendarTratamento(budget)'),
+    'BUDGET-AGENDA-01: botão "Agendar tratamento" só aparece para orçamento aprovado (ou já convertido)'
+  );
+  assert(!viewCode.includes("budget.status === 'RASCUNHO'") || !viewCode.match(/RASCUNHO[\s\S]{0,40}Agendar/), 'rascunho não oferece "Agendar tratamento" (ainda não foi nem apresentado)');
+
+  const modalCode = src('src/components/Appointments/AppointmentModal.tsx');
+  assert(modalCode.includes('initialBudget?: Budget | null'), 'AppointmentModal aceita um orçamento para pré-preenchimento');
+  assert(
+    modalCode.includes('db.getPatients().find((p) => p.id === initialBudget.patientId)'),
+    'BUDGET-AGENDA-02: paciente é pré-preenchido a partir do orçamento'
+  );
+  assert(
+    modalCode.includes('budgetProfessionalIds.length === 1 ? profs.find((p) => p.id === budgetProfessionalIds[0]) : undefined'),
+    'BUDGET-AGENDA-03: profissional só é pré-selecionado quando TODOS os itens do orçamento concordam (nunca chuta com 2+ divergentes)'
+  );
+  assert(
+    modalCode.includes('budgetId: initialBudget?.id') && modalCode.includes('autoCreateSale: initialBudget ? false : undefined'),
+    'BUDGET-AGENDA-04: consulta criada a partir do orçamento grava o vínculo (budgetId) e NUNCA cria uma 2ª venda por trás (o financeiro é só via "Converter", ação explícita)'
+  );
+
+  const detailCode = src('src/components/Budgets/BudgetDetailModal.tsx');
+  assert(
+    detailCode.includes('db.getAppointments().filter((a) => a.budgetId === budget.id)'),
+    'BUDGET-AGENDA-04/05: orçamento mostra TODAS as consultas vinculadas (N por orçamento, não só a última — nunca sobrescreve)'
+  );
+}
+
+console.log('\n=== Conversão NÃO cria agendamento automaticamente (separação de responsabilidade) ===');
+{
+  const appCode = src('src/App.tsx');
+  const onSaleCreatedIdx = appCode.indexOf('onSaleCreated={(sale) => {');
+  const onSaleCreatedEnd = appCode.indexOf('}}', onSaleCreatedIdx);
+  const onSaleCreatedBody = appCode.slice(onSaleCreatedIdx, onSaleCreatedEnd);
+  assert(
+    !onSaleCreatedBody.includes('addAppointment') && !onSaleCreatedBody.includes('setAgendaFromBudget'),
+    'converter orçamento em venda nunca dispara agendamento sozinho — "Agendar" continua uma ação separada e explícita do usuário'
+  );
 }
 
 console.log(`\n${passed} verificações passaram.`);

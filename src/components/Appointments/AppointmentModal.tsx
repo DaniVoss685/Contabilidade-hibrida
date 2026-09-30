@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Calendar, Clock, User, Stethoscope, FileText, Send, CheckCircle2, ArrowRight, AlertCircle, MessageCircle } from 'lucide-react';
 import { db } from '../../lib/db';
-import { Patient, DentalProcedure, Appointment, AppointmentStatus, AppointmentOrigin, ClinicalProfessional } from '../../types';
+import { Patient, DentalProcedure, Appointment, AppointmentStatus, AppointmentOrigin, ClinicalProfessional, Budget } from '../../types';
+import { summarizeBudgetItemNames } from '../../lib/budgets';
 import { PatientSearchSelect } from '../UI/PatientSearchSelect';
 import { DatePicker, TimePicker, CustomSelect, ConfirmDialog, useToast, CurrencyInput } from '../UI';
 
@@ -18,6 +19,9 @@ interface AppointmentModalProps {
   defaultDate?: string;
   defaultStartTime?: string;
   initialPatientId?: string;
+  /** "Agendar tratamento" a partir de um orçamento aprovado — pré-preenche paciente, resumo dos
+   * procedimentos e, quando inequívoco, o profissional. Nunca usado para editar/reagendar. */
+  initialBudget?: Budget | null;
   activeTenantId?: string;
   onSaved?: (appointment: Appointment) => void;
   onNavigateToProcedures?: () => void;
@@ -78,6 +82,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
   defaultDate,
   defaultStartTime,
   initialPatientId,
+  initialBudget,
   activeTenantId,
   onSaved,
   onNavigateToProcedures,
@@ -259,32 +264,56 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         setDentistName(rescheduleFromAppointment.dentistName);
         setSelectedProfessionalId(rescheduleFromAppointment.professionalId || '');
       } else {
-        // Clean initial state with intentional defaults
-        const initPatient = initialPatientId
+        // Clean initial state with intentional defaults — ou, quando vem de "Agendar tratamento"
+        // num orçamento aprovado (initialBudget), pré-preenchido a partir dele.
+        const initPatient = initialBudget
+          ? db.getPatients().find((p) => p.id === initialBudget.patientId)
+          : initialPatientId
           ? db.getPatients().find((p) => p.id === initialPatientId)
           : null;
-        setSelectedPatientId(initPatient ? initPatient.id : '');
-        setPatientName(initPatient ? initPatient.name : '');
+        setSelectedPatientId(initPatient ? initPatient.id : initialBudget?.patientId || '');
+        setPatientName(initPatient ? initPatient.name : initialBudget?.patientName || '');
         setPatientPhone(initPatient ? initPatient.phone || '' : '');
         setPatientCpf(initPatient ? initPatient.cpf || '' : '');
         setDate(defaultDate || new Date().toISOString().split('T')[0]);
         setStartTime(defaultStartTime || '09:00');
-        setDurationMinutes(45);
-        setSelectedProcedureId('');
-        setProcedureName('');
+
+        // Procedimento: com 1 item e procedureId real no catálogo, seleciona de verdade (dispara a
+        // mesma checagem de elegibilidade por profissional); com vários itens (ou sem procedureId),
+        // pré-preenche só o nome-resumo — mesmo padrão já usado ao reabrir um agendamento legado com
+        // procedureName livre e sem procedureId correspondente.
+        if (initialBudget && initialBudget.items.length > 0) {
+          const singleItem = initialBudget.items.length === 1 ? initialBudget.items[0] : null;
+          const matchedProcedure = singleItem?.procedureId
+            ? db.getProcedures().find((p) => p.id === singleItem.procedureId)
+            : undefined;
+          setSelectedProcedureId(matchedProcedure?.id || '');
+          setProcedureName(matchedProcedure?.name || summarizeBudgetItemNames(initialBudget.items));
+          setDurationMinutes(matchedProcedure?.clinicalDurationMinutes || 45);
+        } else {
+          setSelectedProcedureId('');
+          setProcedureName('');
+          setDurationMinutes(45);
+        }
         setStatus('PENDENTE');
         setOrigin('WHATSAPP');
         setNotes('');
         setSendWhatsappReminder(true);
         // Profissional responsável: nunca assume o usuário logado nem a identidade fiscal quando
-        // existe roster clínico configurado. Pré-seleciona só quando inequívoco: o profissional
-        // vinculado ao usuário atual (userId), ou o único ativo cadastrado — senão exige escolha
-        // explícita (duas dentistas no mesmo login não têm como o sistema adivinhar sozinho).
+        // existe roster clínico configurado. Pré-seleciona só quando inequívoco: o profissional já
+        // definido no orçamento (quando todos os itens concordam), senão o vinculado ao usuário
+        // atual (userId), senão o único ativo cadastrado — senão exige escolha explícita (duas
+        // dentistas no mesmo login não têm como o sistema adivinhar sozinho).
         const profs = db.getClinicalProfessionals().filter((p) => p.isActive);
         if (profs.length > 0) {
+          const budgetProfessionalIds = initialBudget
+            ? Array.from(new Set(initialBudget.items.map((i) => i.professionalId).filter(Boolean)))
+            : [];
+          const fromBudget =
+            budgetProfessionalIds.length === 1 ? profs.find((p) => p.id === budgetProfessionalIds[0]) : undefined;
           const currentUser = db.getUser();
           const linkedToMe = profs.find((p) => p.userId && p.userId === currentUser?.id);
-          const defaultProf = linkedToMe || (profs.length === 1 ? profs[0] : undefined);
+          const defaultProf = fromBudget || linkedToMe || (profs.length === 1 ? profs[0] : undefined);
           setSelectedProfessionalId(defaultProf?.id || '');
           setDentistName(defaultProf?.name || '');
         } else {
@@ -303,7 +332,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
       setIsSendingWhatsApp(false);
       setWhatsAppSentStatus('idle');
     }
-  }, [isOpen, appointmentToEdit, rescheduleFromAppointment, defaultDate, defaultStartTime, initialPatientId]);
+  }, [isOpen, appointmentToEdit, rescheduleFromAppointment, defaultDate, defaultStartTime, initialPatientId, initialBudget]);
 
   // Check if form is modified compared to blank (unconditionally declared at top!)
   const isDirty = useMemo(() => {
@@ -493,6 +522,11 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
           price,
           rescheduledFromId: rescheduleFromAppointment?.id,
           rescheduledFromDate: rescheduleFromAppointment?.date,
+          budgetId: initialBudget?.id,
+          // Vindo de um orçamento, o financeiro é controlado explicitamente pela própria ação
+          // "Converter em venda" do orçamento — nunca deixar o agendamento criar uma 2ª venda
+          // "fantasma" por trás (autoCreateSale é true por padrão para outros fluxos de Agenda).
+          autoCreateSale: initialBudget ? false : undefined,
         });
 
         // Vínculo bidirecional: atualiza a consulta de origem com os dados do reagendamento

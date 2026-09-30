@@ -758,7 +758,8 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
         createdSale = db.addSale({
           ...saleCommon,
           nfseEmittedAt: taxOrigin === 'CNPJ' && nfseStatus === 'EMITIDA' ? new Date().toISOString() : undefined,
-          origin: 'MANUAL',
+          origin: initialBudget ? 'ORCAMENTO' : 'MANUAL',
+          budgetId: initialBudget?.id,
         });
         toast.success('Receita cadastrada com sucesso.');
       }
