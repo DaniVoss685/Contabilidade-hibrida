@@ -119,7 +119,7 @@ console.log('\n=== Pré-seleção de profissional NUNCA é o usuário logado por
   assert(defaultProfessionalId([], 'usr_qualquer') === '', 'roster vazio -> sem pré-seleção (tela usa o fallback fiscal legado)');
 }
 
-console.log('\n=== AGENDA FILTRA: AppointmentsView.tsx tem filtro por profissional que persiste por navegação e reseta por tenant ===');
+console.log('\n=== AGENDA FILTRA: AppointmentsView.tsx tem filtro por profissional que persiste por navegação e reseta/redefault por tenant ===');
 {
   const code = src('src/components/Appointments/AppointmentsView.tsx');
   assert(code.includes("useState<string>('ALL')") && code.includes('professionalFilter'), 'estado de filtro de profissional existe, independente do filtro de status');
@@ -128,12 +128,34 @@ console.log('\n=== AGENDA FILTRA: AppointmentsView.tsx tem filtro por profission
     'filtro aplica sobre TODAS as visões (Dia/Semana/Mês compartilham o mesmo filteredAppointments)'
   );
   assert(
-    /useEffect\(\(\) => \{\s*setProfessionalFilter\('ALL'\);\s*\}, \[activeTenantId\]\);/.test(code),
-    'troca de tenant reseta o filtro de profissional (nunca herda a seleção da clínica anterior)'
+    /useEffect\(\(\) => \{\s*const currentUser = db\.getUser\(\);[\s\S]*?setProfessionalFilter\(defaultId \|\| 'ALL'\);\s*\}, \[activeTenantId\]\);/.test(code),
+    'troca de tenant (ou carregamento inicial) recalcula o filtro — nunca herda a seleção da clínica anterior'
+  );
+  assert(
+    code.includes('defaultProfessionalId(activeProfessionals, currentUser?.id)'),
+    'PROF-09: recalculo usa a mesma regra de pré-seleção do Agendamento (defaultProfessionalId) — vínculo userId > único ativo > nenhum'
   );
   assert(
     !code.includes("setStatusFilter('ALL')\n  }, [activeTenantId]") ,
     'sanity: o reset por tenant é específico do filtro de profissional, não reescreveu o de status'
+  );
+}
+
+console.log('\n=== PROF-09: usuário logado vinculado a um profissional -> Agenda abre por padrão filtrada nele (não em "Todos") ===');
+{
+  const bruna = { id: 'clprof_bruna', userId: 'usr_bruna', isActive: true };
+  const carla = { id: 'clprof_carla', userId: 'usr_carla', isActive: true };
+  assert(
+    defaultProfessionalId([bruna, carla], 'usr_carla') === 'clprof_carla',
+    'Carla loga -> Agenda abre filtrada em "Carla", não em "Todos os profissionais"'
+  );
+  assert(
+    defaultProfessionalId([bruna, carla], 'usr_bruna') === 'clprof_bruna',
+    'Bruna loga -> Agenda abre filtrada em "Bruna" (proprietária e também profissional clínica)'
+  );
+  assert(
+    defaultProfessionalId([bruna, carla], 'usr_recepcao') === '',
+    'PROF-10: usuário sem vínculo (ex.: recepção) com 2+ profissionais -> cai para "Todos os profissionais" (AppointmentsView mapeia \'\' -> \'ALL\')'
   );
 }
 

@@ -20,6 +20,7 @@ import {
 import { db } from '../../lib/db';
 import { Appointment, AppointmentStatus, ClinicalProfessional } from '../../types';
 import { isSundayOrHoliday } from '../../lib/holidays';
+import { defaultProfessionalId } from '../../lib/professionalScheduling';
 import { AppointmentModal } from './AppointmentModal';
 import { AppointmentDetailsModal } from './AppointmentDetailsModal';
 import { CustomSelect, SelectOption } from '../UI';
@@ -186,10 +187,18 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [professionals, setProfessionals] = useState<ClinicalProfessional[]>([]);
   const [professionalFilter, setProfessionalFilter] = useState<string>('ALL');
 
-  // Reseta o filtro de profissional ao trocar de clínica (Modo Consultoria) — evita que o filtro
-  // de uma clínica anterior sobreviva silenciosamente e esconda toda a agenda da nova.
+  // Ao trocar de clínica (ou no carregamento inicial): nunca herda o filtro de uma clínica
+  // anterior (Modo Consultoria) — e, quando o usuário logado está vinculado a um profissional
+  // clínico (Configurações > Profissionais > "Vincular a um usuário do sistema"), a Agenda já
+  // abre filtrada nas consultas DELE por padrão, em vez de mostrar a agenda inteira da clínica.
+  // Continua sendo possível trocar para "Todos os profissionais" a qualquer momento — isto só
+  // define o ponto de partida (mesmo padrão síncrono já usado em AppointmentModal.tsx para a
+  // pré-seleção de profissional: lê db.getClinicalProfessionals()/getUser() direto, uma vez).
   useEffect(() => {
-    setProfessionalFilter('ALL');
+    const currentUser = db.getUser();
+    const activeProfessionals = db.getClinicalProfessionals().filter((p) => p.isActive);
+    const defaultId = defaultProfessionalId(activeProfessionals, currentUser?.id);
+    setProfessionalFilter(defaultId || 'ALL');
   }, [activeTenantId]);
 
   // Modals state
