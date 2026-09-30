@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Search, ChevronDown, Check, User, Phone, X, Plus } from 'lucide-react';
 import { Patient } from '../../types';
-import { formatCpf, formatPhone, normalizeSearchText } from '../../lib/masks';
+import { formatCpf, formatPhone } from '../../lib/masks';
+import { filterPickerPatients } from '../../lib/patientPickerSearch';
 import { Portal } from './Portal';
 import { useFloatingPosition } from './useFloatingPosition';
 
@@ -46,24 +47,12 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
     gap: 6,
   });
 
-  // Filter patients based on query with diacritics normalization & safe CPF digits
-  const filteredPatients = useMemo(() => {
-    const trimmed = query.trim();
-    if (!trimmed) return patients;
-
-    const normQuery = normalizeSearchText(trimmed);
-    const digitsOnly = trimmed.replace(/\D/g, '');
-
-    return patients.filter((p) => {
-      const nameMatch = normalizeSearchText(p.name).includes(normQuery);
-      const cleanCpf = p.cpf.replace(/\D/g, '');
-      const cpfMatch = digitsOnly.length >= 3 && cleanCpf.includes(digitsOnly);
-      const cleanPhone = (p.phone || '').replace(/\D/g, '');
-      const phoneMatch = digitsOnly.length >= 3 && cleanPhone.length > 0 && cleanPhone.includes(digitsOnly);
-
-      return nameMatch || cpfMatch || phoneMatch;
-    });
-  }, [patients, query]);
+  // Busca em TODOS os pacientes carregados, mas só desenha as primeiras N correspondências
+  // (a clínica pode ter milhares — ver patientPickerSearch.ts). Sem CPF/telefone é seguro.
+  const { items: filteredPatients, total: totalMatches, hiddenCount } = useMemo(
+    () => filterPickerPatients(patients, query, undefined, value),
+    [patients, query, value]
+  );
 
   // Sync display with selection or reset
   useEffect(() => {
@@ -194,7 +183,7 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
             <div className="flex items-center gap-2 truncate">
               <span className="font-semibold text-slate-900 truncate">{selectedPatient.name}</span>
               <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md flex-shrink-0">
-                CPF: {formatCpf(selectedPatient.cpf, false)}
+                {selectedPatient.cpf ? `CPF: ${formatCpf(selectedPatient.cpf, false)}` : 'CPF não informado'}
               </span>
             </div>
           ) : (
@@ -241,7 +230,7 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
           >
             {/* Live Count Header */}
             <div className="px-3.5 py-1.5 border-b border-slate-100 flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-              <span>{filteredPatients.length} {filteredPatients.length === 1 ? 'paciente' : 'pacientes'}</span>
+              <span>{totalMatches} {totalMatches === 1 ? 'paciente' : 'pacientes'}</span>
               <span>Busca por Nome ou CPF</span>
             </div>
 
@@ -304,7 +293,7 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
                         <div className="truncate">
                           <div className="font-bold text-slate-900 truncate text-xs">{patient.name}</div>
                           <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400 font-mono">
-                            <span>CPF: {formatCpf(patient.cpf, false)}</span>
+                            <span>{patient.cpf ? `CPF: ${formatCpf(patient.cpf, false)}` : 'CPF não informado'}</span>
                             {patient.phone && (
                               <>
                                 <span>•</span>
@@ -321,6 +310,11 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
                     </button>
                   );
                 })
+              )}
+              {hiddenCount > 0 && (
+                <div className="px-3.5 py-2 text-center text-[11px] text-slate-400 bg-slate-50/70">
+                  Mostrando {filteredPatients.length} de {totalMatches} — refine sua busca por nome, CPF ou telefone.
+                </div>
               )}
             </div>
           </div>

@@ -555,7 +555,7 @@ async function runAllTests() {
     const defaultFinanceTabs = getDefaultTabsForRole('FINANCE');
     const defaultDentistTabs = getDefaultTabsForRole('DENTIST');
 
-    const receptionExpected: NavTab[] = ['dashboard', 'whatsapp', 'agenda', 'patients', 'settings'];
+    const receptionExpected: NavTab[] = ['dashboard', 'whatsapp', 'agenda', 'budgets', 'patients', 'settings'];
     const isReceptionMatch =
       defaultReceptionTabs.length === receptionExpected.length &&
       receptionExpected.every((t) => defaultReceptionTabs.includes(t));

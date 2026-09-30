@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { User, X, Loader2, Phone, Mail, AlertCircle, Edit3, Calendar } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { User, X, Loader2, Phone, Mail, AlertCircle, Edit3, Calendar, Trash2 } from 'lucide-react';
 import { Patient } from '../../types';
 import { db } from '../../lib/db';
 import { SupabaseService } from '../../lib/supabaseClient';
@@ -9,17 +9,14 @@ import { isPlaceholderPhoneNumber } from '../../lib/phoneUtils';
 import {
   formatCpf,
   formatCnpj,
-  isValidCpf,
-  isValidCnpj,
-  isValidEmail,
   maskPhoneInput,
-  isValidPhone,
   maskCpfInput,
   maskCnpjInput,
-  isValidCivilDate,
-  isFutureCivilDate,
   getTodayCivilDate,
 } from '../../lib/masks';
+import { isFieldRequired, missingFieldHint, PatientFieldContext } from '../../lib/patientRequiredFields';
+import { validatePatientForm } from '../../lib/patientFormValidation';
+import { autoResolveIssuesAfterSave } from '../../lib/patientReviewService';
 import { ConfirmDialog, useToast } from '../UI';
 import { DatePicker } from '../UI/DatePicker';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
@@ -37,6 +34,8 @@ export interface PatientModalProps {
     birthDate?: string;
     email?: string;
   } | null;
+  /** Só passado quando o usuário pode gerenciar pacientes: mostra "Excluir paciente" na edição. */
+  onRequestDelete?: (patient: Patient) => void;
 }
 
 export const PatientModal: React.FC<PatientModalProps> = ({
@@ -46,6 +45,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
   mode = 'create',
   patient,
   initialData,
+  onRequestDelete,
 }) => {
   const toast = useToast();
   const [name, setName] = useState('');
@@ -70,6 +70,23 @@ export const PatientModal: React.FC<PatientModalProps> = ({
   const [showConfirmDiscard, setShowConfirmDiscard] = useState(false);
 
   const isEdit = mode === 'edit' && Boolean(patient);
+
+  // Contexto de obrigatoriedade: paciente vindo de migração pode nunca ter tido CPF/telefone/
+  // nascimento — editar não pode exigir valor fictício. Cadastro novo segue exigindo tudo.
+  const fieldCtx: PatientFieldContext = useMemo(
+    () => ({
+      isEdit,
+      isLegacyImport: Boolean(patient?.isLegacyImport),
+      documentType,
+      phoneOwner,
+      original:
+        isEdit && patient ? { cpf: patient.cpf, phone: patient.phone, birthDate: patient.birthDate } : null,
+    }),
+    [isEdit, patient, documentType, phoneOwner]
+  );
+  const cpfRequired = isFieldRequired('cpf', fieldCtx);
+  const phoneRequired = isFieldRequired('phone', fieldCtx);
+  const birthRequired = isFieldRequired('birthDate', fieldCtx);
 
   // Inicializa os campos quando o modal abre ou os dados mudam
   useEffect(() => {
@@ -154,63 +171,20 @@ export const PatientModal: React.FC<PatientModalProps> = ({
     setGuardianCandidates([]);
   };
 
+  // Outro paciente da clínica já usa este documento? (cache local; a checagem no servidor
+  // roda no submit — ver handleSubmit.)
+  const isDocumentTakenLocally = (digits: string): boolean =>
+    db.getPatients().some((p) => {
+      if (isEdit && patient && p.id === patient.id) return false;
+      return (p.cpf || '').replace(/\D/g, '') === digits;
+    });
+
   const validate = (): boolean => {
-    const newErrors: Record<string, string> = {};
-
-    // 1. Nome Completo (Obrigatório, sem apenas espaços)
-    const cleanName = name.trim().replace(/\s+/g, ' ');
-    if (!cleanName) {
-      newErrors.name = 'Informe o nome completo do paciente.';
-    }
-
-    // 2. CPF ou CNPJ (Obrigatório, algoritmo oficial e unicidade no tenant) —
-    // depende de documentType (Pessoa Física / Pessoa Jurídica).
-    const cleanCpf = cpf.replace(/\D/g, '');
-    const isCnpj = documentType === 'CNPJ';
-    if (!cleanCpf) {
-      newErrors.cpf = isCnpj ? 'Informe o CNPJ da empresa.' : 'Informe o CPF do paciente.';
-    } else if (isCnpj ? cleanCpf.length !== 14 || !isValidCnpj(cleanCpf) : cleanCpf.length !== 11 || !isValidCpf(cleanCpf)) {
-      newErrors.cpf = isCnpj ? 'Informe um CNPJ válido.' : 'Informe um CPF válido.';
-    } else {
-      // Checar duplicidade no tenant
-      const existing = db.getPatients().find((p) => {
-        if (isEdit && patient && p.id === patient.id) return false;
-        return p.cpf.replace(/\D/g, '') === cleanCpf;
-      });
-      if (existing) {
-        newErrors.cpf = isCnpj ? 'Já existe um cliente cadastrado com este CNPJ.' : 'Já existe um paciente cadastrado com este CPF.';
-      }
-    }
-
-    // 3. WhatsApp / Telefone (Obrigatório, máscara e validação brasileira)
-    const cleanPhone = phone.replace(/\D/g, '');
-    if (!cleanPhone || !isValidPhone(cleanPhone)) {
-      newErrors.phone = 'Informe o WhatsApp ou telefone do paciente.';
-    }
-
-    // 3b. Responsável (obrigatório apenas se o telefone for do responsável)
-    if (phoneOwner === 'RESPONSIBLE' && !guardianName.trim()) {
-      newErrors.guardianName = 'Informe o nome do responsável.';
-    }
-
-    // 4. Data de Nascimento — obrigatória apenas para Pessoa Física (CPF).
-    // Empresas (CNPJ) não têm data de nascimento.
-    const cleanBirthDate = birthDate.trim();
-    if (isBirthDateRequired(documentType)) {
-      if (!cleanBirthDate) {
-        newErrors.birthDate = 'Informe a data de nascimento do paciente.';
-      } else if (!isValidCivilDate(cleanBirthDate)) {
-        newErrors.birthDate = 'Informe uma data de nascimento válida.';
-      } else if (isFutureCivilDate(cleanBirthDate)) {
-        newErrors.birthDate = 'A data de nascimento não pode ser futura.';
-      }
-    }
-
-    // 5. E-mail (Opcional, mas se preenchido deve ser válido)
-    if (email.trim() && !isValidEmail(email)) {
-      newErrors.email = 'E-mail em formato inválido.';
-    }
-
+    const newErrors = validatePatientForm(
+      { name, cpf, phone, birthDate, email, guardianName },
+      fieldCtx,
+      { isDocumentTaken: isDocumentTakenLocally }
+    );
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -268,6 +242,29 @@ export const PatientModal: React.FC<PatientModalProps> = ({
     try {
       const cleanName = name.trim().replace(/\s+/g, ' ');
       const cleanCpf = cpf.replace(/\D/g, '');
+
+      // Duplicidade de documento no SERVIDOR: o cache local pode estar defasado (outro usuário
+      // cadastrou agora) e o CPF é a chave de identidade. Só quando o valor mudou/é novo; se a
+      // consulta falhar, vale a checagem local que já passou (não bloqueia o cadastro por rede).
+      const originalDigits = (isEdit && patient ? patient.cpf || '' : '').replace(/\D/g, '');
+      const preCheckTenant = db.getActiveTenantId() || '';
+      if (cleanCpf && cleanCpf !== originalDigits && preCheckTenant) {
+        // null = consulta falhou (rede): segue com o resultado da checagem local.
+        const otherIds = await SupabaseService.findPatientIdsByCpf(
+          preCheckTenant,
+          cleanCpf,
+          isEdit && patient ? patient.id : undefined
+        );
+        if (otherIds && otherIds.length > 0) {
+          setErrors({
+            cpf:
+              documentType === 'CNPJ'
+                ? 'Já existe um cliente cadastrado com este CNPJ.'
+                : 'Já existe um paciente cadastrado com este CPF.',
+          });
+          return;
+        }
+      }
       const cleanPhone = phone.trim();
       // Pessoa Jurídica (CNPJ) não tem data de nascimento — nunca gravar um
       // valor residual se o usuário trocou de CPF para CNPJ depois de digitar.
@@ -374,6 +371,18 @@ export const PatientModal: React.FC<PatientModalProps> = ({
         await SupabaseService.unlinkPrimaryGuardianFromPatient(activeTenant, savedPatientId);
       }
 
+      // Revisão cadastral: pendência de CPF/nascimento/telefone que o dado salvo resolveu de forma
+      // OBJETIVA (válido e único) é encerrada aqui. Possível duplicidade nunca se resolve sozinha.
+      if (isEdit && savedPatient && activeTenant) {
+        await autoResolveIssuesAfterSave({
+          tenantId: activeTenant,
+          patient: savedPatient,
+          resolvedBy: db.getUser()?.name || 'Usuário',
+          isDocumentTakenByOther: (digits) =>
+            db.getPatients().some((p) => p.id !== savedPatient!.id && (p.cpf || '').replace(/\D/g, '') === digits),
+        });
+      }
+
       setIsDirty(false);
       toast.success(isEdit ? 'Paciente atualizado com sucesso.' : 'Paciente cadastrado com sucesso.');
       if (sharedPhoneNotice) toast.warning(sharedPhoneNotice, 8000);
@@ -396,9 +405,9 @@ export const PatientModal: React.FC<PatientModalProps> = ({
   return (
     <>
       <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-        <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-slate-200/80 animate-in fade-in zoom-in-95 duration-200">
+        <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-slate-200/80 my-auto max-h-[calc(100dvh-2rem)] flex flex-col animate-in fade-in zoom-in-95 duration-200">
           {/* Header */}
-          <div className="px-6 py-4.5 border-b border-slate-100 flex items-center justify-between">
+          <div className="px-6 py-4.5 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
             <div className="flex items-center gap-2.5">
               <div className={`w-8 h-8 rounded-xl flex items-center justify-center shadow-2xs border ${
                 isEdit 
@@ -427,7 +436,8 @@ export const PatientModal: React.FC<PatientModalProps> = ({
             </button>
           </div>
 
-          <form noValidate onSubmit={handleSubmit} className="p-6 space-y-4">
+          <form noValidate onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <div className="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
             {errors.form && (
               <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
@@ -492,12 +502,13 @@ export const PatientModal: React.FC<PatientModalProps> = ({
             <div className={`grid grid-cols-1 gap-3 ${isBirthDateRequired(documentType) ? 'sm:grid-cols-2' : ''}`}>
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  {getDocumentFieldLabel(documentType)} <span className="text-rose-500">*</span>
+                  {getDocumentFieldLabel(documentType)} {cpfRequired && <span className="text-rose-500">*</span>}
                 </label>
                 <input
                   type="text"
                   placeholder={documentType === 'CNPJ' ? '00.000.000/0000-00' : '000.000.000-00'}
                   maxLength={documentType === 'CNPJ' ? 18 : 14}
+                  inputMode="numeric"
                   value={cpf}
                   onChange={(e) => handleCpfChange(e.target.value)}
                   className={`w-full text-xs rounded-xl border p-2.5 bg-white font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none transition-all ${
@@ -506,11 +517,15 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                       : 'border-slate-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20'
                   }`}
                 />
-                {errors.cpf && (
+                {errors.cpf ? (
                   <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
                     <AlertCircle className="w-3 h-3 flex-shrink-0" />
                     {errors.cpf}
                   </p>
+                ) : (
+                  missingFieldHint('cpf', fieldCtx, cpf) && (
+                    <p className="text-[11px] text-slate-400 mt-1">{missingFieldHint('cpf', fieldCtx, cpf)}</p>
+                  )
                 )}
               </div>
 
@@ -518,17 +533,21 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                 <div>
                   <DatePicker
                     label="Data de Nascimento"
-                    required
+                    required={birthRequired}
                     value={birthDate}
                     onChange={handleBirthDateChange}
                     placeholder="DD/MM/AAAA"
                     maxDate={getTodayCivilDate()}
                   />
-                  {errors.birthDate && (
+                  {errors.birthDate ? (
                     <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
                       <AlertCircle className="w-3 h-3 flex-shrink-0" />
                       {errors.birthDate}
                     </p>
+                  ) : (
+                    missingFieldHint('birthDate', fieldCtx, birthDate) && (
+                      <p className="text-[11px] text-slate-400 mt-1">{missingFieldHint('birthDate', fieldCtx, birthDate)}</p>
+                    )
                   )}
                 </div>
               )}
@@ -539,7 +558,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
               <div>
                 <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 mb-1.5">
                   <span>
-                    {getPhoneFieldLabel(phoneOwner)} <span className="text-rose-500">*</span>
+                    {getPhoneFieldLabel(phoneOwner)} {phoneRequired && <span className="text-rose-500">*</span>}
                   </span>
                   {phoneOwner === 'RESPONSIBLE' && (
                     <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[9px] font-bold uppercase tracking-wide">
@@ -551,6 +570,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                   <input
                     type="text"
                     placeholder="(00) 00000-0000"
+                    inputMode="tel"
                     maxLength={15}
                     value={phone}
                     onChange={(e) => handlePhoneChange(e.target.value)}
@@ -566,11 +586,15 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                     Este será o telefone de contato do responsável informado abaixo.
                   </p>
                 )}
-                {errors.phone && (
+                {errors.phone ? (
                   <p className="text-[11px] font-medium text-rose-600 mt-1 flex items-center gap-1">
                     <AlertCircle className="w-3 h-3 flex-shrink-0" />
                     {errors.phone}
                   </p>
+                ) : (
+                  missingFieldHint('phone', fieldCtx, phone) && (
+                    <p className="text-[11px] text-slate-400 mt-1">{missingFieldHint('phone', fieldCtx, phone)}</p>
+                  )
                 )}
 
                 {/* Contexto do telefone: paciente ou responsável */}
@@ -687,6 +711,7 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                       type="text"
                       placeholder="000.000.000-00"
                       maxLength={14}
+                      inputMode="numeric"
                       value={guardianCpf}
                       onChange={(e) => { setGuardianCpf(maskCpfInput(e.target.value)); setGuardianId(undefined); setIsDirty(true); }}
                       className="w-full text-xs rounded-xl border border-slate-200 p-2.5 bg-white font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
@@ -706,9 +731,22 @@ export const PatientModal: React.FC<PatientModalProps> = ({
                 </div>
               </div>
             )}
+          </div>
 
             {/* Footer Actions */}
-            <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2.5">
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-2.5 flex-shrink-0 bg-white">
+              {isEdit && patient && onRequestDelete && (
+                <button
+                  type="button"
+                  onClick={() => onRequestDelete(patient)}
+                  disabled={isSubmitting}
+                  className="mr-auto inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer disabled:opacity-50"
+                  title="Excluir paciente (só permitido sem histórico)"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Excluir paciente
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleCloseAttempt}

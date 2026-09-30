@@ -121,9 +121,9 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({ isOpen, 
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden border border-slate-200/80 animate-in fade-in zoom-in-95">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden border border-slate-200/80 my-auto max-h-[calc(100dvh-2rem)] flex flex-col animate-in fade-in zoom-in-95">
         {/* Header */}
-        <div className="border-b border-slate-200/80 bg-white px-6 py-4 flex items-center justify-between">
+        <div className="border-b border-slate-200/80 bg-white px-6 py-4 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-teal-50 border border-teal-200/80 text-teal-600 flex items-center justify-center">
               <Package className="w-4 h-4" />
@@ -146,7 +146,8 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({ isOpen, 
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+        <div className="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
           {/* Identificação */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2">
@@ -259,9 +260,10 @@ export const ClinicalInputModal: React.FC<ClinicalInputModalProps> = ({ isOpen, 
               className="w-full text-xs rounded-lg border border-slate-200 p-2 bg-white"
             />
           </div>
+        </div>
 
           {/* Actions */}
-          <div className="pt-4 flex items-center justify-end gap-2 border-t border-slate-200">
+          <div className="px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-200 flex-shrink-0 bg-white">
             <button
               type="button"
               onClick={onClose}

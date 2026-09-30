@@ -258,7 +258,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
               left: `${coords.left}px`,
               zIndex: 99999,
             }}
-            className="p-4 bg-white rounded-2xl shadow-2xl border border-slate-200/90 w-80 animate-in fade-in zoom-in-95 duration-150 select-none"
+            className="p-4 bg-white rounded-2xl shadow-2xl border border-slate-200/90 w-[min(20rem,calc(100vw-1.5rem))] animate-in fade-in zoom-in-95 duration-150 select-none"
           >
             {/* VIEW MODE: DAYS */}
             {viewMode === 'days' && (
@@ -339,7 +339,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
                         key={`${item.dateString}-${index}`}
                         disabled={isDisabledDay}
                         onClick={() => !isDisabledDay && handleSelectDay(item.dateString)}
-                        className={`h-7 w-7 mx-auto rounded-lg text-xs font-mono font-medium flex items-center justify-center transition-all ${
+                        className={`h-9 w-9 sm:h-7 sm:w-7 mx-auto rounded-lg text-xs font-mono font-medium flex items-center justify-center transition-all ${
                           isDisabledDay
                             ? 'text-slate-200 cursor-not-allowed opacity-30'
                             : isSelected

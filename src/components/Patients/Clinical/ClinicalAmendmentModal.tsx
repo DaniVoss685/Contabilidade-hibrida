@@ -55,8 +55,8 @@ export const ClinicalAmendmentModal: React.FC<ClinicalAmendmentModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden my-auto max-h-[calc(100dvh-3rem)] flex flex-col animate-in fade-in zoom-in-95 duration-150">
+        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70 flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600 shrink-0">
               <History className="w-5 h-5" />
@@ -80,7 +80,8 @@ export const ClinicalAmendmentModal: React.FC<ClinicalAmendmentModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 sm:p-7 space-y-5">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+        <div className="p-6 sm:p-7 space-y-5 overflow-y-auto flex-1 min-h-0">
           <div className="p-3.5 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <div className="leading-relaxed">
@@ -140,8 +141,9 @@ export const ClinicalAmendmentModal: React.FC<ClinicalAmendmentModalProps> = ({
               Redija as informações corretivas ou acréscimos clínicos pertinentes.
             </p>
           </div>
+        </div>
 
-          <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+          <div className="px-6 sm:px-7 py-4 border-t border-slate-100 flex items-center justify-end gap-2.5 flex-shrink-0 bg-white">
             <button
               type="button"
               onClick={onClose}

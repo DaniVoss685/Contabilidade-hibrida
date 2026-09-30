@@ -5,6 +5,10 @@ import {
   Patient,
   Sale,
   Expense,
+  ExpenseRecurrenceSeries,
+  ExpenseEntity,
+  LivroCaixaPfDedutibilidade,
+  AttachmentMetadata,
   ExpenseCategory,
   BankAccount,
   PayrollHistoryEntry,
@@ -37,9 +41,23 @@ import {
   ClinicalRecord,
   ClinicalAttachment,
   ClinicalBeforeAfterPair,
+  ClinicalProfessional,
+  StockMovement,
+  StockMovementType,
+  Budget,
+  BudgetItem,
   ClinicalRecordAmendment,
   FiscalClassification,
 } from '../types';
+import {
+  computeMissingOccurrenceDueDates,
+  computeGenerationHorizon,
+  buildOccurrenceDraftFromSeries,
+  pickRecurrenceTemplateUpdates,
+  planEndRecurrence,
+  selectOccurrencesToRemoveOnEnd,
+  type RecurrenceSeriesTemplate,
+} from './expenseRecurrence';
 import { planCashAccount, receivedByAccount } from './bankAccounts';
 import { getInstallmentGrossReceived } from './cardFees';
 import {
@@ -75,6 +93,8 @@ import { hashPassword, verifyPassword, generateSalt } from './authCrypto';
 import { isValidEmail } from './masks';
 import { getTodayCivilDate, getEffectiveReceivableStatus, getEffectivePayableStatus } from './statusHelper';
 import { validateFiscalClassificationChange } from './fiscalClassification';
+import { findSchedulingConflict } from './professionalScheduling';
+import { didCrossLowThreshold, resolveConsumptionForClinicalRecord } from './stockMovements';
 import { SupabaseService, supabase, getRecoveryRedirectUrl } from './supabaseClient';
 
 export const GLOBAL_STORAGE_KEYS = {
@@ -125,6 +145,7 @@ const STORAGE_KEYS = {
   PATIENTS: 'df_patients_v1',
   SALES: 'df_sales_v1',
   EXPENSES: 'df_expenses_v1',
+  EXPENSE_RECURRENCES: 'df_expense_recurrences_v1',
   CATEGORIES: 'df_categories_v1',
   BANK_ACCOUNTS: 'df_banks_v1',
   PAYROLL_HISTORY: 'df_payroll_v1',
@@ -139,6 +160,8 @@ const STORAGE_KEYS = {
   CLINICAL_RECORDS: 'df_clinical_records_v1',
   CLINICAL_ATTACHMENTS: 'df_clinical_attachments_v1',
   CLINICAL_BEFORE_AFTER: 'df_clinical_before_after_v1',
+  CLINICAL_PROFESSIONALS: 'df_clinical_professionals_v1',
+  BUDGETS: 'df_budgets_v1',
 };
 
 let globalActiveTenantId = 'tenant_demo';
@@ -417,6 +440,19 @@ function sanitizeForCache<T>(key: string, value: T): T {
   if (key.includes('df_audit_v1') && Array.isArray(value)) {
     return value.slice(0, 20) as any;
   }
+  // Pacientes migrados de sistema anterior carregam um blob legacy_metadata (endereço,
+  // responsável, extras) de ~1KB cada — com milhares de pacientes o cache passava de 3MB e
+  // competia por cota com o resto. O blob continua em memória e no banco; o cache guarda só
+  // o que a UI usa (isLegacyImport já é um flag derivado).
+  if (key.includes('df_patients_v1') && Array.isArray(value)) {
+    return value.map((p: any) => {
+      if (p && p.legacyMetadata) {
+        const { legacyMetadata, ...rest } = p;
+        return rest;
+      }
+      return p;
+    }) as any;
+  }
   return value;
 }
 
@@ -514,6 +550,8 @@ export class DentalFinanceDB {
   private patients!: Patient[];
   private sales!: Sale[];
   private expenses!: Expense[];
+  private expenseRecurrences: ExpenseRecurrenceSeries[] = [];
+  private recurrenceGenerationDoneForTenant: Set<string> = new Set();
   private categories!: ExpenseCategory[];
   private bankAccounts!: BankAccount[];
   private payrollHistory!: PayrollHistoryEntry[];
@@ -527,6 +565,9 @@ export class DentalFinanceDB {
   private clinicalRecords!: ClinicalRecord[];
   private clinicalAttachments!: ClinicalAttachment[];
   private beforeAfterPairs!: ClinicalBeforeAfterPair[];
+  private clinicalProfessionals: ClinicalProfessional[] = [];
+  private procedureProfessionalLinks: Record<string, string[]> = {};
+  private budgets: Budget[] = [];
   private preferences!: SystemPreferences;
   private fiscalParameters!: FiscalParameter[];
   private listeners: (() => void)[] = [];
@@ -775,6 +816,25 @@ export class DentalFinanceDB {
     }
   }
 
+  /**
+   * Recarrega SÓ a lista de pacientes do tenant ativo (paginada, sem o teto de 1000 linhas). Usada
+   * depois de uma importação/consolidação feita fora do fluxo normal, para a UI enxergar os
+   * pacientes novos sem exigir F5.
+   */
+  public async reloadPatientsAsync(): Promise<void> {
+    const tenantId = this.activeTenantId;
+    if (!tenantId || tenantId === 'tenant_demo' || this.isDemoMode) return;
+    const res = await SupabaseService.getPatientsForTenant(tenantId);
+    if (res.error) {
+      console.warn(`[Supabase] Falha ao recarregar pacientes (${res.error}). Preservando estado.`);
+      return;
+    }
+    if (tenantId !== this.activeTenantId) return; // trocou de clínica durante a leitura
+    this.patients = res.data;
+    saveItem(STORAGE_KEYS.PATIENTS, this.patients, tenantId);
+    this.notify();
+  }
+
   public async hydrateTenantAsync(tenantId: string): Promise<void> {
     if (!tenantId || tenantId === 'tenant_demo') {
       this.isHydrating = false;
@@ -831,6 +891,11 @@ export class DentalFinanceDB {
           this.expenses = res.expenses;
           saveItem(STORAGE_KEYS.EXPENSES, this.expenses, tenantId);
         }
+        this.expenseRecurrences = res.expenseRecurrences || [];
+        saveItem(STORAGE_KEYS.EXPENSE_RECURRENCES, this.expenseRecurrences, tenantId);
+        this.ensureRecurringExpensesGeneratedAsync(tenantId).catch((genErr) =>
+          console.warn('[ExpenseRecurrence] Falha ao gerar ocorrências futuras:', genErr)
+        );
         if (res.procedures && res.procedures.length > 0) {
           this.procedures = res.procedures;
           saveItem(STORAGE_KEYS.PROCEDURES, this.procedures, tenantId);
@@ -870,6 +935,19 @@ export class DentalFinanceDB {
           }
         } catch (clinicalHydrateErr) {
           console.warn('[Clinical] Erro ao carregar registros clínicos do Supabase:', clinicalHydrateErr);
+        }
+        try {
+          this.clinicalProfessionals = await SupabaseService.getClinicalProfessionals(tenantId);
+          saveItem(STORAGE_KEYS.CLINICAL_PROFESSIONALS, this.clinicalProfessionals, tenantId);
+          this.procedureProfessionalLinks = await SupabaseService.getProcedureProfessionalLinks(tenantId);
+        } catch (profHydrateErr) {
+          console.warn('[ClinicalProfessionals] Erro ao carregar profissionais clínicos do Supabase:', profHydrateErr);
+        }
+        try {
+          this.budgets = await SupabaseService.getBudgets(tenantId);
+          saveItem(STORAGE_KEYS.BUDGETS, this.budgets, tenantId);
+        } catch (budgetHydrateErr) {
+          console.warn('[Budgets] Erro ao carregar orçamentos do Supabase:', budgetHydrateErr);
         }
         if (res.preferences) {
           this.preferences = res.preferences;
@@ -938,6 +1016,8 @@ export class DentalFinanceDB {
       this.clinicalRecords = loadItem<ClinicalRecord[]>(STORAGE_KEYS.CLINICAL_RECORDS, DEMO_CLINICAL_RECORDS, tenantId);
       this.clinicalAttachments = loadItem<ClinicalAttachment[]>(STORAGE_KEYS.CLINICAL_ATTACHMENTS, DEMO_CLINICAL_ATTACHMENTS, tenantId);
       this.beforeAfterPairs = loadItem<ClinicalBeforeAfterPair[]>(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, DEMO_BEFORE_AFTER_PAIRS, tenantId);
+      this.clinicalProfessionals = loadItem<ClinicalProfessional[]>(STORAGE_KEYS.CLINICAL_PROFESSIONALS, [], tenantId);
+      this.budgets = loadItem<Budget[]>(STORAGE_KEYS.BUDGETS, [], tenantId);
       this.auditLogs = loadItem<AuditLog[]>(STORAGE_KEYS.AUDIT_LOGS, [
         {
           id: 'log_01',
@@ -1016,6 +1096,7 @@ export class DentalFinanceDB {
       this.patients = loadItem<Patient[]>(STORAGE_KEYS.PATIENTS, [], tenantId);
       this.sales = loadItem<Sale[]>(STORAGE_KEYS.SALES, [], tenantId);
       this.expenses = loadItem<Expense[]>(STORAGE_KEYS.EXPENSES, [], tenantId);
+      this.expenseRecurrences = loadItem<ExpenseRecurrenceSeries[]>(STORAGE_KEYS.EXPENSE_RECURRENCES, [], tenantId);
       this.categories = loadItem<ExpenseCategory[]>(STORAGE_KEYS.CATEGORIES, INITIAL_CHART_OF_ACCOUNTS, tenantId);
       this.bankAccounts = loadItem<BankAccount[]>(STORAGE_KEYS.BANK_ACCOUNTS, [], tenantId);
       this.payrollHistory = loadItem<PayrollHistoryEntry[]>(STORAGE_KEYS.PAYROLL_HISTORY, [], tenantId);
@@ -1026,6 +1107,8 @@ export class DentalFinanceDB {
       this.clinicalRecords = loadItem<ClinicalRecord[]>(STORAGE_KEYS.CLINICAL_RECORDS, [], tenantId);
       this.clinicalAttachments = loadItem<ClinicalAttachment[]>(STORAGE_KEYS.CLINICAL_ATTACHMENTS, [], tenantId);
       this.beforeAfterPairs = loadItem<ClinicalBeforeAfterPair[]>(STORAGE_KEYS.CLINICAL_BEFORE_AFTER, [], tenantId);
+      this.clinicalProfessionals = loadItem<ClinicalProfessional[]>(STORAGE_KEYS.CLINICAL_PROFESSIONALS, [], tenantId);
+      this.budgets = loadItem<Budget[]>(STORAGE_KEYS.BUDGETS, [], tenantId);
       this.preferences = loadItem<SystemPreferences>(
         STORAGE_KEYS.SYSTEM_PREFERENCES,
         { hideCpf: false, alertFatorR: true, alertDueDates: true, operationalReminders: true },
@@ -2402,6 +2485,175 @@ export class DentalFinanceDB {
     return [this.professional];
   }
 
+  // Profissionais CLÍNICOS (equipe de dentistas) — distinto de getProfessional()/getProfessionals()
+  // acima, que é a identidade FISCAL única do tenant. Ver ClinicalProfessional em types/index.ts.
+  public getClinicalProfessionals(): ClinicalProfessional[] {
+    return this.clinicalProfessionals;
+  }
+
+  public async saveClinicalProfessional(professional: {
+    id?: string;
+    name: string;
+    cro?: string | null;
+    croUf?: string | null;
+    especialidade?: string | null;
+    color?: string | null;
+    isActive?: boolean;
+    userId?: string | null;
+  }): Promise<ClinicalProfessional | null> {
+    const tenantId = this.activeTenantId;
+    const res = await SupabaseService.upsertClinicalProfessional(tenantId, professional);
+    if (!res.success || !res.id) return null;
+    const saved: ClinicalProfessional = {
+      id: res.id,
+      tenantId,
+      name: professional.name,
+      cro: professional.cro || null,
+      croUf: professional.croUf || null,
+      especialidade: professional.especialidade || null,
+      color: professional.color || null,
+      isActive: professional.isActive ?? true,
+      userId: professional.userId || null,
+      createdAt: this.clinicalProfessionals.find((p) => p.id === res.id)?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const exists = this.clinicalProfessionals.some((p) => p.id === res.id);
+    this.clinicalProfessionals = exists
+      ? this.clinicalProfessionals.map((p) => (p.id === res.id ? saved : p))
+      : [...this.clinicalProfessionals, saved];
+    saveItem(STORAGE_KEYS.CLINICAL_PROFESSIONALS, this.clinicalProfessionals, tenantId);
+    this.notify();
+    return saved;
+  }
+
+  public async setClinicalProfessionalActive(professionalId: string, isActive: boolean): Promise<boolean> {
+    const tenantId = this.activeTenantId;
+    const res = await SupabaseService.setClinicalProfessionalActive(tenantId, professionalId, isActive);
+    if (!res.success) return false;
+    this.clinicalProfessionals = this.clinicalProfessionals.map((p) =>
+      p.id === professionalId ? { ...p, isActive, updatedAt: new Date().toISOString() } : p
+    );
+    saveItem(STORAGE_KEYS.CLINICAL_PROFESSIONALS, this.clinicalProfessionals, tenantId);
+    this.notify();
+    return true;
+  }
+
+  // Vínculo procedimento <-> profissionais habilitados. Ausência de linhas para um procedimento =
+  // disponível a todos os profissionais ativos (ver src/lib/professionalScheduling.ts).
+  public getProcedureProfessionalLinks(): Record<string, string[]> {
+    return this.procedureProfessionalLinks;
+  }
+
+  public async setProcedureProfessionals(procedureId: string, professionalIds: string[]): Promise<boolean> {
+    const tenantId = this.activeTenantId;
+    const res = await SupabaseService.setProcedureProfessionals(tenantId, procedureId, professionalIds);
+    if (!res.success) return false;
+    this.procedureProfessionalLinks = { ...this.procedureProfessionalLinks, [procedureId]: professionalIds };
+    this.notify();
+    return true;
+  }
+
+  // -------------------------------------------------------------
+  // ORÇAMENTOS (Fase D) — CRUD isolado, SEM nenhum efeito financeiro/fiscal/estoque. A conversão em
+  // venda é uma ação separada e explícita (ver markBudgetConverted, chamada só depois que a UI
+  // efetivamente salvou uma Sale de verdade pelo fluxo normal de Nova Receita).
+  // -------------------------------------------------------------
+  public getBudgets(): Budget[] {
+    return this.budgets;
+  }
+
+  public async saveBudget(input: {
+    id?: string;
+    patientId: string;
+    patientName: string;
+    status?: Budget['status'];
+    items: BudgetItem[];
+    subtotal: number;
+    discountType?: 'PERCENT' | 'FIXED' | null;
+    discountValue: number;
+    total: number;
+    validUntil?: string | null;
+    notes?: string;
+  }): Promise<{ success: boolean; budget?: Budget; error?: string }> {
+    const existing = input.id ? this.budgets.find((b) => b.id === input.id) : undefined;
+    const now = new Date().toISOString();
+    const actor = this.currentSession?.user;
+    const id = input.id || `budget_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    const budget: Budget = {
+      id,
+      tenantId: this.activeTenantId,
+      patientId: input.patientId,
+      patientName: input.patientName,
+      status: input.status || existing?.status || 'RASCUNHO',
+      items: input.items,
+      subtotal: input.subtotal,
+      discountType: input.discountType || null,
+      discountValue: input.discountValue || 0,
+      total: input.total,
+      validUntil: input.validUntil || null,
+      notes: input.notes || '',
+      convertedSaleId: existing?.convertedSaleId || null,
+      convertedAt: existing?.convertedAt || null,
+      presentedAt: existing?.presentedAt || (input.status === 'APRESENTADO' ? now : null),
+      decidedAt:
+        existing?.decidedAt || (input.status === 'APROVADO' || input.status === 'RECUSADO' ? now : null),
+      createdBy: existing?.createdBy || actor?.id,
+      createdByName: existing?.createdByName || actor?.name,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveBudget(budget, this.activeTenantId);
+      if (!res.success) return { success: false, error: res.error || 'Erro ao salvar orçamento no servidor.' };
+    }
+
+    this.budgets = existing ? this.budgets.map((b) => (b.id === id ? budget : b)) : [budget, ...this.budgets];
+    saveItem(STORAGE_KEYS.BUDGETS, this.budgets, this.activeTenantId);
+    this.notify();
+    return { success: true, budget };
+  }
+
+  public async deleteBudget(id: string): Promise<{ success: boolean; error?: string }> {
+    const existing = this.budgets.find((b) => b.id === id);
+    if (existing?.convertedSaleId) {
+      return { success: false, error: 'Orçamentos já convertidos em venda não podem ser excluídos — a venda é o histórico definitivo.' };
+    }
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.deleteBudget(id, this.activeTenantId);
+      if (!res.success) return { success: false, error: res.error || 'Erro ao excluir orçamento no servidor.' };
+    }
+    this.budgets = this.budgets.filter((b) => b.id !== id);
+    saveItem(STORAGE_KEYS.BUDGETS, this.budgets, this.activeTenantId);
+    this.notify();
+    return { success: true };
+  }
+
+  // Único ponto que grava converted_sale_id — chamado pela UI só DEPOIS de uma Sale real já ter
+  // sido salva pelo fluxo normal de Nova Receita. Idempotente: se o orçamento já tem
+  // convertedSaleId, recusa (nunca sobrescreve, nunca permite gerar uma segunda venda do mesmo
+  // orçamento).
+  public async markBudgetConverted(budgetId: string, saleId: string): Promise<{ success: boolean; error?: string }> {
+    const existing = this.budgets.find((b) => b.id === budgetId);
+    if (!existing) return { success: false, error: 'Orçamento não encontrado.' };
+    if (existing.convertedSaleId) {
+      return { success: false, error: 'Este orçamento já foi convertido em venda anteriormente.' };
+    }
+    const now = new Date().toISOString();
+    const updated: Budget = { ...existing, status: 'CONVERTIDO', convertedSaleId: saleId, convertedAt: now, updatedAt: now };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveBudget(updated, this.activeTenantId);
+      if (!res.success) return { success: false, error: res.error || 'Erro ao marcar orçamento como convertido.' };
+    }
+
+    this.budgets = this.budgets.map((b) => (b.id === budgetId ? updated : b));
+    saveItem(STORAGE_KEYS.BUDGETS, this.budgets, this.activeTenantId);
+    this.notify();
+    return { success: true };
+  }
+
   public getPatients(): Patient[] {
     return this.patients;
   }
@@ -2412,6 +2664,10 @@ export class DentalFinanceDB {
 
   public getExpenses(): Expense[] {
     return this.expenses;
+  }
+
+  public getExpenseRecurrences(): ExpenseRecurrenceSeries[] {
+    return this.expenseRecurrences;
   }
 
   public getCategories(): ExpenseCategory[] {
@@ -2868,26 +3124,52 @@ export class DentalFinanceDB {
     this.updatePatientAsync(id, updates).catch(console.warn);
   }
 
-  public async deletePatientAsync(id: string): Promise<{ success: boolean; error?: string }> {
+  /**
+   * Exclusão de paciente SEGURA. O servidor (RPC dental_delete_patient_safe) é a fonte da
+   * verdade: recusa quando há venda/recebível/agenda/prontuário/documento/antes-depois
+   * (referências sem foreign key que um DELETE simples deixaria pendentes), desfaz só os
+   * vínculos de WhatsApp/responsável, grava auditoria, marca o mapa legado como DELETED (a
+   * migração não recria o registro) e encerra as pendências abertas. Não existe DELETE direto.
+   */
+  public async deletePatientAsync(
+    id: string,
+    reason?: string
+  ): Promise<{ success: boolean; error?: string; code?: string; blocking?: Record<string, number> }> {
+    const found = this.patients.find((p) => p.id === id);
+    if (!found) return { success: false, error: 'Paciente não encontrado', code: 'NOT_FOUND' };
+
     if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
-      const res = await SupabaseService.deletePatient(id, this.activeTenantId);
-      if (!res.success) {
-        return { success: false, error: res.error || 'Erro ao excluir paciente no servidor' };
+      const res = await SupabaseService.deletePatientSafe(id, reason);
+      if (!res.ok) {
+        return {
+          success: false,
+          error: res.message || 'Erro ao excluir paciente no servidor',
+          code: res.code,
+          blocking: res.blocking,
+        };
+      }
+    } else {
+      // Modo demo (sem servidor): mesma regra, conferida nos dados locais.
+      const local = {
+        sales: this.sales.filter((s) => s.patientId === id).length,
+        appointments: this.appointments.filter((a) => a.patientId === id).length,
+        clinical_records: (this.clinicalRecords || []).filter((r) => r.patientId === id).length,
+      };
+      if (Object.values(local).some((n) => n > 0)) {
+        return {
+          success: false,
+          code: 'HAS_HISTORY',
+          error: 'Este paciente possui histórico e não pode ser excluído diretamente.',
+          blocking: Object.fromEntries(Object.entries(local).filter(([, n]) => n > 0)),
+        };
       }
     }
+
     this.patients = this.patients.filter((p) => p.id !== id);
     saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
-    this.log('EXCLUSAO_PACIENTE', 'PATIENT', id, `Paciente excluído.`);
+    this.log('EXCLUSAO_PACIENTE', 'PATIENT', id, `Paciente excluído (sem histórico operacional).`);
     this.notify();
     return { success: true };
-  }
-
-  public deletePatient(id: string): boolean {
-    this.deletePatientAsync(id).catch(console.warn);
-    this.patients = this.patients.filter((p) => p.id !== id);
-    saveItem(STORAGE_KEYS.PATIENTS, this.patients, this.activeTenantId);
-    this.notify();
-    return true;
   }
 
   // ==========================================
@@ -2954,6 +3236,12 @@ export class DentalFinanceDB {
         id,
         `Evolução clínica finalizada e assinada (${newRecord.recordType}) para o paciente ${newRecord.patientId}.`
       );
+    }
+
+    // Estoque: um atendimento criado JÁ como FINALIZED (fluxo comum — "Finalizar" na primeira
+    // gravação, sem passar por rascunho) consome os insumos do procedimento imediatamente.
+    if (newRecord.status === 'FINALIZED') {
+      this.consumeProcedureInputsForRecord(id, newRecord.procedureId).catch(console.warn);
     }
 
     this.notify();
@@ -3037,6 +3325,10 @@ export class DentalFinanceDB {
       id,
       `Evolução clínica finalizada e tornada imutável para o paciente ${existing.patientId}.`
     );
+    // Estoque: consumo automático só acontece AQUI, na transição real DRAFT -> FINALIZED — nunca no
+    // early-return acima (já FINALIZED/AMENDED), o que garante não consumir duas vezes ao finalizar
+    // o mesmo atendimento repetidamente (reforçado também pela idempotência em banco).
+    this.consumeProcedureInputsForRecord(id, existing.procedureId).catch(console.warn);
     this.notify();
     return { success: true };
   }
@@ -3193,6 +3485,10 @@ export class DentalFinanceDB {
       id,
       `Registro clínico marcado como inválido para o paciente ${existing.patientId}. Motivo: ${reason.trim()}`
     );
+    // Estoque: um atendimento FINALIZED que consumiu insumos e depois é invalidado devolve o que
+    // havia sido debitado (REVERSAL, com histórico próprio) — nunca deixa consumo fantasma de um
+    // tratamento que deixou de valer. DRAFT nunca chega aqui (early-return acima) e nunca consumiu.
+    this.reverseProcedureConsumptionForRecord(id).catch(console.warn);
     this.notify();
     return { success: true };
   }
@@ -4435,6 +4731,322 @@ export class DentalFinanceDB {
     return createdList;
   }
 
+  /**
+   * Cria uma despesa RECORRENTE como SÉRIE ABERTA (sem quantidade total): grava o template em
+   * df_expense_recurrences e materializa só a PRIMEIRA ocorrência (no start_date escolhido). As
+   * próximas nascem sob demanda via ensureRecurringExpensesGeneratedAsync — nunca 12/24/60 de uma vez.
+   */
+  public async createRecurringExpenseAsync(input: {
+    supplierName: string;
+    supplierCpfCnpj?: string;
+    description: string;
+    categoryId: string;
+    categoryCode?: string;
+    categoryName?: string;
+    groupCode?: string;
+    groupName?: string;
+    subCategory?: string;
+    value: number;
+    entity: ExpenseEntity;
+    splitPercentageCpf?: number;
+    splitPercentageCnpj?: number;
+    bankAccountId?: string;
+    documentNumber?: string;
+    notes?: string;
+    dedutivelLivroCaixaPf: LivroCaixaPfDedutibilidade;
+    impactaFatorRPj: boolean;
+    despesaOperacionalPj: boolean;
+    isOverridden?: boolean;
+    overrideJustification?: string;
+    startDate: string;
+    intervalMonths: number;
+    attachmentName?: string;
+    attachment?: AttachmentMetadata | null;
+    isPaid: boolean;
+    paymentDate?: string;
+    paymentMethod?: PaymentMethod;
+  }): Promise<{ success: boolean; series?: ExpenseRecurrenceSeries; occurrence?: Expense; error?: string }> {
+    const nowIso = new Date().toISOString();
+    const seriesId = `exprec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+    const series: ExpenseRecurrenceSeries = {
+      id: seriesId,
+      tenantId: this.activeTenantId,
+      description: input.description,
+      supplierName: input.supplierName,
+      supplierCpfCnpj: input.supplierCpfCnpj,
+      categoryId: input.categoryId,
+      categoryCode: input.categoryCode,
+      categoryName: input.categoryName,
+      groupCode: input.groupCode,
+      groupName: input.groupName,
+      subCategory: input.subCategory,
+      value: input.value,
+      entity: input.entity,
+      splitPercentageCpf: input.splitPercentageCpf,
+      splitPercentageCnpj: input.splitPercentageCnpj,
+      paymentMethod: input.paymentMethod,
+      bankAccountId: input.bankAccountId,
+      documentNumber: input.documentNumber,
+      notes: input.notes,
+      dedutivelLivroCaixaPf: input.dedutivelLivroCaixaPf,
+      impactaFatorRPj: input.impactaFatorRPj,
+      despesaOperacionalPj: input.despesaOperacionalPj,
+      isOverridden: input.isOverridden,
+      overrideJustification: input.overrideJustification,
+      startDate: input.startDate,
+      intervalMonths: input.intervalMonths,
+      status: 'ACTIVE',
+      lastGeneratedDueDate: input.startDate,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const template: RecurrenceSeriesTemplate = {
+      id: seriesId,
+      supplierName: input.supplierName,
+      supplierCpfCnpj: input.supplierCpfCnpj,
+      description: input.description,
+      categoryId: input.categoryId,
+      categoryCode: input.categoryCode,
+      categoryName: input.categoryName,
+      groupCode: input.groupCode,
+      groupName: input.groupName,
+      subCategory: input.subCategory,
+      value: input.value,
+      entity: input.entity,
+      splitPercentageCpf: input.splitPercentageCpf,
+      splitPercentageCnpj: input.splitPercentageCnpj,
+      bankAccountId: input.bankAccountId,
+      documentNumber: input.documentNumber,
+      notes: input.notes,
+      dedutivelLivroCaixaPf: input.dedutivelLivroCaixaPf,
+      impactaFatorRPj: input.impactaFatorRPj,
+      despesaOperacionalPj: input.despesaOperacionalPj,
+      isOverridden: input.isOverridden,
+      overrideJustification: input.overrideJustification,
+      intervalMonths: input.intervalMonths,
+    };
+    const draft = buildOccurrenceDraftFromSeries(template, input.startDate);
+    const firstOccurrence: Expense = {
+      ...draft,
+      id: `exp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      orgId: this.org.id,
+      createdAt: nowIso,
+      attachmentName: input.attachmentName,
+      attachment: input.attachment || null,
+      status: input.isPaid ? 'PAGO' : 'A_PAGAR',
+      paymentDate: input.isPaid ? input.paymentDate : undefined,
+      paymentMethod: input.isPaid ? input.paymentMethod : undefined,
+    };
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const seriesRes = await SupabaseService.saveExpenseRecurrence(series, this.activeTenantId);
+      if (!seriesRes.success) {
+        return { success: false, error: seriesRes.error || 'Erro ao salvar a recorrência no servidor' };
+      }
+      const occRes = await SupabaseService.saveExpense(firstOccurrence, this.activeTenantId);
+      if (!occRes.success) {
+        return { success: false, error: occRes.error || 'Erro ao salvar a primeira ocorrência no servidor' };
+      }
+    }
+
+    this.expenseRecurrences = [series, ...this.expenseRecurrences];
+    this.expenses = [firstOccurrence, ...this.expenses];
+    saveItem(STORAGE_KEYS.EXPENSE_RECURRENCES, this.expenseRecurrences, this.activeTenantId);
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+    if (firstOccurrence.status === 'PAGO' && firstOccurrence.bankAccountId) {
+      this.updateBankAccountBalance(firstOccurrence.bankAccountId, -firstOccurrence.value);
+    }
+    this.log(
+      'CRIACAO_DESPESA_RECORRENTE',
+      'EXPENSE',
+      seriesId,
+      `Recorrência "${input.description}" criada (${input.intervalMonths === 1 ? 'mensal' : `a cada ${input.intervalMonths} meses`}, a partir de ${input.startDate}).`
+    );
+    this.notify();
+
+    // Gera de imediato as ocorrências futuras dentro do horizonte, sem esperar a próxima sessão
+    // (a trava "uma vez por sessão" de ensureRecurringExpensesGeneratedAsync já foi consumida no
+    // login/carregamento do tenant, então sem isto a série só apareceria nos próximos meses após
+    // um novo login).
+    this.generateMissingOccurrencesForSeries([series], this.activeTenantId).catch((genErr) =>
+      console.warn('[ExpenseRecurrence] Falha ao gerar ocorrências futuras logo após a criação (será tentado no próximo login):', genErr)
+    );
+
+    return { success: true, series, occurrence: firstOccurrence };
+  }
+
+  /**
+   * Materialização sob demanda (idempotente): para cada série ACTIVE do tenant, gera as ocorrências
+   * que faltam entre a última já criada e "hoje + horizonte", sem depender de um cron server-side.
+   * Roda uma vez por tenant por sessão (evita refazer o trabalho a cada re-render); chamada de novo
+   * ao trocar de clínica. Nunca mexe em séries ENDED.
+   */
+  public async ensureRecurringExpensesGeneratedAsync(tenantId: string): Promise<void> {
+    if (this.isDemoMode || tenantId === 'tenant_demo') return;
+    if (this.recurrenceGenerationDoneForTenant.has(tenantId)) return;
+    this.recurrenceGenerationDoneForTenant.add(tenantId);
+
+    const activeSeries = this.expenseRecurrences.filter((s) => s.tenantId === tenantId && s.status === 'ACTIVE');
+    if (!activeSeries.length) return;
+    await this.generateMissingOccurrencesForSeries(activeSeries, tenantId);
+  }
+
+  /**
+   * Núcleo da materialização sob demanda, sem a trava "uma vez por sessão" — reaproveitado tanto
+   * pela varredura de sessão (ensureRecurringExpensesGeneratedAsync) quanto para gerar de imediato
+   * o horizonte de UMA série recém-criada (createRecurringExpenseAsync), sem esperar o próximo login.
+   */
+  private async generateMissingOccurrencesForSeries(activeSeries: ExpenseRecurrenceSeries[], tenantId: string): Promise<void> {
+    if (!activeSeries.length) return;
+
+    const todayIso = new Date().toISOString().split('T')[0];
+    const horizon = computeGenerationHorizon(todayIso);
+    const existingByRecurrence = new Map<string, Set<string>>();
+    this.expenses.forEach((e) => {
+      if (!e.recurrenceId) return;
+      if (!existingByRecurrence.has(e.recurrenceId)) existingByRecurrence.set(e.recurrenceId, new Set());
+      existingByRecurrence.get(e.recurrenceId)!.add(e.dueDate);
+    });
+
+    const newOccurrences: Expense[] = [];
+    const updatedSeriesList: ExpenseRecurrenceSeries[] = [];
+
+    activeSeries.forEach((series) => {
+      const missing = computeMissingOccurrenceDueDates(
+        {
+          startDate: series.startDate,
+          intervalMonths: series.intervalMonths,
+          status: series.status,
+          lastGeneratedDueDate: series.lastGeneratedDueDate,
+        },
+        horizon
+      );
+      // Defesa extra: nunca recriar uma data que já exista de verdade (auto-corrige eventual
+      // drift de last_generated_due_date; a constraint única no banco é o último cinto de segurança).
+      const existingDates = existingByRecurrence.get(series.id) || new Set<string>();
+      const toCreate = missing.filter((d) => !existingDates.has(d));
+      if (!toCreate.length) return;
+
+      const template: RecurrenceSeriesTemplate = {
+        id: series.id,
+        supplierName: series.supplierName,
+        supplierCpfCnpj: series.supplierCpfCnpj,
+        description: series.description,
+        categoryId: series.categoryId,
+        categoryCode: series.categoryCode,
+        categoryName: series.categoryName,
+        groupCode: series.groupCode,
+        groupName: series.groupName,
+        subCategory: series.subCategory,
+        value: series.value,
+        entity: series.entity,
+        splitPercentageCpf: series.splitPercentageCpf,
+        splitPercentageCnpj: series.splitPercentageCnpj,
+        bankAccountId: series.bankAccountId,
+        documentNumber: series.documentNumber,
+        notes: series.notes,
+        dedutivelLivroCaixaPf: series.dedutivelLivroCaixaPf,
+        impactaFatorRPj: series.impactaFatorRPj,
+        despesaOperacionalPj: series.despesaOperacionalPj,
+        isOverridden: series.isOverridden,
+        overrideJustification: series.overrideJustification,
+        intervalMonths: series.intervalMonths,
+      };
+      toCreate.forEach((dueDate, idx) => {
+        const draft = buildOccurrenceDraftFromSeries(template, dueDate);
+        newOccurrences.push({
+          ...draft,
+          id: `exp_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+          orgId: this.org.id,
+          createdAt: new Date().toISOString(),
+        } as Expense);
+      });
+      updatedSeriesList.push({ ...series, lastGeneratedDueDate: missing[missing.length - 1], updatedAt: new Date().toISOString() });
+    });
+
+    if (!newOccurrences.length) return;
+
+    const bulkRes = await SupabaseService.saveExpensesBulk(newOccurrences, tenantId);
+    if (!bulkRes.success) {
+      console.warn('[ExpenseRecurrence] Falha ao persistir novas ocorrências (tenta de novo na próxima carga):', bulkRes.error);
+      this.recurrenceGenerationDoneForTenant.delete(tenantId);
+      return;
+    }
+    await Promise.all(updatedSeriesList.map((s) => SupabaseService.saveExpenseRecurrence(s, tenantId)));
+
+    if (tenantId === this.activeTenantId) {
+      this.expenses = [...newOccurrences, ...this.expenses];
+      this.expenseRecurrences = this.expenseRecurrences.map(
+        (s) => updatedSeriesList.find((u) => u.id === s.id) || s
+      );
+      saveItem(STORAGE_KEYS.EXPENSES, this.expenses, tenantId);
+      saveItem(STORAGE_KEYS.EXPENSE_RECURRENCES, this.expenseRecurrences, tenantId);
+      this.log(
+        'GERACAO_OCORRENCIAS_RECORRENTES',
+        'EXPENSE',
+        'batch',
+        `${newOccurrences.length} ocorrência(s) futura(s) geradas para ${updatedSeriesList.length} série(s) recorrente(s).`
+      );
+      this.notify();
+    }
+  }
+
+  /**
+   * "Encerrar recorrência" — NUNCA excluir. Para a geração de novas ocorrências a partir de agora
+   * (ou da ocorrência-âncora, se informada) e remove só ocorrências FUTURAS ainda não pagas que já
+   * tivessem sido materializadas dentro do horizonte; tudo que já foi pago é preservado, sempre.
+   */
+  public async endRecurringExpenseAsync(
+    seriesId: string,
+    anchorExpenseId?: string
+  ): Promise<{ success: boolean; removedCount: number; error?: string }> {
+    const series = this.expenseRecurrences.find((s) => s.id === seriesId);
+    if (!series) return { success: false, removedCount: 0, error: 'Série recorrente não encontrada' };
+    if (series.status === 'ENDED') return { success: true, removedCount: 0 };
+
+    const actorId = this.currentSession?.user?.id || (this.user ? this.user.id : 'sys');
+    const actorName = this.currentSession?.user?.name || (this.user ? this.user.name : 'Sistema');
+    const ended = planEndRecurrence(actorId, actorName);
+    const updatedSeries: ExpenseRecurrenceSeries = { ...series, ...ended, updatedAt: new Date().toISOString() };
+
+    const anchor = anchorExpenseId ? this.expenses.find((e) => e.id === anchorExpenseId) : undefined;
+    const anchorDueDate = anchor?.dueDate || new Date().toISOString().split('T')[0];
+    const toRemove = selectOccurrencesToRemoveOnEnd(
+      this.expenses.map((e) => ({ id: e.id, dueDate: e.dueDate, status: e.status, recurrenceId: e.recurrenceId })),
+      seriesId,
+      anchorDueDate
+    );
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const res = await SupabaseService.saveExpenseRecurrence(updatedSeries, this.activeTenantId);
+      if (!res.success) {
+        return { success: false, removedCount: 0, error: res.error || 'Erro ao encerrar a recorrência no servidor' };
+      }
+      if (toRemove.length) {
+        const delRes = await SupabaseService.deleteExpenses(toRemove.map((o) => o.id), this.activeTenantId);
+        if (!delRes.success) {
+          console.warn('[ExpenseRecurrence] Falha ao remover ocorrências futuras ao encerrar:', delRes.error);
+        }
+      }
+    }
+
+    this.expenseRecurrences = this.expenseRecurrences.map((s) => (s.id === seriesId ? updatedSeries : s));
+    const removeIds = new Set(toRemove.map((o) => o.id));
+    this.expenses = this.expenses.filter((e) => !removeIds.has(e.id));
+    saveItem(STORAGE_KEYS.EXPENSE_RECURRENCES, this.expenseRecurrences, this.activeTenantId);
+    saveItem(STORAGE_KEYS.EXPENSES, this.expenses, this.activeTenantId);
+    this.log(
+      'ENCERRAMENTO_DESPESA_RECORRENTE',
+      'EXPENSE',
+      seriesId,
+      `Recorrência "${series.description}" encerrada por ${actorName}. ${toRemove.length} ocorrência(s) futura(s) não paga(s) removida(s); histórico preservado.`
+    );
+    this.notify();
+    return { success: true, removedCount: toRemove.length };
+  }
+
   public deleteExpenseSeries(id: string, scope: 'ONLY_THIS' | 'THIS_AND_FUTURE' | 'ALL_SERIES'): number {
     const target = this.expenses.find((e) => e.id === id);
     if (!target) return 0;
@@ -4522,6 +5134,7 @@ export class DentalFinanceDB {
         delete filteredUpdates.recurrenceIndex;
         delete filteredUpdates.dueDate;
         delete filteredUpdates.competenceDate;
+        delete filteredUpdates.intervalMonths;
         const updated = { ...e, ...filteredUpdates };
         toSync.push(updated);
         return updated;
@@ -4536,6 +5149,29 @@ export class DentalFinanceDB {
         if (!bulkRes.success) {
           console.error('[db] Falha ao atualizar série no Supabase:', bulkRes.error);
           return { success: false, updatedCount, error: bulkRes.error };
+        }
+      }
+      // Série RECORRENTE (aberta): "esta e as próximas"/"toda a série" também precisa atualizar o
+      // TEMPLATE, senão as PRÓXIMAS ocorrências (ainda não materializadas) nasceriam com os dados antigos.
+      const recurrenceSeries = target.recurrenceId
+        ? this.expenseRecurrences.find((s) => s.id === target.recurrenceId)
+        : undefined;
+      if (recurrenceSeries) {
+        const templateUpdates = pickRecurrenceTemplateUpdates(updates as Record<string, any>);
+        if (Object.keys(templateUpdates).length > 0) {
+          const updatedSeries: ExpenseRecurrenceSeries = {
+            ...recurrenceSeries,
+            ...templateUpdates,
+            updatedAt: new Date().toISOString(),
+          };
+          if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+            const seriesRes = await SupabaseService.saveExpenseRecurrence(updatedSeries, this.activeTenantId);
+            if (!seriesRes.success) {
+              console.warn('[db] Falha ao atualizar template da recorrência:', seriesRes.error);
+            }
+          }
+          this.expenseRecurrences = this.expenseRecurrences.map((s) => (s.id === updatedSeries.id ? updatedSeries : s));
+          saveItem(STORAGE_KEYS.EXPENSE_RECURRENCES, this.expenseRecurrences, this.activeTenantId);
         }
       }
       this.log('ATUALIZACAO_DESPESA_SERIE', 'EXPENSE', seriesId, `${updatedCount} despesas da série atualizadas.`);
@@ -4809,6 +5445,117 @@ export class DentalFinanceDB {
     this.log('EXCLUSAO_INSUMO', 'EXPENSE', id, `Insumo excluído do catálogo.`);
     this.notify();
     return { success: true };
+  }
+
+  // -------------------------------------------------------------
+  // ESTOQUE REAL (Fase C) — o saldo só muda por movimentação (nunca por atribuição direta);
+  // ver migration 20260929150000 (trigger fn_apply_stock_movement é a fonte de verdade do saldo).
+  // -------------------------------------------------------------
+  public async getStockMovements(filters?: { inputId?: string; clinicalRecordId?: string }): Promise<StockMovement[]> {
+    if (this.isDemoMode || this.activeTenantId === 'tenant_demo') return [];
+    return SupabaseService.getStockMovements(this.activeTenantId, filters);
+  }
+
+  // Ponto único de gravação de movimentações — usado tanto pelo consumo automático (finalização de
+  // atendimento) quanto por lançamentos manuais (entrada de compra, ajuste). Após gravar, refaz a
+  // leitura autoritativa do saldo (o trigger no banco é quem calcula) e dispara o alerta de estoque
+  // mínimo só quando esta movimentação especificamente cruzou o limiar (nunca a cada render).
+  private async recordStockMovements(
+    movements: Array<{
+      inputId: string;
+      movementType: StockMovementType;
+      quantity: number;
+      clinicalRecordId?: string | null;
+      reason?: string | null;
+    }>
+  ): Promise<{ success: boolean; error?: string }> {
+    if (movements.length === 0) return { success: true };
+    if (this.isDemoMode || this.activeTenantId === 'tenant_demo') {
+      return { success: false, error: 'Estoque real não está disponível no modo demonstração.' };
+    }
+    const tenantId = this.activeTenantId;
+    const actor = this.currentSession?.user;
+
+    const beforeByInput = new Map<string, number>();
+    for (const m of movements) {
+      if (!beforeByInput.has(m.inputId)) {
+        const found = this.clinicalInputs.find((i) => i.id === m.inputId);
+        beforeByInput.set(m.inputId, found?.quantityOnHand || 0);
+      }
+    }
+
+    const res = await SupabaseService.recordStockMovements(
+      tenantId,
+      movements.map((m) => ({
+        ...m,
+        createdBy: actor?.id || null,
+        createdByName: actor?.name || null,
+      }))
+    );
+    if (!res.success) return res;
+
+    const refreshed = await SupabaseService.getClinicalInputs(tenantId);
+    if (refreshed.length > 0) {
+      this.clinicalInputs = refreshed;
+      saveItem(STORAGE_KEYS.CLINICAL_INPUTS, this.clinicalInputs, tenantId);
+    }
+
+    for (const m of movements) {
+      const before = beforeByInput.get(m.inputId) ?? 0;
+      const inputNow = this.clinicalInputs.find((i) => i.id === m.inputId);
+      if (!inputNow) continue;
+      if (didCrossLowThreshold(before, inputNow.quantityOnHand || 0, inputNow.minimumQuantity || 0)) {
+        SupabaseService.createLowStockNotification(tenantId, inputNow.name, inputNow.id).catch(console.warn);
+      }
+    }
+
+    this.notify();
+    return { success: true };
+  }
+
+  // Lançamento manual (entrada de compra ou ajuste) — sempre exige motivo para ajustes, nunca para
+  // entrada de compra comum (fluxo operacional recorrente).
+  public async adjustClinicalInputStock(
+    inputId: string,
+    movementType: Extract<StockMovementType, 'ENTRY' | 'ADJUSTMENT_PLUS' | 'ADJUSTMENT_MINUS'>,
+    quantity: number,
+    reason?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!quantity || quantity <= 0) {
+      return { success: false, error: 'Informe uma quantidade maior que zero.' };
+    }
+    return this.recordStockMovements([{ inputId, movementType, quantity, reason: reason || null }]);
+  }
+
+  // Consumo automático ao FINALIZAR um atendimento — única fonte de verdade para debitar estoque
+  // (nunca em orçamento/agendamento/venda). Idempotente em banco por (tenant, atendimento, insumo,
+  // tipo): finalizar o mesmo atendimento duas vezes nunca consome duas vezes.
+  private async consumeProcedureInputsForRecord(clinicalRecordId: string, procedureId?: string): Promise<void> {
+    if (!procedureId) return;
+    const procedure = this.procedures.find((p) => p.id === procedureId);
+    const planned = resolveConsumptionForClinicalRecord(procedure);
+    if (planned.length === 0) return;
+    await this.recordStockMovements(
+      planned.map((p) => ({ ...p, clinicalRecordId }))
+    ).catch((err) => console.warn('[Estoque] Falha ao consumir insumos do atendimento:', err));
+  }
+
+  // Reverte o consumo de um atendimento que foi invalidado (voidClinicalRecord) — devolve ao
+  // estoque exatamente o que aquele atendimento havia consumido, com histórico próprio (REVERSAL),
+  // nunca reescrevendo a movimentação original.
+  private async reverseProcedureConsumptionForRecord(clinicalRecordId: string): Promise<void> {
+    const consumedMovements = await this.getStockMovements({ clinicalRecordId });
+    const toReverse = consumedMovements.filter((m) => m.movementType === 'PROCEDURE_CONSUMPTION');
+    if (toReverse.length === 0) return;
+    await this.recordStockMovements(
+      toReverse.map((m) => ({
+        inputId: m.inputId,
+        movementType: 'REVERSAL' as StockMovementType,
+        quantity: m.quantity,
+        clinicalRecordId,
+        reason: 'Atendimento invalidado',
+      }))
+    ).catch((err) => console.warn('[Estoque] Falha ao reverter consumo do atendimento invalidado:', err));
   }
 
   public deleteClinicalInput(id: string): boolean {
@@ -5151,17 +5898,15 @@ export class DentalFinanceDB {
     const now = new Date().toISOString();
     const aptId = `apt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-    // Bloqueio rigoroso de sobreposição de horários (conflito de consultas)
-    const newStartMin = appointmentData.startTime ? (Number(appointmentData.startTime.split(':')[0]) * 60 + Number(appointmentData.startTime.split(':')[1])) : 0;
-    const newEndMin = appointmentData.endTime ? (Number(appointmentData.endTime.split(':')[0]) * 60 + Number(appointmentData.endTime.split(':')[1])) : 0;
-
-    const conflict = this.appointments.find((a) => {
-      if (a.date !== appointmentData.date) return false;
-      if (a.status === 'CANCELADA') return false;
-      if (appointmentData.dentistName && a.dentistName && a.dentistName !== appointmentData.dentistName) return false;
-      const aStartMin = a.startTime ? (Number(a.startTime.split(':')[0]) * 60 + Number(a.startTime.split(':')[1])) : 0;
-      const aEndMin = a.endTime ? (Number(a.endTime.split(':')[0]) * 60 + Number(a.endTime.split(':')[1])) : 0;
-      return newStartMin < aEndMin && newEndMin > aStartMin;
+    // Bloqueio rigoroso de sobreposição de horários (conflito de consultas) — mesmo profissional +
+    // mesmo horário bloqueia; profissionais diferentes podem atender simultaneamente (ver
+    // professionalScheduling.ts, id do profissional tem prioridade sobre o nome livre legado).
+    const conflict = findSchedulingConflict(this.appointments, {
+      date: appointmentData.date,
+      startTime: appointmentData.startTime,
+      endTime: appointmentData.endTime,
+      professionalId: appointmentData.professionalId,
+      dentistName: appointmentData.dentistName,
     });
 
     if (conflict) {
@@ -5264,20 +6009,17 @@ export class DentalFinanceDB {
     const targetStart = updates.startTime || existing.startTime;
     const targetEnd = updates.endTime || existing.endTime;
     const targetDentist = updates.dentistName || existing.dentistName;
+    const targetProfessionalId = updates.professionalId !== undefined ? updates.professionalId : existing.professionalId;
     const targetStatus = updates.status || existing.status;
 
     if (targetStatus !== 'CANCELADA' && (updates.startTime || updates.endTime || updates.date)) {
-      const newStartMin = targetStart ? (Number(targetStart.split(':')[0]) * 60 + Number(targetStart.split(':')[1])) : 0;
-      const newEndMin = targetEnd ? (Number(targetEnd.split(':')[0]) * 60 + Number(targetEnd.split(':')[1])) : 0;
-
-      const conflict = this.appointments.find((a) => {
-        if (a.id === id) return false;
-        if (a.date !== targetDate) return false;
-        if (a.status === 'CANCELADA') return false;
-        if (targetDentist && a.dentistName && a.dentistName !== targetDentist) return false;
-        const aStartMin = a.startTime ? (Number(a.startTime.split(':')[0]) * 60 + Number(a.startTime.split(':')[1])) : 0;
-        const aEndMin = a.endTime ? (Number(a.endTime.split(':')[0]) * 60 + Number(a.endTime.split(':')[1])) : 0;
-        return newStartMin < aEndMin && newEndMin > aStartMin;
+      const conflict = findSchedulingConflict(this.appointments, {
+        id,
+        date: targetDate,
+        startTime: targetStart,
+        endTime: targetEnd,
+        professionalId: targetProfessionalId,
+        dentistName: targetDentist,
       });
 
       if (conflict) {

@@ -22,8 +22,11 @@ import {
   ChevronRight,
   Repeat,
   MessageSquare,
+  X,
+  ClipboardList,
 } from 'lucide-react';
 import { canAccessTab } from '../../lib/permissions';
+import { useIsDesktop } from '../../hooks/useMediaQuery';
 
 import type { NavTab } from '../../types';
 export type { NavTab };
@@ -55,7 +58,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpenMobile,
   onCloseMobile,
   onLogout,
-  isCollapsed = false,
+  isCollapsed: isCollapsedPref = false,
   onToggleCollapse,
   userRole,
   userIsPrimary,
@@ -71,6 +74,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeColor?: string;
     }[];
   }
+
+  // No mobile/tablet a sidebar é um drawer: sempre expandido, nunca no modo compacto de 112px.
+  const isDesktop = useIsDesktop();
+  const isCollapsed = isCollapsedPref && isDesktop;
+  const isDrawerOpen = !isDesktop && isOpenMobile;
+
+  // Fecha o drawer ao voltar para desktop (rotação/resize) para não deixar estado preso
+  useEffect(() => {
+    if (isDesktop && isOpenMobile) onCloseMobile();
+  }, [isDesktop, isOpenMobile, onCloseMobile]);
+
+  // Drawer aberto: ESC fecha e o scroll do body fica travado (destravado no cleanup, sempre)
+  useEffect(() => {
+    if (!isDrawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCloseMobile();
+    };
+    document.addEventListener('keydown', onKey);
+    document.documentElement.classList.add('scroll-locked');
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.documentElement.classList.remove('scroll-locked');
+    };
+  }, [isDrawerOpen, onCloseMobile]);
 
   // Controle inteligente de auto-collapse:
   // Recolhe automaticamente após 5s somente no primeiro carregamento.
@@ -162,6 +189,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
         { id: 'patients', label: 'Pacientes', icon: Users },
         { id: 'agenda', label: 'Agenda', icon: Calendar },
+        { id: 'budgets', label: 'Orçamentos', icon: ClipboardList },
       ],
     },
     {
@@ -197,10 +225,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       {/* Mobile Backdrop */}
-      {isOpenMobile && (
+      {isDrawerOpen && (
         <div
           className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-40 lg:hidden"
           onClick={onCloseMobile}
+          aria-hidden="true"
         />
       )}
 
@@ -211,10 +240,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <aside
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
-        className={`fixed top-0 bottom-0 left-0 z-50 bg-white text-slate-800 border-r border-slate-200/80 flex flex-col transition-all duration-300 ${
-          isCollapsed ? 'w-[112px]' : 'w-[280px]'
+        aria-label="Menu principal"
+        inert={!isDesktop && !isOpenMobile}
+        className={`fixed top-0 bottom-0 left-0 z-50 bg-white text-slate-800 border-r border-slate-200/80 flex flex-col transition-[transform,width] duration-300 pt-safe pb-safe pl-safe ${
+          isCollapsed ? 'w-[112px]' : 'w-[min(86vw,300px)] lg:w-[280px]'
         } ${
-          isOpenMobile ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+          isOpenMobile ? 'translate-x-0 shadow-2xl lg:shadow-none' : '-translate-x-full lg:translate-x-0'
         }`}
       >
         {/* Botão de Toggle SEMPRE visível na borda direita externa */}
@@ -266,6 +297,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <p className="text-[11px] text-slate-400 font-medium truncate">Contabilidade Híbrida</p>
               </div>
             </div>
+            <button
+              type="button"
+              onClick={onCloseMobile}
+              aria-label="Fechar menu"
+              className="lg:hidden tap-target -mr-2 rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
         )}
 
@@ -338,7 +377,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       onSelectTab(item.id);
                       onCloseMobile();
                     }}
-                    className={`w-full flex items-center justify-between py-2.5 text-xs transition-all cursor-pointer group ${
+                    className={`w-full flex items-center justify-between py-3 lg:py-2.5 text-sm lg:text-xs transition-all cursor-pointer group ${
                       isActive
                         ? 'bg-slate-100/90 text-slate-900 font-bold pl-3.5 pr-2.5 rounded-xl relative before:absolute before:left-0 before:top-2 before:bottom-2 before:w-1 before:bg-emerald-600 before:rounded-r-full shadow-2xs'
                         : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50/90 px-3 rounded-xl font-medium'

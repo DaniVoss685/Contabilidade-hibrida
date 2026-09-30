@@ -381,7 +381,7 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
   );
 
   return (
-    <div className="w-80 sm:w-96 border-l border-slate-200 bg-white flex flex-col h-full shrink-0 z-20 shadow-lg animate-in slide-in-from-right-5 duration-200">
+    <div className="fixed inset-0 z-[45] w-full lg:static lg:inset-auto lg:z-20 lg:w-96 border-l border-slate-200 bg-white flex flex-col h-full lg:shrink-0 shadow-lg pt-safe pb-safe animate-in slide-in-from-right-5 duration-200">
       {/* Top Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-slate-50/50">
         <h3 className="text-sm font-bold text-slate-800">
@@ -389,9 +389,10 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
         </h3>
         <button
           onClick={onClose}
-          className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+          aria-label="Fechar painel"
+          className="tap-target -mr-2 lg:mr-0 lg:min-w-0 lg:min-h-0 lg:p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
         >
-          <X className="w-4 h-4" />
+          <X className="w-5 h-5 lg:w-4 lg:h-4" />
         </button>
       </div>
 

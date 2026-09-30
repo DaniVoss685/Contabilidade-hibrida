@@ -5,9 +5,11 @@ import {
   ClinicalRecordType,
   ClinicalRecordStatus,
   ClinicalAttachmentType,
+  ClinicalProfessional,
 } from '../../../types';
 import { db } from '../../../lib/db';
 import { uploadClinicalAttachment, validateClinicalFile } from '../../../lib/storageService';
+import { defaultProfessionalId } from '../../../lib/professionalScheduling';
 import { CustomSelect, SelectOption } from '../../UI/CustomSelect';
 import { DatePicker } from '../../UI/DatePicker';
 import {
@@ -89,6 +91,14 @@ export const ClinicalRecordModal: React.FC<ClinicalRecordModalProps> = ({
   const procedures = db.getProcedures();
   const professional = db.getProfessional();
   const user = db.getUser();
+  const clinicalProfessionals = useMemo(
+    () => db.getClinicalProfessionals().filter((p) => p.isActive),
+    []
+  );
+  // Profissional responsável REAL pelo atendimento — distinto de createdBy (usuário logado).
+  // Nunca assume o login atual: só pré-seleciona quando inequívoco (vínculo userId ou roster com
+  // exatamente 1 ativa); com 2+ profissionais exige escolha explícita.
+  const [selectedProfessionalId, setSelectedProfessionalId] = useState<string>('');
 
   const procedureOptions: SelectOption[] = useMemo(() => [
     { value: '', label: 'Nenhum procedimento do catálogo (digitar manualmente)' },
@@ -112,6 +122,7 @@ export const ClinicalRecordModal: React.FC<ClinicalRecordModalProps> = ({
       setConclusion(recordToEdit.conclusion || '');
       setGuidance(recordToEdit.guidance || '');
       setReturnDate(recordToEdit.returnDate || '');
+      setSelectedProfessionalId(recordToEdit.professionalId || '');
     } else if (continuationRecord) {
       setRecordType('RETORNO');
       setRecordDate(new Date().toISOString().split('T')[0]);
@@ -124,6 +135,7 @@ export const ClinicalRecordModal: React.FC<ClinicalRecordModalProps> = ({
       setConclusion('');
       setGuidance('');
       setReturnDate('');
+      setSelectedProfessionalId(defaultProfessionalId(clinicalProfessionals, user?.id, continuationRecord.professionalId));
     } else {
       setRecordType('PROCEDIMENTO');
       setRecordDate(new Date().toISOString().split('T')[0]);
@@ -136,6 +148,7 @@ export const ClinicalRecordModal: React.FC<ClinicalRecordModalProps> = ({
       setConclusion('');
       setGuidance('');
       setReturnDate('');
+      setSelectedProfessionalId(defaultProfessionalId(clinicalProfessionals, user?.id));
     }
     setPendingFiles([]);
     setErrorMessage(null);
@@ -184,6 +197,10 @@ export const ClinicalRecordModal: React.FC<ClinicalRecordModalProps> = ({
   const handleSubmit = async (targetStatus: ClinicalRecordStatus) => {
     if (!evolution.trim()) {
       setErrorMessage('O campo "Evolução Clínica" é obrigatório.');
+      return;
+    }
+    if (!recordToEdit && clinicalProfessionals.length > 1 && !selectedProfessionalId) {
+      setErrorMessage('Selecione o profissional responsável pelo atendimento.');
       return;
     }
 
@@ -252,13 +269,18 @@ export const ClinicalRecordModal: React.FC<ClinicalRecordModalProps> = ({
           }
         }
       } else {
-        // Criar novo registro
+        // Criar novo registro — profissional responsável REAL (nunca o usuário logado nem a
+        // identidade fiscal quando existe roster clínico configurado; fallback fiscal só quando
+        // a clínica ainda não cadastrou nenhum profissional, para não quebrar quem não migrou).
+        const chosenProfessional = clinicalProfessionals.find((p) => p.id === selectedProfessionalId);
         const newRecordRes = await db.addClinicalRecord({
           tenantId: activeTenant,
           patientId: patient.id,
-          professionalId: professional?.id || 'prof_01',
-          professionalName: professional?.name || 'Cirurgião-Dentista',
-          professionalCro: professional?.cro ? `${professional.croUf || 'SP'} ${professional.cro}` : undefined,
+          professionalId: chosenProfessional?.id || professional?.id || 'prof_01',
+          professionalName: chosenProfessional?.name || professional?.name || 'Cirurgião-Dentista',
+          professionalCro: chosenProfessional
+            ? (chosenProfessional.cro ? `${chosenProfessional.croUf || 'SP'} ${chosenProfessional.cro}` : undefined)
+            : (professional?.cro ? `${professional.croUf || 'SP'} ${professional.cro}` : undefined),
           recordType,
           procedureId: procedureId || undefined,
           procedureName: procedureName || undefined,
@@ -458,6 +480,37 @@ export const ClinicalRecordModal: React.FC<ClinicalRecordModalProps> = ({
                 </p>
               </div>
             </div>
+
+            {/* Profissional Responsável — só editável ao criar um registro novo; em edição o
+                profissional gravado permanece fixo (é fato histórico do atendimento). */}
+            {!recordToEdit && clinicalProfessionals.length > 0 && (
+              <div className="pt-1">
+                {clinicalProfessionals.length > 1 ? (
+                  <CustomSelect
+                    label="Profissional Responsável"
+                    required
+                    options={clinicalProfessionals.map((p) => ({
+                      value: p.id,
+                      label: p.cro ? `${p.name} (CRO-${p.croUf || 'SP'} ${p.cro})` : p.name,
+                      description: p.especialidade || undefined,
+                    }))}
+                    value={selectedProfessionalId}
+                    onChange={setSelectedProfessionalId}
+                    placeholder="Selecione a profissional que atendeu..."
+                  />
+                ) : (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                      Profissional Responsável
+                    </label>
+                    <div className="flex items-center gap-2.5 px-3.5 py-2.5 text-xs border border-slate-200 rounded-xl bg-slate-50/80 text-slate-800">
+                      <User className="w-3.5 h-3.5 text-teal-600" />
+                      <span className="font-semibold">{clinicalProfessionals[0].name}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* BLOCO 2: REGISTRO CLÍNICO */}

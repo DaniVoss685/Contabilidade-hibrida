@@ -68,7 +68,7 @@ export const AttachToRecordModal: React.FC<AttachToRecordModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150"
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 overflow-y-auto bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150"
       onClick={(e) => {
         // Este modal é empilhado sobre o MediaViewerModal (que fecha incondicionalmente
         // em qualquer clique no seu próprio backdrop). Sem interromper a propagação aqui,
@@ -79,8 +79,8 @@ export const AttachToRecordModal: React.FC<AttachToRecordModalProps> = ({
         if (e.target === e.currentTarget && !isSubmitting) onClose();
       }}
     >
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-150">
-        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden my-auto max-h-[calc(100dvh-2rem)] flex flex-col animate-in zoom-in-95 duration-150">
+        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70 flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center text-teal-600 shrink-0">
               <FolderInput className="w-5 h-5" />
@@ -103,7 +103,7 @@ export const AttachToRecordModal: React.FC<AttachToRecordModalProps> = ({
         </div>
 
         {successMessage ? (
-          <div className="p-6 space-y-5">
+          <div className="p-6 space-y-5 overflow-y-auto flex-1 min-h-0">
             <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-800 flex items-start gap-2.5">
               <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
               <span>{successMessage}</span>
@@ -119,7 +119,8 @@ export const AttachToRecordModal: React.FC<AttachToRecordModalProps> = ({
             </div>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <div className="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
             <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 truncate" title={fileName}>
               Arquivo: <strong className="text-slate-800">{fileName}</strong>
             </div>
@@ -164,7 +165,9 @@ export const AttachToRecordModal: React.FC<AttachToRecordModalProps> = ({
               />
             </div>
 
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+          </div>
+
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-2.5 flex-shrink-0 bg-white">
               <button
                 type="button"
                 onClick={onClose}

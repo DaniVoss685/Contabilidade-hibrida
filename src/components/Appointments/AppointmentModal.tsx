@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Calendar, Clock, User, Stethoscope, FileText, Send, CheckCircle2, ArrowRight, AlertCircle, MessageCircle } from 'lucide-react';
 import { db } from '../../lib/db';
-import { Patient, DentalProcedure, Appointment, AppointmentStatus, AppointmentOrigin, Professional } from '../../types';
+import { Patient, DentalProcedure, Appointment, AppointmentStatus, AppointmentOrigin, ClinicalProfessional } from '../../types';
 import { PatientSearchSelect } from '../UI/PatientSearchSelect';
 import { DatePicker, TimePicker, CustomSelect, ConfirmDialog, useToast, CurrencyInput } from '../UI';
 
 import { formatDateBr } from '../../lib/masks';
 import { isValidBrazilianPhone, formatPhoneDisplay } from '../../lib/phoneUtils';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
+import { findSchedulingConflict } from '../../lib/professionalScheduling';
 
 interface AppointmentModalProps {
   isOpen: boolean;
@@ -95,8 +96,9 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [procedures, setProcedures] = useState<DentalProcedure[]>([]);
-  const [professionals, setProfessionals] = useState<Professional[]>([]);
-  const [dentistName, setDentistName] = useState('Dr. Carlos Eduardo Mendes');
+  const [professionals, setProfessionals] = useState<ClinicalProfessional[]>([]);
+  const [dentistName, setDentistName] = useState('');
+  const [selectedProfessionalId, setSelectedProfessionalId] = useState('');
 
   // Form states
   const [selectedPatientId, setSelectedPatientId] = useState('');
@@ -131,14 +133,19 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
     if (isOpen) {
       setPatients(db.getPatients());
       setProcedures(db.getProcedures());
-      const profs = db.getProfessionals();
-      setProfessionals(profs);
-      const defaultProf = profs[0] || db.getProfessional();
-      if (defaultProf?.name) {
-        setDentistName(defaultProf.name);
-      }
+      setProfessionals(db.getClinicalProfessionals().filter((p) => p.isActive));
     }
   }, [isOpen]);
+
+  // Seleciona um profissional do roster clínico (nunca da identidade fiscal, nunca do usuário logado).
+  const handleProfessionalSelect = (id: string) => {
+    setSelectedProfessionalId(id);
+    const found = professionals.find((p) => p.id === id);
+    setDentistName(found?.name || '');
+    if (errors.professional) {
+      setErrors((prev) => ({ ...prev, professional: '' }));
+    }
+  };
 
   // Recalculate end time whenever startTime or duration changes
   useEffect(() => {
@@ -160,21 +167,22 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
 
   const conflictAppointment = useMemo(() => {
     if (!date || !startTime || !endTime) return null;
-    const startMin = timeToMinutes(startTime);
-    const endMin = timeToMinutes(endTime);
-
-    return (
-      existingAppointments.find((a) => {
-        if (appointmentToEdit && a.id === appointmentToEdit.id) return false;
-        if (a.date !== date) return false;
-        if (a.status === 'CANCELADA') return false;
-        if (dentistName && a.dentistName && a.dentistName !== dentistName) return false;
-        const aStart = timeToMinutes(a.startTime);
-        const aEnd = timeToMinutes(a.endTime || calculateEndTime(a.startTime, a.durationMinutes));
-        return startMin < aEnd && endMin > aStart;
-      }) || null
-    );
-  }, [existingAppointments, appointmentToEdit, date, startTime, endTime, dentistName]);
+    // Mesmo profissional (por id quando disponível, senão por nome livre legado) + mesmo horário
+    // bloqueia; profissionais diferentes podem atender simultaneamente. Regra única compartilhada
+    // com db.ts (findSchedulingConflict) — ver src/lib/professionalScheduling.ts.
+    const candidates = existingAppointments.map((a) => ({
+      ...a,
+      endTime: a.endTime || calculateEndTime(a.startTime, a.durationMinutes),
+    }));
+    return findSchedulingConflict(candidates, {
+      id: appointmentToEdit?.id,
+      date,
+      startTime,
+      endTime,
+      professionalId: selectedProfessionalId || undefined,
+      dentistName,
+    });
+  }, [existingAppointments, appointmentToEdit, date, startTime, endTime, selectedProfessionalId, dentistName]);
 
   const isLunchConflict = useMemo(() => {
     if (!isLunchBreakEnabled || !startTime || !endTime || !lunchBreakStart || !lunchBreakEnd) return false;
@@ -216,6 +224,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         setNotes(appointmentToEdit.notes || '');
         setSendWhatsappReminder(appointmentToEdit.sendWhatsappReminder ?? true);
         setDentistName(appointmentToEdit.dentistName);
+        setSelectedProfessionalId(appointmentToEdit.professionalId || '');
       } else if (rescheduleFromAppointment) {
         // Reagendamento: sempre obtém telefone fresco do paciente e reseta para PENDENTE de confirmação
         const freshPatient = db.getPatients().find((p) => p.id === rescheduleFromAppointment.patientId);
@@ -238,6 +247,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         );
         setSendWhatsappReminder(true);
         setDentistName(rescheduleFromAppointment.dentistName);
+        setSelectedProfessionalId(rescheduleFromAppointment.professionalId || '');
       } else {
         // Clean initial state with intentional defaults
         const initPatient = initialPatientId
@@ -256,9 +266,24 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         setOrigin('WHATSAPP');
         setNotes('');
         setSendWhatsappReminder(true);
-        const profs = db.getProfessionals();
-        if (profs[0]?.name) {
-          setDentistName(profs[0].name);
+        // Profissional responsável: nunca assume o usuário logado nem a identidade fiscal quando
+        // existe roster clínico configurado. Pré-seleciona só quando inequívoco: o profissional
+        // vinculado ao usuário atual (userId), ou o único ativo cadastrado — senão exige escolha
+        // explícita (duas dentistas no mesmo login não têm como o sistema adivinhar sozinho).
+        const profs = db.getClinicalProfessionals().filter((p) => p.isActive);
+        if (profs.length > 0) {
+          const currentUser = db.getUser();
+          const linkedToMe = profs.find((p) => p.userId && p.userId === currentUser?.id);
+          const defaultProf = linkedToMe || (profs.length === 1 ? profs[0] : undefined);
+          setSelectedProfessionalId(defaultProf?.id || '');
+          setDentistName(defaultProf?.name || '');
+        } else {
+          // Roster clínico ainda não configurado nesta clínica: preserva o comportamento anterior
+          // (nome único da identidade fiscal), sem professionalId — zero disrupção para quem não
+          // adotou a nova funcionalidade ainda.
+          setSelectedProfessionalId('');
+          const fiscalProf = db.getProfessional();
+          setDentistName(fiscalProf?.name || '');
         }
       }
       setErrors({});
@@ -344,6 +369,9 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
     if (!procedureName.trim()) {
       newErrors.procedure = 'Informe ou selecione o procedimento clínico.';
     }
+    if (professionals.length > 0 && !selectedProfessionalId) {
+      newErrors.professional = 'Selecione o profissional responsável pelo atendimento.';
+    }
     if (conflictAppointment) {
       newErrors.startTime = `Horário indisponível: coincide com ${conflictAppointment.patientName} (${conflictAppointment.startTime} às ${conflictAppointment.endTime}).`;
     }
@@ -379,6 +407,8 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
           durationMinutes,
           endTime: calculatedEnd,
           dentistName,
+          professionalId: selectedProfessionalId || undefined,
+          professionalName: selectedProfessionalId ? dentistName : undefined,
           procedureName,
           procedureId: selectedProcedureId || undefined,
           status,
@@ -398,6 +428,8 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
           durationMinutes,
           endTime: calculatedEnd,
           dentistName,
+          professionalId: selectedProfessionalId || undefined,
+          professionalName: selectedProfessionalId ? dentistName : undefined,
           procedureName,
           procedureId: selectedProcedureId || undefined,
           status,
@@ -419,6 +451,8 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
           durationMinutes,
           endTime: calculatedEnd,
           dentistName,
+          professionalId: selectedProfessionalId || undefined,
+          professionalName: selectedProfessionalId ? dentistName : undefined,
           procedureName,
           procedureId: selectedProcedureId || undefined,
           status,
@@ -535,11 +569,11 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         { value: '', label: 'Nenhum procedimento cadastrado' },
       ];
 
-  // Professional options for CustomSelect (if > 1)
+  // Professional options for CustomSelect (roster clínico real — value é o id, não o nome)
   const professionalOptions = professionals.map((p) => ({
-    value: p.name,
-    label: `${p.name} (CRO-${p.croUf} ${p.cro})`,
-    description: p.especialidadePrincipal || 'Cirurgião-Dentista',
+    value: p.id,
+    label: p.cro ? `${p.name} (CRO-${p.croUf || 'SP'} ${p.cro})` : p.name,
+    description: p.especialidade || 'Cirurgião-Dentista',
   }));
 
   // Render return conditionally ONLY AFTER all hooks are declared
@@ -548,9 +582,9 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
-        <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-6 animate-in fade-in zoom-in-95 duration-150">
+        <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[calc(100dvh-2rem)] flex flex-col animate-in fade-in zoom-in-95 duration-150">
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex-shrink-0">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
                 <Calendar className="w-5 h-5" />
@@ -581,7 +615,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
 
           {/* Body: Tela de Sucesso ou Formulário */}
           {savedSuccessAppointment ? (
-            <div className="p-8 text-center space-y-6 animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-8 text-center space-y-6 overflow-y-auto flex-1 min-h-0 animate-in fade-in zoom-in-95 duration-200">
               <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto shadow-inner">
                 <CheckCircle2 className="w-9 h-9" />
               </div>
@@ -658,7 +692,8 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
               </div>
             </div>
           ) : (
-            <form onSubmit={handleSubmit} className="p-6 space-y-5">
+            <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+            <div className="p-6 space-y-5 overflow-y-auto flex-1 min-h-0">
               {/* Patient Selection */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
@@ -825,14 +860,20 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
               <div>
                 {professionals.length > 1 ? (
-                  <CustomSelect
-                    label="Profissional Responsável"
-                    options={professionalOptions}
-                    value={dentistName}
-                    onChange={setDentistName}
-                    className="w-full"
-                  />
-                ) : (
+                  <>
+                    <CustomSelect
+                      label="Profissional Responsável"
+                      required
+                      options={professionalOptions}
+                      value={selectedProfessionalId}
+                      onChange={handleProfessionalSelect}
+                      placeholder="Selecione a profissional..."
+                      error={errors.professional}
+                      className="w-full"
+                    />
+                    {errors.professional && <p className="mt-1 text-xs text-rose-500">{errors.professional}</p>}
+                  </>
+                ) : professionals.length === 1 ? (
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                       Profissional Responsável
@@ -841,13 +882,25 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                       <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs">
                         Dr
                       </div>
-                      <span className="font-semibold">{dentistName}</span>
+                      <span className="font-semibold">{professionals[0].name}</span>
                       {professionals[0]?.cro && (
                         <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-600 ml-auto">
                           CRO-{professionals[0].croUf} {professionals[0].cro}
                         </span>
                       )}
                     </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Profissional Responsável
+                    </label>
+                    <div className="flex items-center gap-2.5 px-3 py-2 text-sm border border-slate-200 rounded-xl bg-slate-50/80 text-slate-800 select-none">
+                      <span className="font-semibold">{dentistName || '—'}</span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      Cadastre a equipe clínica em Configurações para atribuir consultas por profissional.
+                    </p>
                   </div>
                 )}
               </div>
@@ -880,9 +933,10 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                 className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
               />
             </div>
+            </div>
 
             {/* Footer Actions */}
-            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-white flex-shrink-0">
               <button
                 type="button"
                 onClick={handleRequestClose}

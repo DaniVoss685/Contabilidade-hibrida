@@ -245,6 +245,24 @@ export interface Professional {
   outrosRendimentosTributaveis: number; // Rendimentos externos que somam na base
 }
 
+// 2.0 Profissional CLÍNICO (equipe de dentistas/atendentes) — distinto de Professional acima, que
+// é a identidade FISCAL única por tenant (RBT12, regime tributário etc.). USUÁRIO/LOGIN (User) e
+// profissional clínico são independentes: duas dentistas podem compartilhar o mesmo login da
+// clínica, cada uma com seu próprio ClinicalProfessional (userId as vincula quando coincidem).
+export interface ClinicalProfessional {
+  id: string;
+  tenantId: string;
+  name: string;
+  cro?: string | null;
+  croUf?: string | null;
+  especialidade?: string | null;
+  color?: string | null;
+  isActive: boolean;
+  userId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // 2.1 Modos de Origem das Bases Fiscais
 export type FiscalSourceType = 'MANUAL_TOTAL' | 'MANUAL_MONTHLY' | 'CONTABILEX' | 'ACCOUNTING_MANUAL';
 
@@ -294,6 +312,10 @@ export interface Patient {
   photoUrl?: string; // Foto manual cadastrada no paciente
   whatsappPhotoUrl?: string; // Foto obtida da integração autorizada do WhatsApp
   legacyMetadata?: LegacyPatientMetadata; // Dados de migração de sistema anterior ainda não promovidos a campo de UI (somente leitura — não editável pelo formulário manual)
+  // Derivado de legacy_metadata.legacyClientUuid na leitura. SOMENTE LEITURA: não é coluna
+  // e não entra em mapAppPatientToDb/updatePatient (a regra dos 3 lugares de CLAUDE.md não se
+  // aplica a campos derivados). Sobrevive ao cache local mesmo sem o blob legacyMetadata.
+  isLegacyImport?: boolean;
   createdAt: string;
 }
 
@@ -311,7 +333,11 @@ export interface LegacyPatientMetadata {
   phone2?: string;
   phone3?: string;
   rawCpfOriginal?: string; // preservado quando o CPF informado era inválido/placeholder
+  legacyCpfRaw?: string; // CPF VÁLIDO do arquivo que NÃO foi gravado como canônico (conflito com outro cadastro) — só auditoria
+  legacyBirthDateRaw?: string; // nascimento original quando implausível (patient.birth_date fica vazio) — só auditoria
   cpfClassification?: 'VALID' | 'BLANK' | 'PLACEHOLDER' | 'INVALID';
+  rawPhoneOriginal?: string; // preservado quando telefone1 não era VALID (nunca vira patient.phone)
+  phoneClassification?: 'VALID' | 'BLANK' | 'PLACEHOLDER' | 'INVALID';
   address?: {
     logradouro?: string;
     numero?: string;
@@ -351,8 +377,13 @@ export interface LegacyPatientMetadata {
 // Linha de df_legacy_import_map — idempotência da migração de sistema anterior
 // (ver supabase/migrations/20260922180000_legacy_import_infrastructure.sql).
 export interface LegacyImportMapEntry {
-  entityType: 'patient' | 'clinical_record';
+  entityType: 'patient' | 'clinical_record' | 'professional';
   legacyId: string;
+  legacySecondaryId?: string; // Clientes.id_cliente (pacientes)
+  matchKind?: 'CREATED' | 'CREATED_REVIEW' | 'LINKED_CPF' | 'LINKED_STRONG' | 'MERGED_MANUAL' | 'USER_CONFIRMED';
+  // ACTIVE = vale; DELETED/IGNORED/REJECTED = o registro legado foi revisado e NÃO deve ser recriado.
+  status?: 'ACTIVE' | 'DELETED' | 'IGNORED' | 'REJECTED';
+  details?: Record<string, unknown>;
   targetId: string;
   importSessionId?: string;
   importedAt: string;
@@ -418,6 +449,29 @@ export interface ClinicalInput {
   active: boolean;
   notes?: string;
   createdAt?: string;
+
+  // ESTOQUE REAL (Fase C) — nunca alterado diretamente; só via movimentação (StockMovement),
+  // gravada em df_stock_movements e aplicada por trigger no banco. minimumQuantity <= 0 = estoque
+  // "não configurado" para este insumo (nunca alerta sozinho — zero disrupção para quem não migrou).
+  quantityOnHand?: number;
+  minimumQuantity?: number;
+  updatedAt?: string;
+}
+
+export type StockMovementType = 'ENTRY' | 'PROCEDURE_CONSUMPTION' | 'ADJUSTMENT_PLUS' | 'ADJUSTMENT_MINUS' | 'REVERSAL';
+
+export interface StockMovement {
+  id: string;
+  tenantId: string;
+  inputId: string;
+  movementType: StockMovementType;
+  quantity: number; // sempre positivo — a direção vem de movementType
+  balanceAfter: number; // calculado pelo trigger no banco, nunca enviado pelo cliente
+  clinicalRecordId?: string | null; // origem do consumo (PROCEDURE_CONSUMPTION) ou da reversão
+  reason?: string | null;
+  createdBy?: string | null;
+  createdByName?: string | null;
+  createdAt: string;
 }
 
 export interface ProcedureInputItem {
@@ -531,6 +585,45 @@ export interface SaleInstallment {
   // Decisão explícita do usuário — nunca derivada da forma de pagamento.
   fiscalCoveredAmount?: number;
   netValue?: number;
+}
+
+// Orçamentos (Fase D). Criar/editar NUNCA gera efeito financeiro/fiscal/estoque — só a conversão
+// explícita em venda (ação separada) passa a gerar Sale de verdade, por um fluxo próprio.
+export type BudgetStatus = 'RASCUNHO' | 'APRESENTADO' | 'APROVADO' | 'RECUSADO' | 'EXPIRADO' | 'CONVERTIDO';
+
+export interface BudgetItem {
+  id: string;
+  procedureId?: string;
+  procedureName: string;
+  professionalId?: string;
+  professionalName?: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+}
+
+export interface Budget {
+  id: string;
+  tenantId: string;
+  patientId: string;
+  patientName: string;
+  status: BudgetStatus;
+  items: BudgetItem[];
+  subtotal: number;
+  discountType?: 'PERCENT' | 'FIXED' | null;
+  discountValue: number;
+  total: number;
+  validUntil?: string | null; // YYYY-MM-DD
+  notes?: string;
+  // Preenchido UMA vez ao converter — nunca sobrescrito (garante nunca gerar venda 2x do mesmo orçamento).
+  convertedSaleId?: string | null;
+  convertedAt?: string | null;
+  presentedAt?: string | null;
+  decidedAt?: string | null;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Sale {
@@ -666,6 +759,48 @@ export interface AttachmentMetadata {
 }
 
 // 8. Expenses / Contas a Pagar
+
+/**
+ * Série de despesa RECORRENTE (template aberto) — separado da ocorrência (`Expense`).
+ * Enquanto `status==='ACTIVE'` a série continua gerando novas ocorrências; `ENDED` para a geração
+ * sem apagar nada do que já existe. Ver src/lib/expenseRecurrence.ts (motor puro) e CLAUDE.md.
+ */
+export interface ExpenseRecurrenceSeries {
+  id: string;
+  tenantId: string;
+  description: string;
+  supplierName?: string;
+  supplierCpfCnpj?: string;
+  categoryId: string;
+  categoryCode?: string;
+  categoryName?: string;
+  groupCode?: string;
+  groupName?: string;
+  subCategory?: string;
+  value: number;
+  entity: ExpenseEntity;
+  splitPercentageCpf?: number;
+  splitPercentageCnpj?: number;
+  paymentMethod?: PaymentMethod;
+  bankAccountId?: string;
+  documentNumber?: string;
+  notes?: string;
+  dedutivelLivroCaixaPf: LivroCaixaPfDedutibilidade;
+  impactaFatorRPj: boolean;
+  despesaOperacionalPj: boolean;
+  isOverridden?: boolean;
+  overrideJustification?: string;
+  startDate: string;
+  intervalMonths: number;
+  status: 'ACTIVE' | 'ENDED';
+  endedAt?: string;
+  endedBy?: string;
+  endedByName?: string;
+  lastGeneratedDueDate: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Expense {
   id: string;
   orgId: string;
@@ -703,6 +838,8 @@ export interface Expense {
   recurrenceFrequency?: 'MENSAL' | 'SEMANAL' | 'ANUAL';
   recurrenceCount?: number;
   recurrenceIndex?: number;
+  /** Novo modelo (série aberta): meses entre ocorrências desta despesa (1=Mensal, 3=Trimestral...). Ausente = despesa legada ainda não migrada/parcelada. */
+  intervalMonths?: number;
 
   // Attributes snapshot with manual override & justification
   dedutivelLivroCaixaPf: LivroCaixaPfDedutibilidade;
@@ -1046,6 +1183,7 @@ export type NavTab =
   | 'bank_accounts'
   | 'patients'
   | 'agenda'
+  | 'budgets'
   | 'chart_of_accounts'
   | 'taxes'
   | 'fiscal_simulator'

@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
 import { notificationService, AppNotification } from '../../services/notificationService';
+import { PushNotificationsPanel } from './PushNotificationsPanel';
 
 export interface NotificationBellDropdownProps {
   tenantId: string;
@@ -27,10 +28,6 @@ export const NotificationBellDropdown: React.FC<NotificationBellDropdownProps> =
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [soundEnabled, setSoundEnabled] = useState(() => notificationService.getSettings().soundEnabled);
-  const [permissionState, setPermissionState] = useState<NotificationPermission>(() =>
-    notificationService.getPermissionState()
-  );
-  const [isSubscribingPush, setIsSubscribingPush] = useState(false);
 
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
@@ -46,6 +43,7 @@ export const NotificationBellDropdown: React.FC<NotificationBellDropdownProps> =
   };
 
   useEffect(() => {
+    if (tenantId) notificationService.refreshOwnershipIfSubscribed(tenantId, userId);
     loadNotifications();
 
     if (!tenantId) return;
@@ -95,26 +93,6 @@ export const NotificationBellDropdown: React.FC<NotificationBellDropdownProps> =
     notificationService.saveSettings({ soundEnabled: next }, tenantId, userId);
     if (next) {
       notificationService.playNotificationSound();
-    }
-  };
-
-  const handleEnablePush = async () => {
-    setIsSubscribingPush(true);
-    setFeedbackMsg(null);
-    try {
-      const success = await notificationService.subscribeToPush(tenantId, userId);
-      const perm = notificationService.getPermissionState();
-      setPermissionState(perm);
-      if (success || perm === 'granted') {
-        notificationService.playNotificationSound();
-        setFeedbackMsg('Notificações ativadas neste dispositivo com sucesso!');
-      } else {
-        setFeedbackMsg('Permissão não concedida no navegador.');
-      }
-    } catch (err: any) {
-      setFeedbackMsg('Erro ao ativar notificações: ' + (err.message || 'Tente novamente'));
-    } finally {
-      setIsSubscribingPush(false);
     }
   };
 
@@ -203,25 +181,8 @@ export const NotificationBellDropdown: React.FC<NotificationBellDropdownProps> =
             </div>
           </div>
 
-          {/* Banner de Ativação do Web Push (Se ainda não concedido) */}
-          {permissionState !== 'granted' && (
-            <div className="p-3 bg-emerald-50/80 border-b border-emerald-100 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <Smartphone className="w-4 h-4 text-emerald-700 shrink-0" />
-                <span className="text-[11px] text-emerald-950 font-medium leading-tight">
-                  Receba avisos mesmo com a aba fechada
-                </span>
-              </div>
-              <button
-                type="button"
-                disabled={isSubscribingPush}
-                onClick={handleEnablePush}
-                className="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors shrink-0 shadow-2xs cursor-pointer disabled:opacity-50"
-              >
-                {isSubscribingPush ? 'Ativando...' : 'Ativar push'}
-              </button>
-            </div>
-          )}
+          {/* Web Push: estado real do dispositivo (instalar / ativar / ativado / bloqueado / sem suporte) */}
+          <PushNotificationsPanel tenantId={tenantId} userId={userId} compact />
 
           {/* Feedback Message */}
           {feedbackMsg && (

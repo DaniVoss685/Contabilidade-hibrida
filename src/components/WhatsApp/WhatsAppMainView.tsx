@@ -740,16 +740,29 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
     }
   };
 
+  // Mobile: com uma conversa aberta o chat ocupa a tela toda (barras do app somem via CSS, ver index.css)
+  const isChatOpen = viewMode === 'chat' && Boolean(selectedConversation);
+  useEffect(() => {
+    if (isChatOpen) document.body.dataset.waChatOpen = '1';
+    else delete document.body.dataset.waChatOpen;
+    return () => {
+      delete document.body.dataset.waChatOpen;
+    };
+  }, [isChatOpen]);
+
   return (
-    <div className="flex flex-col h-full flex-1 min-h-0 bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+    <div className="flex flex-col h-full flex-1 min-h-0 bg-white sm:rounded-2xl sm:border border-slate-200/80 shadow-xs overflow-hidden">
       {/* Top View Bar (Alternador Chat vs Kanban) */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-2.5 bg-white border-b border-slate-200/80 z-10 shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-700">
+      <div className={`${isChatOpen ? 'hidden lg:flex' : 'flex'} items-center justify-between gap-2 px-3 sm:px-6 py-2 sm:py-2.5 bg-white border-b border-slate-200/80 z-10 shrink-0`}>
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-700 shrink-0">
             <MessageSquare className="w-4 h-4" />
           </div>
-          <div>
-            <h1 className="text-sm font-bold text-slate-800">Atendimento & WhatsApp</h1>
+          <div className="min-w-0">
+            <h1 className="text-sm font-bold text-slate-800 truncate">
+              <span className="sm:hidden">WhatsApp</span>
+              <span className="hidden sm:inline">Atendimento & WhatsApp</span>
+            </h1>
           </div>
         </div>
 
@@ -758,7 +771,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
           <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200">
             <button
               onClick={() => setViewMode('chat')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer ${
+              className={`px-3 py-2 sm:py-1 text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
                 viewMode === 'chat'
                   ? 'bg-white text-emerald-700 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -769,7 +782,7 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
             </button>
             <button
               onClick={() => setViewMode('kanban')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer ${
+              className={`px-3 py-2 sm:py-1 text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer ${
                 viewMode === 'kanban'
                   ? 'bg-white text-emerald-700 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -782,7 +795,8 @@ export const WhatsAppMainView: React.FC<WhatsAppMainViewProps> = ({
 
           <button
             onClick={() => loadConversations(false)}
-            className="p-1.5 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+            className="tap-target text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+            aria-label="Atualizar lista"
             title="Atualizar lista"
           >
             <RefreshCw className="w-4 h-4" />

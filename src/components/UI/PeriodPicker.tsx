@@ -149,7 +149,7 @@ export const PeriodPicker: React.FC<PeriodPickerProps> = ({
         <button
           type="button"
           onClick={handlePrevMonth}
-          className="p-1.5 rounded-l-xl text-slate-400 hover:text-slate-800 hover:bg-slate-50 transition-colors cursor-pointer"
+          className="p-3 sm:p-1.5 rounded-l-xl text-slate-400 hover:text-slate-800 hover:bg-slate-50 transition-colors cursor-pointer"
           title="Competência anterior"
           aria-label="Mês anterior"
         >
@@ -159,7 +159,7 @@ export const PeriodPicker: React.FC<PeriodPickerProps> = ({
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:text-slate-950 transition-colors cursor-pointer border-x border-slate-100"
+          className="flex items-center gap-2 px-3 py-2.5 sm:py-1.5 text-xs font-semibold text-slate-800 hover:text-slate-950 transition-colors cursor-pointer border-x border-slate-100"
           aria-expanded={isOpen}
           title="Clique para escolher mês ou ano"
         >
@@ -175,7 +175,7 @@ export const PeriodPicker: React.FC<PeriodPickerProps> = ({
         <button
           type="button"
           onClick={handleNextMonth}
-          className="p-1.5 rounded-r-xl text-slate-400 hover:text-slate-800 hover:bg-slate-50 transition-colors cursor-pointer"
+          className="p-3 sm:p-1.5 rounded-r-xl text-slate-400 hover:text-slate-800 hover:bg-slate-50 transition-colors cursor-pointer"
           title="Próxima competência"
           aria-label="Próximo mês"
         >
@@ -194,14 +194,14 @@ export const PeriodPicker: React.FC<PeriodPickerProps> = ({
               left: `${coords.left}px`,
               zIndex: 99999,
             }}
-            className="w-68 bg-white rounded-2xl border border-slate-200/90 shadow-xl p-3 text-slate-800 animate-in fade-in zoom-in-95 duration-100"
+            className="w-[min(17rem,calc(100vw-1.5rem))] bg-white rounded-2xl border border-slate-200/90 shadow-xl p-3 text-slate-800 animate-in fade-in zoom-in-95 duration-100"
           >
             <div className="flex items-center justify-between pb-2.5 mb-2 border-b border-slate-100">
               <button
                 type="button"
                 onClick={() => setViewYear((y) => Math.max(minYear, y - 1))}
                 disabled={viewYear <= minYear}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer"
+                className="p-2.5 sm:p-1 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer"
                 title="Ano anterior"
               >
                 <ChevronLeft className="w-4 h-4" />
@@ -215,7 +215,7 @@ export const PeriodPicker: React.FC<PeriodPickerProps> = ({
                 type="button"
                 onClick={() => setViewYear((y) => Math.min(maxYear, y + 1))}
                 disabled={viewYear >= maxYear}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer"
+                className="p-2.5 sm:p-1 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer"
                 title="Próximo ano"
               >
                 <ChevronRight className="w-4 h-4" />
@@ -233,7 +233,7 @@ export const PeriodPicker: React.FC<PeriodPickerProps> = ({
                     key={m.num}
                     type="button"
                     onClick={() => handleSelectMonth(m.num)}
-                    className={`py-1.5 px-2 rounded-xl text-xs font-medium transition-all text-center relative cursor-pointer ${
+                    className={`py-2.5 sm:py-1.5 px-2 rounded-xl text-xs font-medium transition-all text-center relative cursor-pointer ${
                       isSelected
                         ? 'bg-emerald-600 text-white font-bold shadow-xs'
                         : isCurrentMonth

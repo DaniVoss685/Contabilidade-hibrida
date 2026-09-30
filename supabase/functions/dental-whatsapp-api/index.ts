@@ -121,10 +121,8 @@ Deno.serve(async (req) => {
     }
 
     const token = authHeader.replace("Bearer ", "").trim();
-    const isServiceRole = Boolean(
-      (supabaseServiceKey && token === supabaseServiceKey) ||
-      token === "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZia291dXZ1cGR5ZmZpendvaXRpIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NTI5MjY0NSwiZXhwIjoyMDcwODY4NjQ1fQ.aB-tTaBKyC_wFAPOeBga8mqEiyxCeCoNuEtUwHdZxPk"
-    );
+    // Service role SOMENTE via secret server-side do ambiente (nunca hardcoded).
+    const isServiceRole = Boolean(supabaseServiceKey && token === supabaseServiceKey);
 
     // PARSER DO CORPO DA REQUISIÇÃO
     const body = await req.json().catch(() => ({}));
@@ -132,21 +130,16 @@ Deno.serve(async (req) => {
 
     // AÇÃO: OBTER CHAVE PÚBLICA VAPID (CHAVE PÚBLICA É SEGURA PARA CLIENT-SIDE)
     if (action === "get_vapid_public_key") {
-      const { data: vapidRow, error: vapidErr } = await adminSupabase
-        .from("df_vapid_secrets")
-        .select("public_key")
-        .eq("id", "default")
-        .maybeSingle();
-
-      if (vapidErr || !vapidRow) {
+      // Chave PÚBLICA vem dos Secrets (o par legado em df_vapid_secrets foi aposentado).
+      const publicKey = Deno.env.get("VAPID_PUBLIC_KEY");
+      if (!publicKey) {
         return new Response(
           JSON.stringify({ error: "Chaves VAPID não configuradas no servidor." }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-
       return new Response(
-        JSON.stringify({ success: true, publicKey: vapidRow.public_key }),
+        JSON.stringify({ success: true, publicKey }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -501,6 +494,13 @@ Deno.serve(async (req) => {
 
     // AÇÃO: DISPARAR PUSH NOTIFICATION (Assíncrono ou sob demanda)
     if (action === "send_push_notification") {
+      // DESATIVADO: o envio de push agora parte SOMENTE do pipeline server-side
+      // (webhook -> df_notifications -> dental-web-push-dispatch). Esta ação permitia broadcast
+      // com conteúdo arbitrário para todos os dispositivos do tenant.
+      return new Response(
+        JSON.stringify({ error: "Ação descontinuada. Use o pipeline de notificações do servidor." }),
+        { status: 410, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
       const { title, body: notifBody, icon, badge, data: notifData, tag, user_id } = body;
 
       const { data: vapidRow, error: vapidErr } = await adminSupabase
@@ -632,7 +632,14 @@ Deno.serve(async (req) => {
         .maybeSingle();
 
       if (existingInst) {
-        // Se já existe e está conectada
+        // Se já existe e está conectada NO NOSSO REGISTRO: esta ação é SOMENTE LEITURA para
+        // instâncias conectadas — nunca solicita/grava um QR novo aqui, mesmo que a consulta de
+        // connectionState não confirme 'open' agora. Bug real corrigido: a Evolution/Baileys pode
+        // responder um estado transitório (ex.: 'close' passageiro) numa única consulta sem que a
+        // sessão real tenha caído; antes disso fazia esta rota cair para "obter QR novo" e
+        // sobrescrever o status de uma clínica genuinamente conectada. Uma desconexão real é
+        // detectada e refletida pelo webhook (connection.update), que é a fonte de verdade — não
+        // por este endpoint. Quem precisa reconectar de fato usa o botão explícito de desconectar.
         if (existingInst.status === "connected") {
           try {
             const stateRes = await fetch(
@@ -657,11 +664,22 @@ Deno.serve(async (req) => {
               }
             }
           } catch (_e) {
-            // Seguir para tentar obter novo QR
+            // Ignorar falha da consulta — não é motivo para desconectar/gerar QR
           }
+          return new Response(
+            JSON.stringify({
+              success: true,
+              status: "connected",
+              instance_name: existingInst.instance_name,
+              phone_number: existingInst.phone_number,
+              profile_name: existingInst.profile_name,
+              message: "WhatsApp já está conectado e pronto para uso.",
+            }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
         }
 
-        // Tentar obter QR Code da instância já existente
+        // Tentar obter QR Code da instância já existente (só quando NÃO está marcada como conectada)
         try {
           const connectRes = await fetch(
             `${evoBaseUrl}/instance/connect/${encodeURIComponent(existingInst.instance_name)}`,
@@ -868,7 +886,21 @@ Deno.serve(async (req) => {
           if (stateRes.ok) {
             const data = await stateRes.json();
             const state = data?.instance?.state || data?.state;
-            currentStatus = state === "open" ? "connected" : state === "connecting" ? "connecting" : "disconnected";
+            // IMPORTANTE: a Evolution/Baileys reporta 'close' como estado transitório NORMAL
+            // enquanto um QR está pendente de leitura (antes do pareamento) — não é evidência de
+            // desconexão real. Sobrescrever 'qrcode'/'connecting' para 'disconnected' aqui apagava
+            // um QR ainda válido a cada "Verificar Status"/polling, forçando o usuário a gerar QR
+            // novo repetidamente (bug real reproduzido em produção). Esta consulta só grava:
+            // (a) uma conexão real recém-confirmada ('open' -> 'connected'), ou
+            // (b) uma desconexão real de uma instância que ESTAVA 'connected' e deixou de estar.
+            // Qualquer outra transição (inclusive para 'disconnected'/'qrcode'/'connecting') é
+            // responsabilidade exclusiva dos eventos do webhook (connection.update/qrcode.updated),
+            // que são a fonte de verdade em tempo real da Evolution.
+            if (state === "open") {
+              currentStatus = "connected";
+            } else if (instanceRow.status === "connected") {
+              currentStatus = "disconnected";
+            }
             if (currentStatus !== instanceRow.status) {
               await adminSupabase
                 .from("df_wa_instances")

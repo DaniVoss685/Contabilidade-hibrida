@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { db } from './lib/db';
 import { Sidebar, NavTab } from './components/Layout/Sidebar';
 import { Header } from './components/Layout/Header';
+import { useVisualViewportHeight } from './hooks/useVisualViewportHeight';
+import { notificationService } from './services/notificationService';
+import { PwaUpdateBanner } from './components/UI/PwaUpdateBanner';
 import { ConsultingBar } from './components/Layout/ConsultingBar';
 import { PeriodFilterBar } from './components/Layout/PeriodFilterBar';
 import { DashboardView } from './components/Dashboard/DashboardView';
@@ -19,13 +22,14 @@ import { FinancialDashboard } from './components/Financial/FinancialDashboard';
 import { FiscalSimulatorView } from './components/Simulator/FiscalSimulatorView';
 import { BankAccountsView } from './components/BankAccounts/BankAccountsView';
 import { AppointmentsView } from './components/Appointments/AppointmentsView';
+import { BudgetsView } from './components/Budgets/BudgetsView';
 import { LoginView } from './components/Auth/LoginView';
 import { AppLoadingSkeleton } from './components/UI/AppLoadingSkeleton';
 
 import { NewSaleModal } from './components/Modals/NewSaleModal';
 import { NewExpenseModal } from './components/Modals/NewExpenseModal';
 import { SettlePaymentModal } from './components/Modals/SettlePaymentModal';
-import { AccountReceivableItem, DentalTenantOption } from './types';
+import { AccountReceivableItem, DentalTenantOption, Budget } from './types';
 import { SupabaseService, supabase, mapDbAppointmentToApp } from './lib/supabaseClient';
 import { ToastProvider, useToast } from './components/UI/ToastContext';
 import { WhatsAppMainView } from './components/WhatsApp/WhatsAppMainView';
@@ -86,7 +90,9 @@ function AppContent() {
     setIsAuthenticated(!!db.getCurrentSession());
   }, [tick]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Desassocia o push deste dispositivo ANTES de encerrar a sessão (RLS/JWT ainda válidos)
+    await notificationService.detachPushOnLogout(db.getCurrentSession()?.tenantId);
     db.logout();
     setIsAuthenticated(false);
     toast.info('Sessão encerrada com sucesso.');
@@ -235,6 +241,7 @@ function AppContent() {
   };
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  useVisualViewportHeight(currentTab === 'whatsapp');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [maskCpf, setMaskCpf] = useState(false); // CPF always displayed completely as required
 
@@ -266,6 +273,26 @@ function AppContent() {
     if (contactId) setInitialWhatsAppContactId(contactId);
     setCurrentTab('whatsapp');
   };
+
+  // Clique em notificação push: (a) app aberto -> mensagem do Service Worker; (b) app fechado -> URL ?action=open_wa
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const open = (tenantId?: string, conversationId?: string, contactId?: string) => {
+      if (!conversationId) return;
+      handleOpenConversationFromNotification(conversationId, contactId || undefined, tenantId || undefined);
+    };
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('action') === 'open_wa') {
+      open(params.get('tenant_id') || undefined, params.get('conversation_id') || undefined, params.get('contact_id') || undefined);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'NAVIGATE_TO_WHATSAPP_CONVERSATION') open(e.data.tenantId, e.data.conversationId, e.data.contactId);
+    };
+    navigator.serviceWorker?.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker?.removeEventListener('message', onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, activeTenantId]);
 
   // Redirecionamento defensivo se o perfil do usuário não tiver permissão para a aba atual
   useEffect(() => {
@@ -387,6 +414,9 @@ function AppContent() {
   // Modals state
   const [isNewSaleOpen, setIsNewSaleOpen] = useState(false);
   const [newSalePatientId, setNewSalePatientId] = useState<string | undefined>(undefined);
+  // Conversão de orçamento em venda (Fase D) — guarda qual orçamento está sendo convertido para,
+  // após a Sale ser realmente salva, marcar o orçamento como CONVERTIDO (nunca antes disso).
+  const [convertingBudget, setConvertingBudget] = useState<Budget | null>(null);
   const [isNewExpenseOpen, setIsNewExpenseOpen] = useState(false);
   const [settleItem, setSettleItem] = useState<AccountReceivableItem | null>(null);
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false);
@@ -516,6 +546,12 @@ function AppContent() {
 
   const handleOpenNewSaleForPatient = (patientId: string) => {
     setNewSalePatientId(patientId);
+    setIsNewSaleOpen(true);
+  };
+
+  const handleConvertBudgetToSale = (budget: Budget) => {
+    setNewSalePatientId(budget.patientId);
+    setConvertingBudget(budget);
     setIsNewSaleOpen(true);
   };
 
@@ -785,8 +821,8 @@ function AppContent() {
 
   return (
     <div
-      className={`bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased ${
-        currentTab === 'whatsapp' ? 'h-screen max-h-screen overflow-hidden' : 'min-h-screen'
+      className={`bg-slate-50/70 text-slate-900 flex flex-col font-sans antialiased pt-safe px-safe ${
+        currentTab === 'whatsapp' ? 'h-[var(--app-vh,100dvh)] max-h-[var(--app-vh,100dvh)] overflow-hidden' : 'min-h-dvh'
       }`}
     >
       <div className={`flex-1 flex min-w-0 ${currentTab === 'whatsapp' ? 'h-full overflow-hidden' : ''}`}>
@@ -817,7 +853,7 @@ function AppContent() {
           }`}
         >
           {/* Top Bar Container (Modo Consultoria / Suporte + Header) */}
-          <div className="sticky top-0 z-30 flex flex-col shrink-0">
+          <div className="contents lg:flex lg:flex-col lg:sticky lg:top-0 lg:z-30 lg:shrink-0">
             {isPrimaryAccount && (
               <ConsultingBar
                 activeClinicName={activeClinicDisplayName}
@@ -837,7 +873,7 @@ function AppContent() {
 
             {/* Non-Primary Support Banner */}
             {!isPrimaryAccount && currentSession?.supportSession && (
-              <div className="bg-amber-500 text-slate-950 px-4 py-2 text-xs font-semibold flex items-center justify-between shadow-xs relative z-40">
+              <div data-app-topbar className="bg-amber-500 text-slate-950 px-3 sm:px-4 py-2 text-xs font-semibold flex flex-wrap items-center justify-between gap-2 shadow-xs relative z-40">
                 <div className="flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 text-slate-950 shrink-0" />
                   <span>
@@ -901,8 +937,8 @@ function AppContent() {
             <main
               className={`flex-1 min-h-0 ${
                 currentTab === 'whatsapp'
-                  ? 'p-2 sm:p-3 max-w-[1600px] w-full mx-auto flex flex-col overflow-hidden h-full'
-                  : 'p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto'
+                  ? 'p-0 sm:p-3 max-w-[1600px] w-full mx-auto flex flex-col overflow-hidden h-full'
+                  : 'p-3 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto min-w-0'
               }`}
             >
           {!canAccessTab(
@@ -1106,6 +1142,17 @@ function AppContent() {
             />
           )}
 
+          {currentTab === 'budgets' && (
+            <BudgetsView
+              activeTenantId={activeTenantId}
+              onConvertToSale={handleConvertBudgetToSale}
+              onNavigateToWhatsApp={(patientId) => {
+                setInitialWhatsAppPatientId(patientId);
+                setCurrentTab('whatsapp');
+              }}
+            />
+          )}
+
           {currentTab === 'chart_of_accounts' && (
             <ChartOfAccountsView categories={categories} />
           )}
@@ -1181,10 +1228,16 @@ function AppContent() {
         onClose={() => {
           setIsNewSaleOpen(false);
           setNewSalePatientId(undefined);
+          setConvertingBudget(null);
         }}
         patients={patients}
         initialPatientId={newSalePatientId}
-        onSaleCreated={() => {
+        initialBudget={convertingBudget}
+        onSaleCreated={(sale) => {
+          if (sale && convertingBudget) {
+            db.markBudgetConverted(convertingBudget.id, sale.id).catch(console.warn);
+          }
+          setConvertingBudget(null);
           setTick((t) => t + 1);
         }}
       />
@@ -1229,6 +1282,7 @@ function AppContent() {
 
       {/* Global Toaster Mount */}
       <ToastContainer />
+      <PwaUpdateBanner />
     </div>
   );
 }

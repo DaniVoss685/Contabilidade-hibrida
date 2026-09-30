@@ -163,7 +163,7 @@ export const CashFlowTable: React.FC<CashFlowTableProps> = ({
           <table className="w-full text-xs text-left border-collapse min-w-[1100px]">
             <thead>
               <tr className="bg-slate-50/95 text-slate-600 font-semibold border-b border-slate-200/90 divide-x divide-slate-200/70 text-[11px] uppercase tracking-wider">
-                <th className="p-3 w-72 sticky left-0 z-20 bg-slate-50 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] text-slate-700 font-bold">
+                <th className="p-2 sm:p-3 w-36 sm:w-72 sticky left-0 z-20 bg-slate-50 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] text-slate-700 font-bold">
                   Conta / Indicador de Caixa
                 </th>
                 {data.months.map((m) => (

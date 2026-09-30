@@ -79,9 +79,9 @@ export const BatchEditExpensesModal: React.FC<BatchEditExpensesModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden border border-slate-200/80 animate-in fade-in zoom-in-95 duration-200">
+      <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden border border-slate-200/80 my-auto max-h-[calc(100dvh-2rem)] flex flex-col animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200/80 bg-white flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-slate-200/80 bg-white flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-teal-50 border border-teal-200/80 text-teal-600 flex items-center justify-center">
               <Edit3 className="w-4 h-4" />
@@ -102,7 +102,8 @@ export const BatchEditExpensesModal: React.FC<BatchEditExpensesModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+        <div className="p-6 space-y-5 overflow-y-auto flex-1 min-h-0">
           <p className="text-xs text-slate-600">
             Marque as opções que deseja alterar nas despesas selecionadas. Os campos desmarcados não sofrerão alterações.
           </p>
@@ -257,9 +258,10 @@ export const BatchEditExpensesModal: React.FC<BatchEditExpensesModalProps> = ({
               </div>
             )}
           </div>
+        </div>
 
           {/* Footer Actions */}
-          <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-200">
+          <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-slate-200 flex-shrink-0 bg-white">
             <button
               type="button"
               onClick={onClose}

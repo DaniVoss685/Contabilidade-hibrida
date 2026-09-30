@@ -17,8 +17,17 @@ import {
   Layers,
   CalendarDays,
   Check,
+  Ban,
 } from 'lucide-react';
 import { db } from '../../lib/db';
+import {
+  RECURRENCE_INTERVAL_PRESETS,
+  getRecurrenceIntervalLabel,
+  isValidCustomIntervalMonths,
+  addMonthsClamped,
+  MIN_CUSTOM_INTERVAL_MONTHS,
+  MAX_CUSTOM_INTERVAL_MONTHS,
+} from '../../lib/expenseRecurrence';
 import {
   Expense,
   ExpenseEntity,
@@ -288,8 +297,12 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     initialExpenseType || 'UNICA'
   );
   const [installmentsCount, setInstallmentsCount] = useState<number>(2);
-  const [recurrenceFrequency, setRecurrenceFrequency] = useState<'MENSAL' | 'SEMANAL' | 'ANUAL'>('MENSAL');
-  const [recurrenceCount, setRecurrenceCount] = useState<number>(12);
+  // Periodicidade da recorrência (série aberta, sem quantidade total — ver src/lib/expenseRecurrence.ts)
+  const [intervalMonths, setIntervalMonths] = useState<number>(1);
+  const [isCustomInterval, setIsCustomInterval] = useState<boolean>(false);
+  const [customIntervalMonths, setCustomIntervalMonths] = useState<number>(4);
+  const [isEndRecurrenceOpen, setIsEndRecurrenceOpen] = useState(false);
+  const [isEndingRecurrence, setIsEndingRecurrence] = useState(false);
   const [editScope, setEditScope] = useState<'ONLY_THIS' | 'THIS_AND_FUTURE' | 'ALL_SERIES'>('ONLY_THIS');
 
   // Manual override state with required justification
@@ -358,8 +371,13 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
       setExpenseType(expenseToEdit.expenseType || (expenseToEdit.totalInstallments ? 'PARCELADA' : expenseToEdit.recurrenceId ? 'RECORRENTE' : 'UNICA'));
       setInstallmentsCount(expenseToEdit.totalInstallments || 2);
-      setRecurrenceFrequency(expenseToEdit.recurrenceFrequency || 'MENSAL');
-      setRecurrenceCount(expenseToEdit.recurrenceCount || 12);
+      {
+        const months = expenseToEdit.intervalMonths || 1;
+        const isPreset = RECURRENCE_INTERVAL_PRESETS.some((p) => p.months === months);
+        setIntervalMonths(months);
+        setIsCustomInterval(!isPreset);
+        if (!isPreset) setCustomIntervalMonths(months);
+      }
       setEditScope('ONLY_THIS');
 
       setIsDirty(false);
@@ -391,8 +409,9 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
 
       setExpenseType(initialExpenseType || 'UNICA');
       setInstallmentsCount(2);
-      setRecurrenceFrequency('MENSAL');
-      setRecurrenceCount(12);
+      setIntervalMonths(1);
+      setIsCustomInterval(false);
+      setCustomIntervalMonths(4);
       setEditScope('ONLY_THIS');
 
       setIsDirty(false);
@@ -518,6 +537,34 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
   const isSeriesExpense = Boolean(
     expenseToEdit && (expenseToEdit.installmentGroupId || expenseToEdit.recurrenceId)
   );
+  const isTargetRecurring = Boolean(expenseToEdit?.expenseType === 'RECORRENTE' || (expenseToEdit?.recurrenceId && !expenseToEdit?.installmentGroupId));
+  const targetSeries = useMemo(
+    () => (expenseToEdit?.recurrenceId ? db.getExpenseRecurrences().find((s) => s.id === expenseToEdit.recurrenceId) : undefined),
+    [expenseToEdit?.recurrenceId, isEndRecurrenceOpen]
+  );
+  const targetSeriesEnded = targetSeries?.status === 'ENDED';
+
+  const handleEndRecurrence = async () => {
+    if (!expenseToEdit?.recurrenceId) return;
+    setIsEndingRecurrence(true);
+    try {
+      const res = await db.endRecurringExpenseAsync(expenseToEdit.recurrenceId, expenseToEdit.id);
+      if (!res.success) {
+        toast.error('Erro ao encerrar a recorrência: ' + (res.error || 'Tente novamente.'));
+        return;
+      }
+      toast.success(
+        res.removedCount > 0
+          ? `Recorrência encerrada. ${res.removedCount} ocorrência(s) futura(s) ainda não paga(s) foram removidas.`
+          : 'Recorrência encerrada. Nenhuma ocorrência futura será gerada.'
+      );
+      setIsEndRecurrenceOpen(false);
+      if (onExpenseCreated) onExpenseCreated();
+      onClose();
+    } finally {
+      setIsEndingRecurrence(false);
+    }
+  };
 
   const installmentPreview = useMemo(() => {
     if (expenseType !== 'PARCELADA' || value <= 0) return [];
@@ -539,22 +586,19 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
     return list;
   }, [expenseType, value, installmentsCount, dueDate]);
 
+  const effectiveIntervalMonths = isCustomInterval ? customIntervalMonths : intervalMonths;
+
   const recurrencePreview = useMemo(() => {
-    if (expenseType !== 'RECORRENTE' || value <= 0) return { total: 0, count: 0, previewDates: [] as string[] };
-    const count = Math.max(2, Math.min(60, recurrenceCount || 12));
-    const total = Math.round(value * count * 100) / 100;
+    if (expenseType !== 'RECORRENTE' || !dueDate) return { previewDates: [] as string[] };
+    const months = Math.max(1, effectiveIntervalMonths || 1);
     const previewDates: string[] = [];
-    for (let i = 1; i <= Math.min(count, 3); i++) {
-      const d =
-        recurrenceFrequency === 'MENSAL'
-          ? addMonthsToDateString(dueDate, i - 1)
-          : recurrenceFrequency === 'SEMANAL'
-          ? addWeeksToDateString(dueDate, i - 1)
-          : addYearsToDateString(dueDate, i - 1);
-      previewDates.push(d);
+    let cursor = dueDate;
+    for (let i = 0; i < 3; i++) {
+      cursor = addMonthsClamped(cursor, months);
+      previewDates.push(cursor);
     }
-    return { total, count, previewDates };
-  }, [expenseType, value, recurrenceCount, recurrenceFrequency, dueDate]);
+    return { previewDates };
+  }, [expenseType, effectiveIntervalMonths, dueDate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -723,59 +767,42 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
           db.addExpenses(items);
           toast.success(`Despesa parcelada em ${count}x cadastrada com sucesso.`);
         } else if (expenseType === 'RECORRENTE') {
-          const count = Math.max(2, Math.min(60, recurrenceCount || 12));
-          const recId = `rec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-          const items = [];
-
-          for (let i = 1; i <= count; i++) {
-            const isFirstPaid = isPaid && i === 1;
-            const itemDueDate =
-              recurrenceFrequency === 'MENSAL'
-                ? addMonthsToDateString(dueDate, i - 1)
-                : recurrenceFrequency === 'SEMANAL'
-                ? addWeeksToDateString(dueDate, i - 1)
-                : addYearsToDateString(dueDate, i - 1);
-            const itemCompDate =
-              recurrenceFrequency === 'MENSAL'
-                ? addMonthsToDateString(finalCompetenceDate, i - 1)
-                : recurrenceFrequency === 'SEMANAL'
-                ? addWeeksToDateString(finalCompetenceDate, i - 1)
-                : addYearsToDateString(finalCompetenceDate, i - 1);
-
-            items.push({
-              supplierName: finalSupplierName,
-              supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
-              description: `${finalDescription} (${i}/${count})`,
-              categoryId: cat.id,
-              categoryCode: cat.code,
-              categoryName: cat.name,
-              subCategory: subCategory.trim() || undefined,
-              value: value,
-              competenceDate: itemCompDate,
-              dueDate: itemDueDate,
-              paymentDate: isFirstPaid ? paymentDate : undefined,
-              paymentMethod: isFirstPaid ? paymentMethod : undefined,
-              bankAccountId: isFirstPaid ? finalBankAccountId : (finalBankAccountId || undefined),
-              documentNumber: documentNumber.trim() || undefined,
-              attachmentName: finalAttachmentName,
-              attachment: attachmentFile || null,
-              notes: notes.trim() || undefined,
-              entity,
-              dedutivelLivroCaixaPf,
-              impactaFatorRPj,
-              despesaOperacionalPj,
-              isOverridden,
-              overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
-              status: isFirstPaid ? ('PAGO' as const) : ('A_PAGAR' as const),
-              expenseType: 'RECORRENTE' as const,
-              recurrenceFrequency,
-              recurrenceCount: count,
-              recurrenceIndex: i,
-              recurrenceId: recId,
-            });
+          // Série ABERTA (sem quantidade total): grava o template e materializa só a 1ª ocorrência.
+          // As próximas nascem sob demanda (ver db.ensureRecurringExpensesGeneratedAsync) — nunca
+          // 12/24/60 lançamentos de uma vez, e a descrição nunca leva "(i/j)".
+          const months = isCustomInterval ? customIntervalMonths : intervalMonths;
+          const res = await db.createRecurringExpenseAsync({
+            supplierName: finalSupplierName,
+            supplierCpfCnpj: supplierCpfCnpj.trim() || undefined,
+            description: finalDescription,
+            categoryId: cat.id,
+            categoryCode: cat.code,
+            categoryName: cat.name,
+            subCategory: subCategory.trim() || undefined,
+            value,
+            entity,
+            bankAccountId: finalBankAccountId,
+            documentNumber: documentNumber.trim() || undefined,
+            attachmentName: finalAttachmentName,
+            attachment: attachmentFile || null,
+            notes: notes.trim() || undefined,
+            dedutivelLivroCaixaPf,
+            impactaFatorRPj,
+            despesaOperacionalPj,
+            isOverridden,
+            overrideJustification: isOverridden ? overrideJustification.trim() : undefined,
+            startDate: dueDate,
+            intervalMonths: months,
+            isPaid,
+            paymentDate: isPaid ? paymentDate : undefined,
+            paymentMethod: isPaid ? paymentMethod : undefined,
+          });
+          if (!res.success) {
+            toast.error('Erro ao criar a recorrência: ' + (res.error || 'Verifique os dados.'));
+            setIsSubmitting(false);
+            return;
           }
-          db.addExpenses(items);
-          toast.success(`Despesa recorrente com ${count} repetições cadastrada com sucesso.`);
+          toast.success(`Despesa recorrente "${finalDescription}" cadastrada (${getRecurrenceIntervalLabel(months)}).`);
         } else {
           db.addExpense({
             supplierName: finalSupplierName,
@@ -1087,13 +1114,15 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
                 <div className="flex items-center gap-2 text-purple-900 font-bold text-xs">
                   <Repeat className="w-4 h-4 text-purple-700" />
                   <span>
-                    Despesa Vinculada a uma Série ({expenseToEdit?.expenseType === 'PARCELADA'
-                      ? `Parcela ${expenseToEdit.installmentNumber}/${expenseToEdit.totalInstallments}`
-                      : `Recorrente ${expenseToEdit?.recurrenceIndex}/${expenseToEdit?.recurrenceCount}`})
+                    {isTargetRecurring
+                      ? `Recorrência (${getRecurrenceIntervalLabel(expenseToEdit?.intervalMonths)})`
+                      : `Despesa Parcelada (${expenseToEdit?.installmentNumber}/${expenseToEdit?.totalInstallments})`}
                   </span>
                 </div>
                 <p className="text-[11px] text-purple-800 leading-relaxed">
-                  Esta despesa faz parte de um grupo recorrente ou parcelado. Escolha o escopo de aplicação das suas alterações:
+                  {isTargetRecurring
+                    ? 'Esta despesa faz parte de uma recorrência. Escolha o escopo de aplicação das suas alterações:'
+                    : 'Esta despesa faz parte de um parcelamento. Escolha o escopo de aplicação das suas alterações:'}
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                   <button
@@ -1105,7 +1134,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
                         : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
                     }`}
                   >
-                    Apenas esta parcela
+                    {isTargetRecurring ? 'Apenas esta ocorrência' : 'Apenas esta parcela'}
                   </button>
                   <button
                     type="button"
@@ -1116,7 +1145,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
                         : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
                     }`}
                   >
-                    Esta e as seguintes
+                    Esta e as próximas
                   </button>
                   <button
                     type="button"
@@ -1127,9 +1156,29 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
                         : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
                     }`}
                   >
-                    Todas da série
+                    Toda a série
                   </button>
                 </div>
+
+                {isTargetRecurring && (
+                  <div className="pt-2.5 mt-1 border-t border-purple-200/70 flex items-start justify-between gap-3">
+                    <p className="text-[11px] text-purple-700 leading-relaxed">
+                      {targetSeriesEnded
+                        ? 'Esta recorrência já foi encerrada — nenhuma nova ocorrência será gerada.'
+                        : 'Não confunda com excluir: "Encerrar recorrência" só para as próximas ocorrências, sem apagar o que já existe.'}
+                    </p>
+                    {!targetSeriesEnded && (
+                      <button
+                        type="button"
+                        onClick={() => setIsEndRecurrenceOpen(true)}
+                        className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-rose-700 bg-white border border-rose-200 hover:bg-rose-50 transition-colors cursor-pointer"
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        Encerrar recorrência
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-2.5">
@@ -1335,90 +1384,86 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
               </div>
             )}
 
-            {/* Custom Configuration for RECORRENTE */}
+            {/* Configuração da RECORRENTE: série aberta, sem quantidade total de ocorrências */}
             {expenseType === 'RECORRENTE' && !isEditing && (
               <div className="p-4 rounded-xl border border-purple-200 bg-purple-50/40 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-purple-900 flex items-center gap-1.5">
-                    <Repeat className="w-4 h-4 text-purple-600" />
-                    Configuração da Recorrência
-                  </span>
-                  <div className="flex items-center gap-1">
-                    {[3, 6, 12, 24].map((cnt) => (
-                      <button
-                        key={cnt}
-                        type="button"
-                        onClick={() => {
-                          setRecurrenceCount(cnt);
-                          setIsDirty(true);
-                        }}
-                        className={`px-2 py-1 text-[11px] font-semibold rounded-md border transition-all cursor-pointer ${
-                          recurrenceCount === cnt
-                            ? 'bg-purple-700 text-white border-purple-800'
-                            : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/60'
-                        }`}
-                      >
-                        {cnt} meses
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <span className="text-xs font-bold text-purple-900 flex items-center gap-1.5">
+                  <Repeat className="w-4 h-4 text-purple-600" />
+                  Periodicidade
+                </span>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Periodicidade:
-                    </label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {(['MENSAL', 'SEMANAL', 'ANUAL'] as const).map((freq) => (
-                        <button
-                          key={freq}
-                          type="button"
-                          onClick={() => {
-                            setRecurrenceFrequency(freq);
-                            setIsDirty(true);
-                          }}
-                          className={`py-1.5 text-xs font-semibold rounded-lg border text-center transition-all cursor-pointer ${
-                            recurrenceFrequency === freq
-                              ? 'bg-purple-700 text-white border-purple-800'
-                              : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
-                          }`}
-                        >
-                          {freq === 'MENSAL' ? 'Mensal' : freq === 'SEMANAL' ? 'Semanal' : 'Anual'}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Quantidade de Ocorrências a Projetar:
-                    </label>
-                    <input
-                      type="number"
-                      min={2}
-                      max={60}
-                      value={recurrenceCount}
-                      onChange={(e) => {
-                        setRecurrenceCount(Math.max(2, Math.min(60, parseInt(e.target.value, 10) || 2)));
+                <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                  {RECURRENCE_INTERVAL_PRESETS.map((preset) => (
+                    <button
+                      key={preset.months}
+                      type="button"
+                      onClick={() => {
+                        setIntervalMonths(preset.months);
+                        setIsCustomInterval(false);
                         setIsDirty(true);
                       }}
-                      className="w-full text-xs rounded-xl border border-purple-300 px-3 py-2 bg-white text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-purple-500/20"
-                    />
-                  </div>
+                      className={`py-2 text-xs font-semibold rounded-lg border text-center transition-all cursor-pointer ${
+                        !isCustomInterval && intervalMonths === preset.months
+                          ? 'bg-purple-700 text-white border-purple-800'
+                          : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomInterval(true);
+                      setIsDirty(true);
+                    }}
+                    className={`py-2 text-xs font-semibold rounded-lg border text-center transition-all cursor-pointer ${
+                      isCustomInterval
+                        ? 'bg-purple-700 text-white border-purple-800'
+                        : 'bg-white text-slate-700 border-purple-200 hover:bg-purple-100/50'
+                    }`}
+                  >
+                    Personalizado
+                  </button>
                 </div>
 
+                {isCustomInterval && (
+                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                    Repetir a cada
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={MIN_CUSTOM_INTERVAL_MONTHS}
+                      max={MAX_CUSTOM_INTERVAL_MONTHS}
+                      value={customIntervalMonths}
+                      onChange={(e) => {
+                        const parsed = parseInt(e.target.value, 10);
+                        setCustomIntervalMonths(
+                          Number.isFinite(parsed)
+                            ? Math.max(MIN_CUSTOM_INTERVAL_MONTHS, Math.min(MAX_CUSTOM_INTERVAL_MONTHS, parsed))
+                            : MIN_CUSTOM_INTERVAL_MONTHS
+                        );
+                        setIsDirty(true);
+                      }}
+                      className="w-16 text-center text-xs rounded-lg border border-purple-300 px-2 py-1.5 bg-white text-slate-900 font-bold focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                    />
+                    meses
+                    {!isValidCustomIntervalMonths(customIntervalMonths) && (
+                      <span className="text-rose-600 font-medium">Informe de {MIN_CUSTOM_INTERVAL_MONTHS} a {MAX_CUSTOM_INTERVAL_MONTHS} meses.</span>
+                    )}
+                  </label>
+                )}
+
                 <div className="p-3 bg-white rounded-xl border border-purple-200 text-xs space-y-1">
-                  <div className="flex justify-between text-slate-700 font-semibold">
-                    <span>Compromisso Financeiro Total Projetado:</span>
-                    <span className="font-bold text-purple-900 text-sm">
-                      {formatCurrency(recurrencePreview.total)}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-500">
-                    Gera {recurrencePreview.count} lançamentos vinculados com intervalo {recurrenceFrequency.toLowerCase()}.
-                    Primeiros vencimentos: {recurrencePreview.previewDates.map((d) => formatDateBr(d)).join(', ')}...
+                  <p className="text-slate-700">
+                    Esta despesa continuará sendo gerada ({getRecurrenceIntervalLabel(effectiveIntervalMonths)}) até que a
+                    recorrência seja encerrada — não é preciso escolher uma quantidade de repetições.
                   </p>
+                  {recurrencePreview.previewDates.length > 0 && (
+                    <p className="text-[11px] text-slate-500">
+                      Próximos vencimentos após este: {recurrencePreview.previewDates.map((d) => formatDateBr(d)).join(', ')}...
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -1565,6 +1610,19 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({
         }}
         onCancel={() => setShowConfirmDiscard(false)}
       />
+
+      {isEndRecurrenceOpen && (
+        <ConfirmDialog
+          isOpen={isEndRecurrenceOpen}
+          title="Encerrar recorrência?"
+          description="As despesas já pagas serão preservadas; lançamentos futuros ainda não pagos serão removidos e nenhuma nova ocorrência será criada a partir de agora. Esta ação não pode ser desfeita automaticamente."
+          confirmLabel={isEndingRecurrence ? 'Encerrando...' : 'Encerrar recorrência'}
+          cancelLabel="Cancelar"
+          variant="danger"
+          onConfirm={handleEndRecurrence}
+          onCancel={() => setIsEndRecurrenceOpen(false)}
+        />
+      )}
     </div>
   );
 };

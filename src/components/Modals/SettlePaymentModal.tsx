@@ -158,7 +158,7 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200/80 overflow-hidden animate-in fade-in zoom-in-95 duration-200 my-auto flex flex-col">
+      <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200/80 overflow-hidden animate-in fade-in zoom-in-95 duration-200 my-auto max-h-[calc(100dvh-2rem)] flex flex-col">
         {/* Header */}
         <div className="px-6 py-4.5 border-b border-slate-100 flex items-center justify-between bg-white flex-shrink-0">
           <div className="flex items-center gap-2.5">
@@ -181,7 +181,8 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+        <div className="p-6 space-y-5 overflow-y-auto flex-1 min-h-0">
           {/* Summary Box */}
           <div className="p-4 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-2 text-xs">
             <div className="flex justify-between font-bold text-slate-800">
@@ -320,9 +321,10 @@ export const SettlePaymentModal: React.FC<SettlePaymentModalProps> = ({
               )}
             </div>
           )}
+        </div>
 
           {/* Action Footer */}
-          <div className="pt-4 flex items-center justify-end gap-3 border-t border-slate-100">
+          <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-slate-100 flex-shrink-0 bg-white">
             <button
               type="button"
               onClick={onClose}

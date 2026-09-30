@@ -78,30 +78,31 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
   });
 
   return (
-    <div className="bg-gradient-to-r from-emerald-50/90 via-slate-50/95 to-emerald-50/80 border-b border-emerald-200/80 px-4 sm:px-6 py-2 min-h-[52px] flex items-center justify-between relative z-40 backdrop-blur-xs">
+    <div data-app-topbar className="bg-gradient-to-r from-emerald-50/90 via-slate-50/95 to-emerald-50/80 border-b border-emerald-200/80 px-3 sm:px-6 py-1.5 sm:py-2 sm:min-h-[52px] flex items-center justify-between relative z-[35] backdrop-blur-xs">
       {/* Bloco Central Unificado */}
-      <div className="w-full flex items-center justify-between gap-3">
+      <div className="w-full flex items-center justify-between gap-2 sm:gap-3 min-w-0">
         {/* Lado Esquerdo / Central: Badge e Contexto */}
-        <div className="flex items-center gap-2.5 sm:gap-4 flex-wrap justify-center">
+        <div className="flex items-center gap-2 sm:gap-4 lg:flex-wrap min-w-0 flex-1 lg:flex-none">
           {/* Pill Verde: Modo Consultoria ativado */}
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100/90 text-emerald-900 border border-emerald-300 shadow-2xs shrink-0">
+          <div className="inline-flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1 rounded-full text-xs font-bold bg-emerald-100/90 text-emerald-900 border border-emerald-300 shadow-2xs shrink-0">
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
             </span>
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
-            <span>Modo Consultoria ativado</span>
+            <span className="lg:hidden">Consultoria</span>
+            <span className="hidden lg:inline">Modo Consultoria ativado</span>
           </div>
 
           <span className="hidden sm:inline text-emerald-300 select-none">•</span>
 
           {/* Seletor Integrado da Clínica Ativa */}
-          <div className="relative" ref={dropdownRef}>
+          <div className="lg:relative min-w-0 flex-1 lg:flex-none" ref={dropdownRef}>
             <button
               type="button"
               onClick={() => !isSwitching && setIsOpen((prev) => !prev)}
               disabled={isSwitching}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl border text-left transition-all cursor-pointer shadow-2xs ${
+              className={`w-full lg:w-auto min-h-[40px] flex items-center gap-2 px-2.5 sm:px-3.5 py-1.5 rounded-xl border text-left transition-all cursor-pointer shadow-2xs ${
                 isOpen
                   ? 'bg-white border-emerald-500 ring-2 ring-emerald-500/20'
                   : 'bg-white/95 hover:bg-white border-emerald-200 hover:border-emerald-300'
@@ -116,7 +117,7 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
                 )}
               </div>
 
-              <span className="text-xs text-slate-500 font-medium hidden sm:inline">
+              <span className="text-xs text-slate-500 font-medium hidden xl:inline">
                 Clínica ativa:
               </span>
 
@@ -129,7 +130,7 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
                   (activeClinicName ? activeClinicName : 'Selecione uma clínica');
 
                 return (
-                  <span className="text-xs font-bold text-slate-900 truncate max-w-[180px] sm:max-w-[240px]">
+                  <span className="text-xs font-bold text-slate-900 truncate min-w-0 flex-1 lg:flex-none lg:max-w-[240px]">
                     {resolvedName}
                   </span>
                 );
@@ -144,7 +145,7 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
 
             {/* Popover Customizado com Busca */}
             {isOpen && (
-              <div className="absolute left-1/2 -translate-x-1/2 sm:left-0 sm:translate-x-0 top-full mt-2 w-[310px] sm:w-[350px] bg-white rounded-2xl border border-slate-200 shadow-xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+              <div className="absolute left-3 right-3 lg:left-0 lg:right-auto top-full mt-2 lg:w-[350px] bg-white rounded-2xl border border-slate-200 shadow-xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
                 <div className="p-3 border-b border-slate-100 bg-slate-50/70">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-bold text-slate-800 tracking-tight">Trocar Clínica</span>
@@ -223,11 +224,12 @@ export const ConsultingBar: React.FC<ConsultingBarProps> = ({
             type="button"
             onClick={onReturnToPrimary}
             disabled={isSwitching}
-            className="flex items-center gap-2 px-3.5 py-1.5 bg-white hover:bg-emerald-600 text-emerald-800 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 border border-emerald-300 hover:border-emerald-600 shadow-2xs group"
+            className="flex items-center gap-1.5 sm:gap-2 min-h-[40px] px-2.5 sm:px-3.5 py-1.5 bg-white hover:bg-emerald-600 text-emerald-800 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 border border-emerald-300 hover:border-emerald-600 shadow-2xs group"
             title="Encerrar acesso à clínica e retornar à visão consolidada da carteira"
           >
             <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform text-emerald-700 group-hover:text-white" />
-            <span>Voltar para Carteira</span>
+            <span className="lg:hidden">Carteira</span>
+            <span className="hidden lg:inline">Voltar para Carteira</span>
           </button>
         )}
       </div>

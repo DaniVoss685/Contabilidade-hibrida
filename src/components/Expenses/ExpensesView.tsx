@@ -28,9 +28,10 @@ import { formatPaymentMethodName, formatPaymentMethodWithInstallments } from '..
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { getEffectivePayableStatus } from '../../lib/statusHelper';
+import { getRecurrenceIntervalLabel } from '../../lib/expenseRecurrence';
 import { BatchEditExpensesModal } from '../Modals/BatchEditExpensesModal';
 import { NewExpenseModal } from '../Modals/NewExpenseModal';
-import { CustomSelect, ConfirmDialog, useToast, ReceiptViewerModal, SortableHeader } from '../UI';
+import { CustomSelect, ConfirmDialog, useToast, ReceiptViewerModal, SortableHeader, MobileFilters } from '../UI';
 import { useSortableData } from '../../hooks/useSortableData';
 
 const MONTH_NAMES = [
@@ -507,7 +508,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
       {/* Payable Mode KPI Cards Strip (Despesas Já Pagas, Despesas a Pagar, Despesas em Atraso) */}
       {viewMode !== 'recurrent' && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4 [&>:last-child:nth-child(odd)]:col-span-2 sm:[&>:last-child:nth-child(odd)]:col-span-1">
           {/* 1. Despesas Já Pagas */}
           <div className="bg-white p-4 rounded-xl border border-emerald-100 bg-emerald-50/20 shadow-xs">
             <div className="flex items-center justify-between text-emerald-600 text-xs font-semibold mb-1">
@@ -560,7 +561,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
 
       {/* Recurrent Mode KPI Cards Strip */}
       {viewMode === 'recurrent' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
             <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
               Contratos / Assinaturas
@@ -705,12 +706,17 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             }
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 text-xs rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
+            className="w-full pl-9 pr-4 py-2.5 md:py-2 text-xs rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none"
           />
         </div>
 
+        <MobileFilters
+          activeCount={
+            [entityFilter !== 'ALL', viewMode !== 'recurrent' && typeFilter !== 'ALL', statusFilter !== 'ALL', paymentMethodFilter !== 'ALL'].filter(Boolean).length
+          }
+        >
         {/* Entity Filter: PF / PJ only */}
-        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+        <div className="grid grid-cols-3 md:flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
           <button
             onClick={() => setEntityFilter('ALL')}
             className={`px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
@@ -726,7 +732,8 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             }`}
           >
             <User className="w-3 h-3" />
-            Pessoa Física (CPF)
+            <span className="md:hidden">CPF</span>
+            <span className="hidden md:inline">Pessoa Física (CPF)</span>
           </button>
           <button
             onClick={() => setEntityFilter('CNPJ')}
@@ -735,7 +742,8 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             }`}
           >
             <Building className="w-3 h-3" />
-            Pessoa Jurídica (CNPJ)
+            <span className="md:hidden">CNPJ</span>
+            <span className="hidden md:inline">Pessoa Jurídica (CNPJ)</span>
           </button>
         </div>
 
@@ -746,7 +754,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             <span>Filtro: Recorrentes</span>
           </div>
         ) : (
-          <div className="w-44">
+          <div className="w-full md:w-44">
             <CustomSelect
               value={typeFilter}
               onChange={(val) => setTypeFilter(val as any)}
@@ -761,7 +769,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
         )}
 
         {/* Status Filter */}
-        <div className="w-36">
+        <div className="w-full md:w-36">
           <CustomSelect
             value={statusFilter}
             onChange={(val) => setStatusFilter(val)}
@@ -775,7 +783,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
         </div>
 
         {/* Forma de Pagamento Filter */}
-        <div className="w-44">
+        <div className="w-full md:w-44">
           <CustomSelect
             value={paymentMethodFilter}
             onChange={(val) => setPaymentMethodFilter(val)}
@@ -790,10 +798,199 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
             ]}
           />
         </div>
+        </MobileFilters>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      {/* Lista em cards (mobile/tablet). A tabela completa continua no desktop (lg+). */}
+      <div className="lg:hidden space-y-3">
+        {displayExpenses.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 py-8 px-4 text-center text-sm text-slate-400">
+            {viewMode === 'recurrent' || typeFilter === 'RECORRENTE'
+              ? 'Nenhuma despesa recorrente encontrada neste período.'
+              : 'Nenhuma despesa encontrada.'}
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between px-1">
+              <button
+                type="button"
+                onClick={handleSelectAll}
+                className="inline-flex items-center gap-2 min-h-[44px] pr-2 text-xs font-semibold text-slate-600 cursor-pointer"
+              >
+                {allSelected ? <CheckSquare className="w-5 h-5 text-teal-600" /> : <Square className="w-5 h-5 text-slate-400" />}
+                {allSelected ? 'Desmarcar todas' : 'Selecionar todas'}
+              </button>
+              <span className="text-[11px] font-semibold text-slate-500">{displayExpenses.length} despesa(s)</span>
+            </div>
+            {displayExpenses.map((exp) => {
+              const isPaid = exp.status === 'PAGO';
+              const isSelected = selectedIds.has(exp.id);
+              const effectiveStatus = getEffectivePayableStatus(exp);
+              return (
+                <div
+                  key={exp.id}
+                  onClick={() => setViewingExpense(exp)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') setViewingExpense(exp);
+                  }}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`Ver detalhes de ${exp.description || exp.supplierName}`}
+                  className={`rounded-xl border bg-white p-3.5 shadow-xs active:bg-slate-50 cursor-pointer ${
+                    isSelected
+                      ? 'border-teal-400 bg-teal-50/50'
+                      : effectiveStatus === 'EM_ATRASO'
+                      ? 'border-rose-200 bg-rose-50/30'
+                      : 'border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleSelect(exp.id);
+                      }}
+                      aria-label={isSelected ? 'Desmarcar despesa' : 'Selecionar despesa'}
+                      className="tap-target -ml-2 -mt-2 shrink-0 cursor-pointer"
+                    >
+                      {isSelected ? <CheckSquare className="w-5 h-5 text-teal-600" /> : <Square className="w-5 h-5 text-slate-300" />}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 text-sm leading-snug break-words">
+                            {exp.description || exp.supplierName}
+                          </div>
+                          <div className="text-xs text-slate-500 leading-snug break-words">{exp.categoryName}</div>
+                        </div>
+                        <span
+                          className={`shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full font-bold text-[10px] whitespace-nowrap ${
+                            effectiveStatus === 'PAGO'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : effectiveStatus === 'EM_ATRASO'
+                              ? 'bg-rose-100 text-rose-800 border border-rose-200/80'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {effectiveStatus === 'PAGO' ? 'PAGO' : effectiveStatus === 'EM_ATRASO' ? 'EM ATRASO' : 'A PAGAR'}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 flex items-end justify-between gap-2">
+                        <div className="font-bold text-slate-900 text-base font-mono">{formatCurrency(exp.value)}</div>
+                        <div className="text-right text-[11px] text-slate-600 font-semibold">
+                          {exp.paymentMethod
+                            ? formatPaymentMethodWithInstallments(
+                                exp.paymentMethod,
+                                exp.totalInstallments && exp.totalInstallments > 1 ? exp.totalInstallments : undefined
+                              )
+                            : 'Forma não informada'}
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-mono text-slate-600">
+                        <span>
+                          Vence: <strong className="text-slate-900">{formatDateBr(exp.dueDate)}</strong>
+                        </span>
+                        {isPaid && exp.paymentDate && (
+                          <span>
+                            Pago: <strong className="text-emerald-700">{formatDateBr(exp.paymentDate)}</strong>
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9.5px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                          {exp.entity === 'CPF' ? 'CPF' : 'CNPJ'}
+                        </span>
+                        {(exp.expenseType === 'PARCELADA' || (exp.installmentNumber && exp.totalInstallments)) && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                            <Layers className="w-2.5 h-2.5 text-amber-600" />
+                            {exp.installmentNumber || 1}/{exp.totalInstallments || 1}
+                          </span>
+                        )}
+                        {(exp.expenseType === 'RECORRENTE' || exp.recurrenceId) && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-purple-50 text-purple-800 border border-purple-200">
+                            <Repeat className="w-2.5 h-2.5 text-purple-600" />
+                            Recorrente · {getRecurrenceIntervalLabel(exp.intervalMonths)}
+                          </span>
+                        )}
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold ${
+                            exp.dedutivelLivroCaixaPf === 'SIM'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : exp.dedutivelLivroCaixaPf === 'CONDICIONAL'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}
+                        >
+                          Livro Caixa: {exp.dedutivelLivroCaixaPf}
+                        </span>
+                        {exp.impactaFatorRPj && (
+                          <span className="px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-indigo-100 text-indigo-800">Fator R</span>
+                        )}
+                        {exp.attachmentName && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewingAttachment({ file: exp.attachment, name: exp.attachmentName || 'Comprovante' });
+                            }}
+                            className="inline-flex items-center gap-1 min-h-[28px] text-[10px] font-semibold text-teal-700 bg-teal-50 px-2 rounded-lg border border-teal-200/80 cursor-pointer max-w-full"
+                          >
+                            <Paperclip className="w-3 h-3 shrink-0" />
+                            <span className="truncate">Comprovante</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    {!isPaid ? (
+                      <button
+                        type="button"
+                        onClick={() => handlePayExpense(exp.id)}
+                        className="flex-1 min-h-[44px] rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm cursor-pointer"
+                      >
+                        Pagar
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setViewingExpense(exp)}
+                        className="flex-1 min-h-[44px] rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-sm cursor-pointer"
+                      >
+                        Ver detalhes
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setEditingExpense(exp)}
+                      aria-label="Editar despesa"
+                      className="tap-target rounded-xl border border-slate-200 text-slate-600 cursor-pointer"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteExpense(exp)}
+                      aria-label="Excluir despesa"
+                      className="tap-target rounded-xl border border-slate-200 text-rose-500 cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden lg:block bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-700 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200">
@@ -965,10 +1162,10 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                           {(exp.expenseType === 'RECORRENTE' || exp.recurrenceId) && (
                             <span
                               className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-50 text-purple-800 border border-purple-200"
-                              title={`Despesa Recorrente (${exp.recurrenceFrequency || 'MENSAL'})`}
+                              title={`Despesa Recorrente (${getRecurrenceIntervalLabel(exp.intervalMonths)})`}
                             >
                               <Repeat className="w-2.5 h-2.5 text-purple-600" />
-                              Recorrente
+                              Recorrente · {getRecurrenceIntervalLabel(exp.intervalMonths)}
                             </span>
                           )}
                         </div>
@@ -1328,7 +1525,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                 {(exp.expenseType === 'RECORRENTE' || exp.recurrenceId) && (
                   <div className="flex items-center gap-1.5 text-xs text-purple-800 bg-purple-50 border border-purple-200 rounded-xl px-3 py-2">
                     <Repeat className="w-3.5 h-3.5 text-purple-600" />
-                    Despesa recorrente ({exp.recurrenceFrequency || 'MENSAL'})
+                    Despesa recorrente · {getRecurrenceIntervalLabel(exp.intervalMonths)}
                   </div>
                 )}
 

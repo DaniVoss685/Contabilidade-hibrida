@@ -18,7 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { db } from '../../lib/db';
-import { Appointment, AppointmentStatus } from '../../types';
+import { Appointment, AppointmentStatus, ClinicalProfessional } from '../../types';
 import { isSundayOrHoliday } from '../../lib/holidays';
 import { AppointmentModal } from './AppointmentModal';
 import { AppointmentDetailsModal } from './AppointmentDetailsModal';
@@ -160,7 +160,10 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 }) => {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [preferences, setPreferences] = useState(() => db.getPreferences());
-  const [viewMode, setViewMode] = useState<CalendarViewMode>('WEEK');
+  // Mobile/tablet abre no Diário (lista de horários); desktop mantém a grade semanal
+  const [viewMode, setViewMode] = useState<CalendarViewMode>(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches ? 'DAY' : 'WEEK'
+  );
   // Dynamic current date from the actual system environment
   const [currentDate, setCurrentDate] = useState<Date>(() => {
     if (initialDate) {
@@ -180,6 +183,14 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | AppointmentStatus>('ALL');
+  const [professionals, setProfessionals] = useState<ClinicalProfessional[]>([]);
+  const [professionalFilter, setProfessionalFilter] = useState<string>('ALL');
+
+  // Reseta o filtro de profissional ao trocar de clínica (Modo Consultoria) — evita que o filtro
+  // de uma clínica anterior sobreviva silenciosamente e esconda toda a agenda da nova.
+  useEffect(() => {
+    setProfessionalFilter('ALL');
+  }, [activeTenantId]);
 
   // Modals state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -202,6 +213,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     const load = () => {
       setAppointments(db.getAppointments());
       setPreferences(db.getPreferences());
+      setProfessionals(db.getClinicalProfessionals().filter((p) => p.isActive));
     };
     load();
     const unsub = db.subscribe(load);
@@ -219,6 +231,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const filteredAppointments = useMemo(() => {
     return appointments.filter((apt) => {
       if (statusFilter !== 'ALL' && apt.status !== statusFilter) return false;
+      if (professionalFilter !== 'ALL' && apt.professionalId !== professionalFilter) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchName = apt.patientName.toLowerCase().includes(q);
@@ -228,7 +241,15 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
       }
       return true;
     });
-  }, [appointments, statusFilter, searchQuery]);
+  }, [appointments, statusFilter, professionalFilter, searchQuery]);
+
+  const professionalFilterOptions: SelectOption[] = useMemo(
+    () => [
+      { value: 'ALL', label: 'Todos os profissionais' },
+      ...professionals.map((p) => ({ value: p.id, label: p.name })),
+    ],
+    [professionals]
+  );
 
   // Week days list for current reference date (Segunda a Sábado, 6 dias)
   const weekDays = useMemo(() => {
@@ -464,7 +485,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   return (
     <div className="space-y-6 animate-in fade-in duration-150">
       {/* Top Header & Action Controls — Sticky Toolbar pins smoothly under PeriodFilterBar */}
-      <div className="sticky top-[98px] z-20 bg-white/95 backdrop-blur-md p-4 sm:p-5 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 transition-all">
+      <div className="lg:sticky lg:top-[98px] z-20 bg-white/95 backdrop-blur-md p-4 sm:p-5 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 transition-all">
         <div>
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600 shrink-0">
@@ -485,32 +506,34 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
         </div>
 
         {/* View Switcher, Period Navigation & New Appointment Button */}
-        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
+        <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 min-w-0">
           {/* Period Navigation Buttons */}
           <div className="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200">
             <button
               onClick={handlePrev}
-              className="p-1.5 rounded-lg text-slate-600 hover:bg-white hover:shadow-xs transition-all cursor-pointer"
+              aria-label="Anterior"
+              className="p-2.5 sm:p-1.5 rounded-lg text-slate-600 hover:bg-white hover:shadow-xs transition-all cursor-pointer"
               title="Anterior"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
             <button
               onClick={handleToday}
-              className="px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-white hover:shadow-xs rounded-lg transition-all cursor-pointer"
+              className="px-3 py-2 sm:py-1 text-xs font-semibold text-slate-700 hover:bg-white hover:shadow-xs rounded-lg transition-all cursor-pointer"
             >
               Hoje
             </button>
             <button
               onClick={handleNext}
-              className="p-1.5 rounded-lg text-slate-600 hover:bg-white hover:shadow-xs transition-all cursor-pointer"
+              aria-label="Próximo"
+              className="p-2.5 sm:p-1.5 rounded-lg text-slate-600 hover:bg-white hover:shadow-xs transition-all cursor-pointer"
               title="Próximo"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
 
-          <span className="text-xs sm:text-sm font-bold text-slate-800 min-w-[170px] sm:min-w-[210px] text-center">
+          <span className="text-xs sm:text-sm font-bold text-slate-800 sm:min-w-[210px] text-center flex-1 sm:flex-none min-w-0">
             {headerDateLabel}
           </span>
 
@@ -518,7 +541,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
             <button
               onClick={() => setViewMode('DAY')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              className={`px-3 py-2.5 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
                 viewMode === 'DAY'
                   ? 'bg-white text-emerald-800 shadow-xs font-bold'
                   : 'text-slate-600 hover:text-slate-900'
@@ -528,7 +551,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             </button>
             <button
               onClick={() => setViewMode('WEEK')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              className={`px-3 py-2.5 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
                 viewMode === 'WEEK'
                   ? 'bg-white text-emerald-800 shadow-xs font-bold'
                   : 'text-slate-600 hover:text-slate-900'
@@ -538,7 +561,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             </button>
             <button
               onClick={() => setViewMode('MONTH')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              className={`px-3 py-2.5 sm:py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
                 viewMode === 'MONTH'
                   ? 'bg-white text-emerald-800 shadow-xs font-bold'
                   : 'text-slate-600 hover:text-slate-900'
@@ -557,7 +580,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               setSelectedSlotTime('09:00');
               setIsModalOpen(true);
             }}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs hover:shadow transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+            className="px-4 py-2.5 sm:py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs hover:shadow transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0 max-sm:flex-1"
           >
             <Plus className="w-4 h-4" />
             <span>Nova Consulta</span>
@@ -630,15 +653,96 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             searchable={false}
           />
         </div>
+
+        {professionals.length > 0 && (
+          <div className="w-full sm:w-64 shrink-0">
+            <CustomSelect
+              value={professionalFilter}
+              onChange={setProfessionalFilter}
+              options={professionalFilterOptions}
+              searchable={false}
+            />
+          </div>
+        )}
       </div>
 
       {/* Main Calendar View Area */}
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 items-start">
         {/* Main Grid: 3 columns on xl */}
         <div className="xl:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-          {/* SEMANAL (Visão Principal) */}
+          {/* SEMANAL — mobile/tablet: lista por dia */}
           {viewMode === 'WEEK' && (
-            <div className="overflow-x-auto">
+            <div className="lg:hidden divide-y divide-slate-100">
+              {weekDays.map((day, idx) => {
+                const iso = formatDateISO(day);
+                const isToday = iso === todayISO;
+                const holidayInfo = isSundayOrHoliday(day);
+                const dayApts = filteredAppointments
+                  .filter((a) => a.date === iso)
+                  .sort((a, b) => a.startTime.localeCompare(b.startTime));
+                return (
+                  <div key={iso} className={`p-3 ${isToday ? 'bg-emerald-50/40' : ''}`}>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`text-sm font-bold w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                            isToday ? 'bg-emerald-600 text-white' : holidayInfo.isRed ? 'text-rose-600 bg-rose-50' : 'text-slate-700 bg-slate-100'
+                          }`}
+                        >
+                          {day.getDate()}
+                        </span>
+                        <span className={`text-xs font-bold uppercase ${holidayInfo.isRed ? 'text-rose-600' : 'text-slate-600'}`}>
+                          {WEEK_DAYS[idx]}
+                        </span>
+                        {holidayInfo.isHoliday && (
+                          <span className="text-[10px] font-bold text-rose-700 truncate">🚩 {holidayInfo.holidayName}</span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleEmptySlotClick(iso, '09:00')}
+                        className="shrink-0 min-h-[44px] px-3 text-xs font-bold text-emerald-700 cursor-pointer"
+                      >
+                        + Agendar
+                      </button>
+                    </div>
+                    {dayApts.length === 0 ? (
+                      <p className="text-xs text-slate-400 pl-10">Sem consultas</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {dayApts.map((apt) => {
+                          const style = STATUS_COLOR_MAP[apt.status] || STATUS_COLOR_MAP.CONFIRMADA;
+                          return (
+                            <div
+                              key={apt.id}
+                              onClick={(e) => handleAppointmentClick(apt, e)}
+                              className={`p-3 rounded-xl border border-slate-200 border-l-4 ${style.border} ${style.bg} cursor-pointer`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-bold text-slate-600 font-mono">
+                                  {apt.startTime} – {apt.endTime}
+                                </span>
+                                <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${style.text} bg-white/80 border border-slate-200`}>
+                                  <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
+                                  {style.label}
+                                </span>
+                              </div>
+                              <p className="text-sm font-bold text-slate-900 mt-1 break-words">{apt.patientName}</p>
+                              <p className="text-xs text-slate-600 break-words">{apt.procedureName}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* SEMANAL (Visão Principal — desktop) */}
+          {viewMode === 'WEEK' && (
+            <div className="hidden lg:block overflow-x-auto">
               <div className="min-w-[800px]">
                 {/* Day Headers */}
                 <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50/80 sticky top-0 z-10">
@@ -802,7 +906,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
           {/* DIÁRIO */}
           {viewMode === 'DAY' && (
-            <div className="p-6 space-y-4">
+            <div className="p-3 sm:p-6 space-y-4">
               <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                 <h3 className="text-base font-bold text-slate-800">
                   Programação do Dia — {headerDateLabel}
@@ -826,13 +930,13 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                   return (
                     <div
                       key={slot}
-                      className={`flex items-start gap-4 p-3 rounded-xl border transition-colors ${
+                      className={`flex items-start gap-2 sm:gap-4 p-2.5 sm:p-3 rounded-xl border transition-colors ${
                         isLunch
                           ? 'border-amber-200 bg-amber-50/30'
                           : 'border-slate-100 hover:border-slate-200 hover:bg-slate-50/50'
                       }`}
                     >
-                      <div className="w-20 pt-1 shrink-0 text-center sm:text-left">
+                      <div className="w-12 sm:w-20 pt-1 shrink-0 text-center sm:text-left">
                         <span className={`text-sm font-bold block ${isLunch ? 'text-amber-900' : 'text-slate-700'}`}>
                           {slot}
                         </span>
@@ -843,7 +947,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                         )}
                       </div>
 
-                      <div className="flex-1 space-y-2">
+                      <div className="flex-1 min-w-0 space-y-2">
                         {slotApts.length === 0 ? (
                           isLunch ? (
                             <div className="w-full py-3 px-4 rounded-xl border border-dashed border-amber-300 bg-amber-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -867,9 +971,9 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                           ) : (
                             <button
                               onClick={() => handleEmptySlotClick(dateStr, slot)}
-                              className="w-full py-2.5 border border-dashed border-slate-200 hover:border-emerald-300 rounded-xl text-xs font-medium text-slate-400 hover:text-emerald-600 hover:bg-emerald-50/30 transition-all text-left px-4 cursor-pointer"
+                              className="w-full min-h-[44px] sm:min-h-0 py-2.5 border border-dashed border-slate-200 hover:border-emerald-300 rounded-xl text-xs font-medium text-slate-400 hover:text-emerald-600 hover:bg-emerald-50/30 transition-all text-left px-4 cursor-pointer"
                             >
-                              + Horário livre. Clique para agendar consulta às {slot}
+                              <span className="hidden sm:inline">+ Horário livre. Clique para agendar consulta às {slot}</span><span className="sm:hidden">+ Agendar às {slot}</span>
                             </button>
                           )
                         ) : (
@@ -934,7 +1038,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
           {/* MENSAL */}
           {viewMode === 'MONTH' && (
-            <div className="p-6 space-y-4">
+            <div className="p-2 sm:p-6 space-y-3 sm:space-y-4">
               <div className="grid grid-cols-7 text-center font-bold text-xs uppercase tracking-wider pb-2 border-b border-slate-100">
                 <span className="text-rose-600 font-extrabold">Dom</span>
                 <span className="text-slate-500">Seg</span>
@@ -946,7 +1050,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               </div>
 
               {/* Month calendar grid */}
-              <div className="grid grid-cols-7 gap-2">
+              <div className="grid grid-cols-7 gap-1 sm:gap-2">
                 {miniCalDays.map((item) => {
                   const d = item.date;
                   const iso = item.iso;
@@ -963,7 +1067,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                         setCurrentDate(d);
                         setViewMode('DAY');
                       }}
-                      className={`min-h-[105px] p-2 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+                      className={`min-h-[62px] sm:min-h-[105px] p-1 sm:p-2 rounded-lg sm:rounded-xl border transition-all cursor-pointer flex flex-col justify-between min-w-0 ${
                         !isCurrentMonth
                           ? 'opacity-40 bg-slate-50/50 border-slate-100'
                           : isToday
@@ -1009,7 +1113,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                         </div>
                       )}
 
-                      <div className="space-y-1 mt-1 overflow-hidden">
+                      <div className="hidden sm:block space-y-1 mt-1 overflow-hidden">
                         {dayApts.slice(0, 2).map((apt) => (
                           <div
                             key={apt.id}
@@ -1044,7 +1148,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                 <button
                   type="button"
                   onClick={handleToday}
-                  className="px-2 py-0.5 rounded-lg text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer"
+                  className="px-3 py-2 sm:px-2 sm:py-0.5 rounded-lg text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors cursor-pointer"
                   title="Voltar para a data de hoje"
                 >
                   Hoje
@@ -1056,7 +1160,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                     d.setMonth(d.getMonth() - 1);
                     setCurrentDate(d);
                   }}
-                  className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                  className="p-2.5 sm:p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
                   title="Mês anterior"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" />
@@ -1068,7 +1172,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                     d.setMonth(d.getMonth() + 1);
                     setCurrentDate(d);
                   }}
-                  className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                  className="p-2.5 sm:p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
                   title="Próximo mês"
                 >
                   <ChevronRight className="w-3.5 h-3.5" />
@@ -1111,7 +1215,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                         ? `${item.day} - Domingo`
                         : undefined
                     }
-                    className={`h-7 w-7 mx-auto rounded-lg text-xs font-semibold flex items-center justify-center transition-all relative cursor-pointer ${
+                    className={`h-9 w-9 sm:h-7 sm:w-7 mx-auto rounded-lg text-xs font-semibold flex items-center justify-center transition-all relative cursor-pointer ${
                       isSelected
                         ? 'bg-emerald-600 text-white shadow-xs font-bold'
                         : isToday

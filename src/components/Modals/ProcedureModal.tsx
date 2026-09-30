@@ -48,7 +48,7 @@ import { CurrencyInput, CustomSelect, Slider, useToast, SuccessDialog } from '..
 interface ProcedureModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (procData: Omit<DentalProcedure, 'id'>) => void;
+  onSave: (procData: Omit<DentalProcedure, 'id'>, eligibleProfessionalIds?: string[]) => void;
   initialProcedure?: DentalProcedure | null;
 }
 
@@ -100,6 +100,16 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
   // Catálogo de insumos (reativo)
   const [catalogVersion, setCatalogVersion] = useState(0);
   const catalogInputs = useMemo(() => db.getClinicalInputs(), [catalogVersion, isOpen]);
+
+  // Profissionais habilitados a executar (roster clínico). Sem nenhum selecionado = disponível a
+  // todos os profissionais ativos (ver resolveEligibleProfessionals, src/lib/professionalScheduling.ts).
+  const activeProfessionals = useMemo(() => db.getClinicalProfessionals().filter((p) => p.isActive), [isOpen]);
+  const [selectedProfessionalIds, setSelectedProfessionalIds] = useState<string[]>(
+    () => db.getProcedureProfessionalLinks()[initialProcedure?.id || ''] || []
+  );
+  const toggleProfessional = (id: string) => {
+    setSelectedProfessionalIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
 
   // Identificação
   const [name, setName] = useState(initialProcedure?.name || '');
@@ -237,7 +247,7 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
         suggestedPrice,
         defaultPrice,
         isIncomplete,
-      });
+      }, activeProfessionals.length > 0 ? selectedProfessionalIds : undefined);
       setSavedProcedureName(name.trim());
       setShowSuccess(true);
     } finally {
@@ -402,6 +412,41 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
               </p>
             )}
           </div>
+
+          {/* Profissionais habilitados (roster clínico) — nenhum marcado = disponível a todos */}
+          {activeProfessionals.length > 0 && (
+            <div className="p-4.5 rounded-2xl border border-slate-200 bg-slate-50/60 space-y-2.5" data-testid="proc-eligible-professionals">
+              <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                Profissionais habilitados a executar
+              </span>
+              <p className="text-[11px] text-slate-500">
+                Nenhuma marcada = disponível a todos os profissionais ativos da clínica.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {activeProfessionals.map((p) => {
+                  const checked = selectedProfessionalIds.includes(p.id);
+                  return (
+                    <label
+                      key={p.id}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer transition-colors ${
+                        checked
+                          ? 'bg-teal-600 border-teal-600 text-white'
+                          : 'bg-white border-slate-200 text-slate-700 hover:border-teal-300'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleProfessional(p.id)}
+                        className="sr-only"
+                      />
+                      {p.name}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* 3. Insumos utilizados */}
           <div className="p-4.5 rounded-2xl border border-teal-100 bg-teal-50/40 space-y-3.5">

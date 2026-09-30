@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, UserPlus, Phone, User, Search, CheckCircle2, AlertCircle } from 'lucide-react';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { WhatsAppContact, WhatsAppConversation } from '../../types/whatsapp';
-import { supabase } from '../../lib/supabaseClient';
+import { SupabaseService } from '../../lib/supabaseClient';
 import { normalizeBrazilianNumber, formatPhoneDisplay } from '../../lib/phoneUtils';
 
 interface NewContactModalProps {
@@ -22,6 +22,8 @@ export const NewContactModal: React.FC<NewContactModalProps> = ({
   const [phone, setPhone] = useState('');
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const [patientSearch, setPatientSearch] = useState('');
+  // Resultados da busca NO SERVIDOR: a clínica pode ter milhares de pacientes, e uma amostra
+  // fixa (antes: os 50 primeiros por nome) deixava quem estava fora dela impossível de encontrar.
   const [patients, setPatients] = useState<{ id: string; name: string; phone?: string; cpf?: string }[]>([]);
   const [loadingPatients, setLoadingPatients] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -33,28 +35,38 @@ export const NewContactModal: React.FC<NewContactModalProps> = ({
       setPhone('');
       setSelectedPatientId(null);
       setPatientSearch('');
+      setPatients([]);
       setError(null);
-      loadPatients();
     }
   }, [isOpen, tenantId]);
 
-  const loadPatients = async () => {
-    setLoadingPatients(true);
-    try {
-      const { data } = await supabase
-        .from('df_patients')
-        .select('id, name, phone, cpf')
-        .eq('tenant_id', tenantId)
-        .order('name')
-        .limit(50);
-
-      setPatients(data || []);
-    } catch (e) {
-      console.warn('Erro ao carregar pacientes:', e);
-    } finally {
+  useEffect(() => {
+    const term = patientSearch.trim();
+    if (!isOpen || term.length < 2) {
+      setPatients([]);
       setLoadingPatients(false);
+      return;
     }
-  };
+    let cancelled = false;
+    setLoadingPatients(true);
+    const handle = setTimeout(() => {
+      SupabaseService.searchPatientsForTenant(tenantId, term, 20)
+        .then((rows) => {
+          if (!cancelled) setPatients(rows);
+        })
+        .catch((e) => {
+          console.warn('Erro ao buscar pacientes:', e);
+          if (!cancelled) setPatients([]);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingPatients(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [patientSearch, isOpen, tenantId]);
 
   const handleSelectPatient = (p: { id: string; name: string; phone?: string }) => {
     setSelectedPatientId(p.id);
@@ -100,26 +112,17 @@ export const NewContactModal: React.FC<NewContactModalProps> = ({
 
   if (!isOpen) return null;
 
-  const filteredPatients = patientSearch.trim()
-    ? patients.filter(
-        (p) =>
-          p.name.toLowerCase().includes(patientSearch.toLowerCase()) ||
-          (p.cpf && p.cpf.includes(patientSearch)) ||
-          (p.phone && p.phone.includes(patientSearch))
-      )
-    : patients;
-
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200"
       onClick={onClose}
     >
       <div
-        className="relative max-w-lg w-full bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col"
+        className="relative max-w-lg w-full bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[calc(100dvh-2rem)] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-xl bg-emerald-100 text-emerald-700">
               <UserPlus className="w-5 h-5" />
@@ -138,7 +141,8 @@ export const NewContactModal: React.FC<NewContactModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+        <div className="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
@@ -162,12 +166,14 @@ export const NewContactModal: React.FC<NewContactModalProps> = ({
               />
             </div>
 
-            {patientSearch.trim() && (
+            {patientSearch.trim().length >= 2 && (
               <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 bg-white mb-2">
-                {filteredPatients.length === 0 ? (
+                {loadingPatients && patients.length === 0 ? (
+                  <div className="p-2.5 text-xs text-slate-400 text-center">Buscando...</div>
+                ) : patients.length === 0 ? (
                   <div className="p-2.5 text-xs text-slate-400 text-center">Nenhum paciente encontrado</div>
                 ) : (
-                  filteredPatients.slice(0, 5).map((p) => (
+                  patients.map((p) => (
                     <button
                       key={p.id}
                       type="button"
@@ -219,6 +225,7 @@ export const NewContactModal: React.FC<NewContactModalProps> = ({
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="(11) 99999-9999"
+                inputMode="tel"
                 className="w-full pl-9 pr-3 py-2.5 text-sm bg-white border border-slate-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-emerald-500 font-mono"
               />
             </div>
@@ -226,9 +233,10 @@ export const NewContactModal: React.FC<NewContactModalProps> = ({
               Aceita formato com DDD: 11999998888 ou (11) 99999-8888
             </p>
           </div>
+        </div>
 
           {/* Footer Actions */}
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+          <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 flex-shrink-0 bg-white">
             <button
               type="button"
               onClick={onClose}

@@ -54,6 +54,7 @@ import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { formatPhoneDisplay, getContactDisplayName, getContactInitial, isWhatsAppGroup } from '../../lib/phoneUtils';
 import { resolveAttendantDisplayName, stripAttendantPrefixFromContent, formatAttendantAuthorLabel } from '../../lib/attendantIdentity';
 import { db } from '../../lib/db';
+import { useIsDesktop } from '../../hooks/useMediaQuery';
 import { hasPermission } from '../../lib/permissions';
 import { TransferModal } from './TransferModal';
 import { FinalizeModal } from './FinalizeModal';
@@ -149,6 +150,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
   effectiveClinicalPatientId: effectiveClinicalPatientIdProp,
   onOpenPatientRecord,
 }) => {
+  const isDesktopViewport = useIsDesktop();
   const [timelineItems, setTimelineItems] = useState<WhatsAppTimelineItem[]>([]);
   const [loadingTimeline, setLoadingTimeline] = useState(true);
 
@@ -1392,18 +1394,19 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
       )}
 
       {/* Top Header */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 bg-white border-b border-slate-200/80 shadow-2xs z-10 shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap lg:flex-nowrap items-center justify-between gap-y-2 gap-x-2 px-3 sm:px-6 py-2.5 lg:py-3.5 bg-white border-b border-slate-200/80 shadow-2xs z-10 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 order-1 lg:order-none">
           {onBackMobile && (
             <button
               onClick={onBackMobile}
-              className="lg:hidden p-1.5 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 cursor-pointer"
+              aria-label="Voltar para as conversas"
+              className="lg:hidden tap-target -ml-1 shrink-0 text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-100 cursor-pointer"
             >
-              <ChevronLeft className="w-5 h-5" />
+              <ChevronLeft className="w-6 h-6" />
             </button>
           )}
 
-          <div className="relative">
+          <div className="relative shrink-0">
             <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm overflow-hidden border border-slate-200 shadow-2xs">
               {contactPhoto ? (
                 <img src={contactPhoto} alt={getContactDisplayName(contact)} className="w-full h-full object-cover" />
@@ -1422,9 +1425,9 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
             />
           </div>
 
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-bold text-slate-800 truncate max-w-[200px] sm:max-w-xs">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm font-bold text-slate-800 truncate max-w-[60vw] sm:max-w-xs">
                 {getContactDisplayName(contact)}
               </h3>
               <button
@@ -1503,12 +1506,12 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
               )}
             </div>
             {relatedPatients.length > 1 && (
-              <div className="flex items-center gap-1.5 flex-wrap mt-1">
-                <span className="text-[10px] font-bold text-slate-500">Pacientes relacionados:</span>
+              <div className="flex items-center gap-1.5 lg:flex-wrap mt-1 overflow-x-auto lg:overflow-visible scroll-x-touch">
+                <span className="text-[10px] font-bold text-slate-500 shrink-0 whitespace-nowrap">Pacientes relacionados:</span>
                 {relatedPatients.map((p) => (
                   <span
                     key={p.id}
-                    className={`inline-flex items-center rounded-full text-[10px] font-bold border overflow-hidden ${
+                    className={`inline-flex items-center shrink-0 whitespace-nowrap rounded-full text-[10px] font-bold border overflow-hidden ${
                       selectedClinicalPatientId === p.id
                         ? 'bg-emerald-600 border-emerald-600 text-white'
                         : 'bg-white border-slate-200 text-slate-700'
@@ -1549,7 +1552,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap lg:flex-nowrap items-center gap-2 w-full lg:w-auto lg:shrink-0 order-3 lg:order-none">
           {!isAttendanceActive ? (
             <button
               type="button"
@@ -1700,39 +1703,42 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
               </button>
             </>
           )}
+        </div>
 
-          {/* Botão de Pesquisa nesta conversa */}
-          <button
-            type="button"
-            onClick={() => {
-              setIsSearchOpen((prev) => !prev);
-              if (!isSearchOpen) {
-                setTimeout(() => searchInputRef.current?.focus(), 60);
-              }
-            }}
-            className={`p-2 rounded-xl border transition-colors cursor-pointer ${
-              isSearchOpen
-                ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
-            }`}
-            title="Pesquisar nesta conversa"
-          >
-            <Search className="w-4 h-4" />
-          </button>
+        {/* Pesquisa e informações: na linha do topo no mobile */}
+        <div className="flex items-center gap-1.5 shrink-0 order-2 lg:order-none">
+  {/* Botão de Pesquisa nesta conversa */}
+  <button
+    type="button"
+    onClick={() => {
+      setIsSearchOpen((prev) => !prev);
+      if (!isSearchOpen) {
+        setTimeout(() => searchInputRef.current?.focus(), 60);
+      }
+    }}
+    className={`p-2 rounded-xl border transition-colors cursor-pointer ${
+      isSearchOpen
+        ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+    }`}
+    title="Pesquisar nesta conversa"
+  >
+    <Search className="w-4 h-4" />
+  </button>
 
-          {onToggleContext && (
-            <button
-              onClick={onToggleContext}
-              className={`p-2 rounded-xl border transition-colors cursor-pointer ${
-                showContext
-                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
-              }`}
-              title="Informações do contato e histórico"
-            >
-              <Info className="w-4 h-4" />
-            </button>
-          )}
+  {onToggleContext && (
+    <button
+      onClick={onToggleContext}
+      className={`p-2 rounded-xl border transition-colors cursor-pointer ${
+        showContext
+          ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+      }`}
+      title="Informações do contato e histórico"
+    >
+      <Info className="w-4 h-4" />
+    </button>
+  )}
         </div>
       </div>
 
@@ -2563,7 +2569,7 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
           </button>
         </div>
       ) : (
-        <div className="p-3 bg-white border-t border-slate-200 flex items-end gap-2 relative shrink-0 z-10">
+        <div className="p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-white border-t border-slate-200 flex items-end gap-2 relative shrink-0 z-10">
           {/* Hidden File Input com multiple */}
           <input
             type="file"
@@ -2659,7 +2665,9 @@ export const WhatsAppChatArea: React.FC<WhatsAppChatAreaProps> = ({
                     ? 'Escreva uma nota interna (visível apenas para a equipe)...'
                     : attachmentQueue.length > 0
                     ? 'Adicione uma legenda aos arquivos anexados (opcional)...'
-                    : 'Digite uma mensagem... (Enter para enviar, Shift+Enter para quebra)'
+                    : isDesktopViewport
+                    ? 'Digite uma mensagem... (Enter para enviar, Shift+Enter para quebra)'
+                    : 'Digite uma mensagem...'
                 }
                 className={`w-full px-3.5 py-2.5 text-xs rounded-xl focus:outline-hidden resize-none max-h-32 transition-all ${
                   isInternalNote

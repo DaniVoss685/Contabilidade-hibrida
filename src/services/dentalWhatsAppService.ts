@@ -26,6 +26,19 @@ import { renderAppointmentTemplate } from '../lib/appointmentDateUtils';
 import { db } from '../lib/db';
 import { resolveAttendantDisplayName, formatOutboundTextWithPolicy } from '../lib/attendantIdentity';
 import { hasPermission } from '../lib/permissions';
+// Leitura paginada via supabase-js: um select sem range é cortado em 1000 linhas
+// pelo PostgREST. `build` precisa devolver uma query NOVA a cada chamada e com
+// ordenação total (terminando em uma chave única) para a paginação ser estável.
+async function selectAllPages<T>(build: () => any, pageSize = 1000): Promise<{ data: T[]; error: any }> {
+  const all: T[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await build().range(from, from + pageSize - 1);
+    if (error) return { data: all, error };
+    all.push(...((data || []) as T[]));
+    if (!data || data.length < pageSize) return { data: all, error: null };
+  }
+}
+
 async function extractEdgeFunctionError(error: any): Promise<string> {
   if (!error) return 'Erro desconhecido.';
   try {
@@ -1502,18 +1515,21 @@ export const DentalWhatsAppService = {
   async getContacts(tenantId: string, search?: string): Promise<WhatsAppContact[]> {
     if (!tenantId) return [];
 
-    let query = supabase
-      .from('df_wa_contacts')
-      .select('*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)')
-      .eq('tenant_id', tenantId)
-      .order('name', { ascending: true });
+    const build = () => {
+      let query = supabase
+        .from('df_wa_contacts')
+        .select('*, patient:df_patients!df_wa_contacts_patient_id_fkey(id, name, cpf, phone, email)')
+        .eq('tenant_id', tenantId)
+        .order('name', { ascending: true })
+        .order('id', { ascending: true });
+      if (search && search.trim()) {
+        const term = search.trim();
+        query = query.or(`name.ilike.%${term}%,whatsapp_number.ilike.%${term}%`);
+      }
+      return query;
+    };
 
-    if (search && search.trim()) {
-      const term = search.trim();
-      query = query.or(`name.ilike.%${term}%,whatsapp_number.ilike.%${term}%`);
-    }
-
-    const { data, error } = await query;
+    const { data, error } = await selectAllPages<any>(build);
     if (error) {
       console.error('[DentalWhatsAppService] Erro ao listar contatos:', error.message);
       return [];
@@ -1533,15 +1549,24 @@ export const DentalWhatsAppService = {
     if (!tenantId) return {};
 
     const [contactsRes, linksRes, guardiansRes] = await Promise.all([
-      supabase.from('df_wa_contacts').select('id, whatsapp_number').eq('tenant_id', tenantId),
-      supabase
-        .from('df_wa_contact_patients')
-        .select('contact_id, patient_id, patient:df_patients!df_wa_contact_patients_patient_id_fkey(name)')
-        .eq('tenant_id', tenantId),
-      supabase
-        .from('df_patient_guardians')
-        .select('id, name, phone, linked_patient_id')
-        .eq('tenant_id', tenantId),
+      selectAllPages<any>(() =>
+        supabase.from('df_wa_contacts').select('id, whatsapp_number').eq('tenant_id', tenantId).order('id', { ascending: true })
+      ),
+      selectAllPages<any>(() =>
+        supabase
+          .from('df_wa_contact_patients')
+          .select('contact_id, patient_id, patient:df_patients!df_wa_contact_patients_patient_id_fkey(name)')
+          .eq('tenant_id', tenantId)
+          .order('contact_id', { ascending: true })
+          .order('patient_id', { ascending: true })
+      ),
+      selectAllPages<any>(() =>
+        supabase
+          .from('df_patient_guardians')
+          .select('id, name, phone, linked_patient_id')
+          .eq('tenant_id', tenantId)
+          .order('id', { ascending: true })
+      ),
     ]);
 
     if (contactsRes.error || linksRes.error || guardiansRes.error) {
@@ -1558,14 +1583,19 @@ export const DentalWhatsAppService = {
 
     // Contagem de dependentes por guardian_id (df_patient_guardian_links), só para os
     // guardians deste tenant — 1 query extra, ainda sem N+1 por contato.
-    const guardianIds = guardians.map((g) => g.id);
+    // Filtra por tenant (não por IN com todos os ids — com centenas de
+    // responsáveis a URL estoura) e pagina.
     let dependentCountByGuardianId: Record<string, number> = {};
-    if (guardianIds.length > 0) {
-      const { data: guardianLinks } = await supabase
-        .from('df_patient_guardian_links')
-        .select('guardian_id')
-        .in('guardian_id', guardianIds);
-      (guardianLinks || []).forEach((l: any) => {
+    if (guardians.length > 0) {
+      const { data: guardianLinks } = await selectAllPages<any>(() =>
+        supabase
+          .from('df_patient_guardian_links')
+          .select('guardian_id, patient_id')
+          .eq('tenant_id', tenantId)
+          .order('patient_id', { ascending: true })
+          .order('guardian_id', { ascending: true })
+      );
+      guardianLinks.forEach((l: any) => {
         dependentCountByGuardianId[l.guardian_id] = (dependentCountByGuardianId[l.guardian_id] || 0) + 1;
       });
     }
@@ -2962,18 +2992,34 @@ export const DentalWhatsAppService = {
     processed: number;
   }> {
     const tenantId = rawTenantId ? this.sanitizeTenantId(rawTenantId) : null;
-    let pQuery = supabase.from('df_patients').select('id, name, phone, tenant_id');
-    if (tenantId) pQuery = pQuery.eq('tenant_id', tenantId);
-
-    const { data: patients } = await pQuery;
-    if (!patients) {
+    // Paginado: sem range o PostgREST corta em 1000 linhas e o backfill ignoraria em silêncio
+    // todo paciente além do milésimo (clínicas migradas passam de 3.000).
+    const { data: patients, error: pErr } = await selectAllPages<any>(() => {
+      let q = supabase.from('df_patients').select('id, name, phone, tenant_id');
+      if (tenantId) q = q.eq('tenant_id', tenantId);
+      return q.order('tenant_id', { ascending: true }).order('id', { ascending: true });
+    });
+    if (pErr || !patients) {
       return { totalWithPhone: 0, alreadyLinked: 0, existingByNumber: 0, withoutContact: 0, conflicts: 0, processed: 0 };
     }
 
-    let cQuery = supabase.from('df_wa_contacts').select('id, name, whatsapp_number, patient_id, tenant_id');
-    if (tenantId) cQuery = cQuery.eq('tenant_id', tenantId);
-    const { data: contacts } = await cQuery;
+    const { data: contacts } = await selectAllPages<any>(() => {
+      let q = supabase.from('df_wa_contacts').select('id, name, whatsapp_number, patient_id, tenant_id');
+      if (tenantId) q = q.eq('tenant_id', tenantId);
+      return q.order('tenant_id', { ascending: true }).order('id', { ascending: true });
+    });
     const contactList = contacts || [];
+    // Índices por (tenant, paciente) e (tenant, número): evita varrer a lista inteira a cada paciente.
+    const contactByPatient = new Map<string, any>();
+    const contactByNumber = new Map<string, any>();
+    for (const c of contactList) {
+      if (c.patient_id && !contactByPatient.has(`${c.tenant_id}|${c.patient_id}`)) {
+        contactByPatient.set(`${c.tenant_id}|${c.patient_id}`, c);
+      }
+      if (c.whatsapp_number && !contactByNumber.has(`${c.tenant_id}|${c.whatsapp_number}`)) {
+        contactByNumber.set(`${c.tenant_id}|${c.whatsapp_number}`, c);
+      }
+    }
 
     let totalWithPhone = 0;
     let alreadyLinked = 0;
@@ -2988,14 +3034,14 @@ export const DentalWhatsAppService = {
       totalWithPhone++;
 
       const normPhone = normalizeBrazilianNumber(rawPhone);
-      const linked = contactList.find((c) => c.tenant_id === p.tenant_id && c.patient_id === p.id);
+      const linked = contactByPatient.get(`${p.tenant_id}|${p.id}`);
 
       if (linked) {
         alreadyLinked++;
         continue;
       }
 
-      const byNumber = contactList.find((c) => c.tenant_id === p.tenant_id && c.whatsapp_number === normPhone);
+      const byNumber = contactByNumber.get(`${p.tenant_id}|${normPhone}`);
       if (byNumber) {
         if (!byNumber.patient_id) {
           existingByNumber++;

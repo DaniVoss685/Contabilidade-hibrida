@@ -52,14 +52,19 @@ import { AllocationCardFields } from './AllocationCardFields';
 import { AllocationReceivingFields } from './AllocationReceivingFields';
 import { suggestedAccountFor } from '../../lib/bankAccounts';
 import { evaluateAllocation, planAllocation, validateSplit, getSaleAllocations, isCardMethod, buildSaleInstallments, validateFiscalCoverage, getFiscalCoverage, defaultFiscalCoverage } from '../../lib/salePayments';
+import { buildSaleDraftFromBudget } from '../../lib/budgets';
 
 interface NewSaleModalProps {
   isOpen: boolean;
   onClose: () => void;
   patients: Patient[];
-  onSaleCreated?: () => void;
+  onSaleCreated?: (sale?: Sale) => void;
   saleToEdit?: Sale | null;
   initialPatientId?: string;
+  // Conversão de orçamento (Fase D) — pré-preenche procedimento/valor/observações a partir do
+  // orçamento aprovado; o usuário ainda define forma de pagamento, split, contas e fiscal aqui,
+  // nada disso vem automaticamente do orçamento.
+  initialBudget?: { id: string; items: import('../../types').BudgetItem[]; total: number } | null;
 }
 
 export const NewSaleModal: React.FC<NewSaleModalProps> = ({
@@ -69,6 +74,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
   onSaleCreated,
   saleToEdit,
   initialPatientId,
+  initialBudget,
 }) => {
   const toast = useToast();
   const isEditing = Boolean(saleToEdit);
@@ -338,8 +344,16 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
       }
     } else {
       resetForm();
+      if (initialBudget && initialBudget.items.length > 0) {
+        const draft = buildSaleDraftFromBudget(initialBudget);
+        setSelectedProcedureId('CUSTOM');
+        setIsCustomProcedure(true);
+        setProcedureName(draft.procedureName);
+        setDescription(draft.notes);
+        setTotalValue(draft.totalValue);
+      }
     }
-  }, [saleToEdit, isOpen, initialPatientId, patients]);
+  }, [saleToEdit, isOpen, initialPatientId, patients, initialBudget]);
 
   const selectedProcedure = procedures.find((p) => p.id === selectedProcedureId);
 
@@ -730,6 +744,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
         installments: built,
       };
 
+      let createdSale: Sale | undefined;
       if (isEditing && saleToEdit) {
         db.updateSale(saleToEdit.id, {
           ...saleCommon,
@@ -740,7 +755,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
         });
         toast.success('Receita atualizada com sucesso.');
       } else {
-        db.addSale({
+        createdSale = db.addSale({
           ...saleCommon,
           nfseEmittedAt: taxOrigin === 'CNPJ' && nfseStatus === 'EMITIDA' ? new Date().toISOString() : undefined,
           origin: 'MANUAL',
@@ -750,7 +765,7 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
 
     setIsDirty(false);
     resetForm();
-    if (onSaleCreated) onSaleCreated();
+    if (onSaleCreated) onSaleCreated(createdSale);
     onClose();
   } finally {
     setIsSubmitting(false);

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, UserCheck, RefreshCw, User, Phone, CheckCircle2, AlertCircle, Search } from 'lucide-react';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { WhatsAppContact } from '../../types/whatsapp';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase, SupabaseService } from '../../lib/supabaseClient';
 import { formatPhoneDisplay, getContactDisplayName, getContactInitial } from '../../lib/phoneUtils';
 
 interface EditContactModalProps {
@@ -23,7 +23,10 @@ export const EditContactModal: React.FC<EditContactModalProps> = ({
   const [name, setName] = useState(contact.name);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(contact.patient_id || null);
   const [patientSearch, setPatientSearch] = useState('');
+  // Resultados da busca NO SERVIDOR (a clínica pode ter milhares de pacientes — carregar uma
+  // amostra fixa deixava quem estava fora dela impossível de vincular).
   const [patients, setPatients] = useState<{ id: string; name: string; cpf?: string; phone?: string }[]>([]);
+  const [selectedPatientName, setSelectedPatientName] = useState<string>('');
   const [syncingPhoto, setSyncingPhoto] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,25 +35,50 @@ export const EditContactModal: React.FC<EditContactModalProps> = ({
     if (isOpen) {
       setName(contact.name);
       setSelectedPatientId(contact.patient_id || null);
+      setSelectedPatientName('');
       setPatientSearch('');
+      setPatients([]);
       setError(null);
-      loadPatients();
+      resolveLinkedPatientName(contact.patient_id || null);
     }
   }, [isOpen, contact]);
 
-  const loadPatients = async () => {
+  const resolveLinkedPatientName = async (patientId: string | null) => {
+    if (!patientId) return;
     try {
       const { data } = await supabase
         .from('df_patients')
-        .select('id, name, cpf, phone')
+        .select('id, name')
         .eq('tenant_id', tenantId)
-        .order('name')
-        .limit(50);
-      setPatients(data || []);
+        .eq('id', patientId)
+        .maybeSingle();
+      if (data?.name) setSelectedPatientName(data.name);
     } catch (err) {
-      console.warn('Erro ao listar pacientes:', err);
+      console.warn('Erro ao carregar paciente vinculado:', err);
     }
   };
+
+  useEffect(() => {
+    const term = patientSearch.trim();
+    if (!isOpen || term.length < 2) {
+      setPatients([]);
+      return;
+    }
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      SupabaseService.searchPatientsForTenant(tenantId, term, 20)
+        .then((rows) => {
+          if (!cancelled) setPatients(rows);
+        })
+        .catch(() => {
+          if (!cancelled) setPatients([]);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [patientSearch, isOpen, tenantId]);
 
   const handleSyncPhoto = async () => {
     setSyncingPhoto(true);
@@ -101,14 +129,14 @@ export const EditContactModal: React.FC<EditContactModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200"
       onClick={onClose}
     >
       <div
-        className="relative max-w-lg w-full bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col"
+        className="relative max-w-lg w-full bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto max-h-[calc(100dvh-2rem)] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-xl bg-blue-100 text-blue-700">
               <UserCheck className="w-5 h-5" />
@@ -126,7 +154,8 @@ export const EditContactModal: React.FC<EditContactModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+        <div className="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
@@ -196,11 +225,14 @@ export const EditContactModal: React.FC<EditContactModalProps> = ({
             {selectedPatientId && (
               <div className="flex items-center justify-between p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 mb-2">
                 <span className="font-semibold">
-                  Paciente: {patients.find((p) => p.id === selectedPatientId)?.name || 'Vinculado'}
+                  Paciente: {selectedPatientName || 'Vinculado'}
                 </span>
                 <button
                   type="button"
-                  onClick={() => setSelectedPatientId(null)}
+                  onClick={() => {
+                    setSelectedPatientId(null);
+                    setSelectedPatientName('');
+                  }}
                   className="text-rose-600 hover:text-rose-700 text-xs font-semibold cursor-pointer"
                 >
                   Desvincular
@@ -208,16 +240,19 @@ export const EditContactModal: React.FC<EditContactModalProps> = ({
               </div>
             )}
 
-            {patientSearch.trim() && (
+            {patientSearch.trim().length >= 2 && (
               <div className="max-h-32 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100 bg-white">
+                {patients.length === 0 && (
+                  <p className="px-3 py-2 text-xs text-slate-400">Nenhum paciente encontrado.</p>
+                )}
                 {patients
-                  .filter((p) => p.name.toLowerCase().includes(patientSearch.toLowerCase()))
                   .map((p) => (
                     <button
                       key={p.id}
                       type="button"
                       onClick={() => {
                         setSelectedPatientId(p.id);
+                        setSelectedPatientName(p.name);
                         setPatientSearch('');
                       }}
                       className="w-full text-left px-3 py-2 text-xs hover:bg-blue-50 transition-colors flex items-center justify-between cursor-pointer"
@@ -229,8 +264,9 @@ export const EditContactModal: React.FC<EditContactModalProps> = ({
               </div>
             )}
           </div>
+        </div>
 
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+          <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 flex-shrink-0 bg-white">
             <button
               type="button"
               onClick={onClose}

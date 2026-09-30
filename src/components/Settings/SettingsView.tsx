@@ -41,7 +41,9 @@ import { db } from '../../lib/db';
 import { useToast, CurrencyInput, ConfirmDialog, Switch } from '../UI';
 import { CardFeesCard } from './CardFeesCard';
 import { PricingSettingsCard } from './PricingSettingsCard';
+import { ProfessionalsRosterCard } from './ProfessionalsRosterCard';
 import { TeamManagementTab } from './TeamManagementTab';
+import { PushNotificationsPanel } from '../Notifications/PushNotificationsPanel';
 import { hasPermission } from '../../lib/permissions';
 
 interface SettingsViewProps {
@@ -307,6 +309,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <span className="flex-1">{scenarioMessage}</span>
             </div>
           )}
+          {/* Notificações push e instalação do aplicativo (PWA) */}
+          <PushNotificationsPanel tenantId={activeTenantId} userId={currentSession?.user?.id} />
           {/* Main Settings Form & Grid */}
           <form onSubmit={handleSaveProfile} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Column: Dados Profissionais (5 campos) + Regime Somente Leitura + Deduções PF (7 cols) */}
@@ -840,6 +844,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* Precificação de procedimentos — parâmetros da clínica (visível só com acesso financeiro) */}
       <PricingSettingsCard onSaved={onRefreshData} />
+
+      {/* Equipe de profissionais clínicos (Fase B: múltiplos profissionais, independente do login) */}
+      <ProfessionalsRosterCard onSaved={onRefreshData} />
       </>
       )}
 

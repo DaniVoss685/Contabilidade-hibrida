@@ -273,8 +273,62 @@ export const ChartOfAccountsView: React.FC<ChartOfAccountsViewProps> = ({
         </div>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      {/* Lista em cards (mobile/tablet). A tabela completa continua no desktop (lg+). */}
+      <div className="lg:hidden space-y-3">
+        {filteredCategories.map((cat) => (
+          <div
+            key={cat.id}
+            className={`rounded-xl border border-slate-200 bg-white p-3.5 shadow-xs ${!cat.active ? 'opacity-60 bg-slate-50' : ''}`}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-mono text-[11px] font-bold text-slate-500">{cat.code}</div>
+                <div className="font-bold text-slate-900 text-sm break-words">{cat.name}</div>
+                <div className="text-[11px] text-slate-500">{cat.groupName}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleToggleActive(cat)}
+                className={`shrink-0 min-h-[36px] px-3 rounded-full text-[11px] font-bold cursor-pointer ${
+                  cat.active ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'
+                }`}
+              >
+                {cat.active ? 'Ativa' : 'Inativa'}
+              </button>
+            </div>
+            {cat.noticeText && <div className="text-[11px] text-slate-500 mt-1">{cat.noticeText}</div>}
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <span
+                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                  cat.dedutivelLivroCaixaPf === 'SIM'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : cat.dedutivelLivroCaixaPf === 'CONDICIONAL'
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-rose-100 text-rose-800'
+                }`}
+              >
+                Livro Caixa (PF): {cat.dedutivelLivroCaixaPf}
+              </span>
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${cat.impactaFatorRPj ? 'bg-indigo-100 text-indigo-800' : 'bg-slate-100 text-slate-600'}`}>
+                Fator R: {cat.impactaFatorRPj ? 'SIM' : 'NÃO'}
+              </span>
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${cat.despesaOperacionalPj ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-600'}`}>
+                Desp. operacional (PJ): {cat.despesaOperacionalPj ? 'SIM' : 'NÃO'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleOpenEdit(cat)}
+              className="mt-3 w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-sm cursor-pointer"
+            >
+              <Edit2 className="w-4 h-4" /> Editar categoria
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden lg:block bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-700 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200">

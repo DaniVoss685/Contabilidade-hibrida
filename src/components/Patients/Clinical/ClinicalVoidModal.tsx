@@ -65,9 +65,9 @@ export const ClinicalVoidModal: React.FC<ClinicalVoidModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden my-auto max-h-[calc(100dvh-3rem)] flex flex-col animate-in fade-in zoom-in-95 duration-150">
         {/* Cabeçalho */}
-        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70 flex-shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600 shrink-0">
               <AlertOctagon className="w-5 h-5" />
@@ -92,7 +92,8 @@ export const ClinicalVoidModal: React.FC<ClinicalVoidModalProps> = ({
         </div>
 
         {/* Formulário */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+        <div className="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
           <div className="p-4 bg-rose-50/70 border border-rose-200/80 rounded-xl text-xs text-rose-900 leading-relaxed">
             <strong className="block mb-1 font-bold text-rose-950">Atenção sobre Invalidação:</strong>
             O registro permanecerá no histórico de auditoria, mas será marcado como inválido e não será considerado como evolução clínica ativa.
@@ -122,8 +123,9 @@ export const ClinicalVoidModal: React.FC<ClinicalVoidModalProps> = ({
               Ex: Registro lançado no paciente incorreto, atendimento duplicado por equívoco operacional, etc.
             </p>
           </div>
+        </div>
 
-          <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
+          <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-2.5 flex-shrink-0 bg-white">
             <button
               type="button"
               onClick={onClose}

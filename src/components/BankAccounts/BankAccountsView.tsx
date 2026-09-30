@@ -469,7 +469,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                           type="button"
                           onClick={(e) => handleTogglePreferred(acc, e)}
                           title={acc.isPreferred ? "Conta principal / preferida (padrão)" : "Definir como banco preferido"}
-                          className="p-1 -ml-1 rounded-lg hover:bg-amber-50 text-amber-400 hover:text-amber-500 transition-all cursor-pointer group"
+                          className="p-2.5 sm:p-1 -ml-2.5 sm:-ml-1 rounded-lg hover:bg-amber-50 text-amber-400 hover:text-amber-500 transition-all cursor-pointer group"
                         >
                           <Star
                             className={`w-4 h-4 transition-transform group-hover:scale-110 ${
@@ -551,7 +551,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                   <button
                     type="button"
                     onClick={() => handleToggleActive(acc)}
-                    className={`text-xs font-semibold flex items-center gap-1.5 py-1 px-2.5 rounded-lg transition-colors cursor-pointer ${
+                    className={`text-xs font-semibold flex items-center gap-1.5 py-2.5 sm:py-1 px-2.5 rounded-lg transition-colors cursor-pointer ${
                       isActive
                         ? 'text-slate-500 hover:text-amber-700 hover:bg-amber-50'
                         : 'text-emerald-700 hover:bg-emerald-50'
@@ -565,7 +565,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => handleOpenEdit(acc)}
-                      className="p-1.5 rounded-lg text-slate-500 hover:text-teal-700 hover:bg-teal-50 transition-colors cursor-pointer"
+                      className="p-3 sm:p-1.5 rounded-lg text-slate-500 hover:text-teal-700 hover:bg-teal-50 transition-colors cursor-pointer"
                       title="Editar conta"
                     >
                       <Edit2 className="w-3.5 h-3.5" />
@@ -574,7 +574,7 @@ export const BankAccountsView: React.FC<BankAccountsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => handleDelete(acc)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                      className="p-3 sm:p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                       title="Excluir conta"
                     >
                       <Trash2 className="w-3.5 h-3.5" />

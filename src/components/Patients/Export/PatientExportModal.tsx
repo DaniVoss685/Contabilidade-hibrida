@@ -40,9 +40,9 @@ export const PatientExportModal: React.FC<PatientExportModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-        <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto bg-slate-900/60 backdrop-blur-xs">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden my-auto max-h-[calc(100dvh-2rem)] flex flex-col animate-in fade-in zoom-in-95 duration-150">
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 flex-shrink-0">
           <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
             <Download className="w-5 h-5 text-teal-600" />
             Exportar Base de Pacientes
@@ -55,7 +55,7 @@ export const PatientExportModal: React.FC<PatientExportModalProps> = ({
           </button>
         </div>
 
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
           <div className="flex items-center gap-3 p-3 rounded-xl bg-teal-50 border border-teal-100 text-xs text-teal-900">
             <Users className="w-5 h-5 text-teal-600 shrink-0" />
             <div>
@@ -102,8 +102,9 @@ export const PatientExportModal: React.FC<PatientExportModalProps> = ({
               </button>
             </div>
           </div>
+        </div>
 
-          <div className="pt-2 border-t border-slate-100 flex items-center justify-end gap-2">
+          <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-2 flex-shrink-0 bg-white">
             <button
               type="button"
               onClick={onClose}
@@ -120,7 +121,6 @@ export const PatientExportModal: React.FC<PatientExportModalProps> = ({
               Baixar {format.toUpperCase()}
             </button>
           </div>
-        </div>
       </div>
     </div>
   );

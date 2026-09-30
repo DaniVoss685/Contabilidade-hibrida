@@ -32,6 +32,12 @@ export function exportToXlsx(filename: string, sheetName: string, rows: (string 
   XLSX.writeFile(wb, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`);
 }
 
+export function exportToXlsxSheets(filename: string, sheets: Array<{ name: string; rows: (string | number)[][] }>): void {
+  const wb = XLSX.utils.book_new();
+  sheets.forEach((s) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(s.rows), s.name.slice(0, 31)));
+  XLSX.writeFile(wb, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`);
+}
+
 export function formatPatientsForExport(patients: Patient[]): (string | number)[][] {
   const headers = [
     'ID',

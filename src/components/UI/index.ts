@@ -22,3 +22,4 @@ export * from './Slider';
 export * from './TimePicker';
 export * from './Switch';
 export * from './SortableHeader';
+export * from './MobileFilters';

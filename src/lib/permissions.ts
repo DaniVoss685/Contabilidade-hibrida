@@ -42,6 +42,9 @@ export type AppPermission =
   | 'procedures:costs:view'
   | 'procedures:price:edit'
   | 'pricing:manage'
+  | 'professionals:manage'
+  | 'budgets:view'
+  | 'budgets:manage'
   // Equipe & Configurações
   | 'team:view'
   | 'team:manage'
@@ -82,6 +85,9 @@ export const ALL_APP_PERMISSIONS: AppPermission[] = [
   'procedures:costs:view',
   'procedures:price:edit',
   'pricing:manage',
+  'professionals:manage',
+  'budgets:view',
+  'budgets:manage',
   'team:view',
   'team:manage',
   'settings:view',
@@ -112,6 +118,8 @@ export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
     'whatsapp:finalize',
     'agenda:view',
     'agenda:manage',
+    'budgets:view',
+    'budgets:manage',
     'patients:view',
     'patients:manage',
     'settings:view',
@@ -125,6 +133,8 @@ export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
     'whatsapp:finalize',
     'agenda:view',
     'agenda:manage',
+    'budgets:view',
+    'budgets:manage',
     'patients:view',
     'patients:manage',
     'settings:view',
@@ -135,6 +145,8 @@ export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
     'whatsapp:chat',
     'agenda:view',
     'agenda:manage',
+    'budgets:view',
+    'budgets:manage',
     'patients:view',
     'patients:manage',
     'procedures:view',
@@ -147,6 +159,8 @@ export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
     'whatsapp:chat',
     'agenda:view',
     'agenda:manage',
+    'budgets:view',
+    'budgets:manage',
     'patients:view',
     'patients:manage',
     'procedures:view',
@@ -177,6 +191,9 @@ export const ROLE_PERMISSIONS: Record<string, AppPermission[]> = {
     'procedures:costs:view',
     'procedures:price:edit',
     'pricing:manage',
+    'professionals:manage',
+    'budgets:view',
+    'budgets:manage',
     'patients:view',
     'agenda:view',
     'settings:view',
@@ -224,6 +241,8 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       { key: 'patients:manage', label: 'Gerenciar Pacientes', description: 'Cadastrar e editar dados dos pacientes' },
       { key: 'agenda:view', label: 'Visualizar Agenda', description: 'Consultar horários e compromissos clínicos' },
       { key: 'agenda:manage', label: 'Gerenciar Agenda', description: 'Criar, reagendar e cancelar consultas' },
+      { key: 'budgets:view', label: 'Visualizar Orçamentos', description: 'Consultar orçamentos/planos de tratamento dos pacientes' },
+      { key: 'budgets:manage', label: 'Gerenciar Orçamentos', description: 'Criar, editar e converter orçamentos em venda' },
     ],
   },
   {
@@ -267,6 +286,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       { key: 'procedures:costs:view', label: 'Ver custos e margens', description: 'Hora clínica, custo de cadeira, composição do custo e margem dos procedimentos' },
       { key: 'procedures:price:edit', label: 'Editar preço final', description: 'Definir o preço praticado dos procedimentos' },
       { key: 'pricing:manage', label: 'Parâmetros de precificação', description: 'Editar hora clínica, custo da estrutura e margem padrão da clínica' },
+      { key: 'professionals:manage', label: 'Gerenciar Profissionais Clínicos', description: 'Cadastrar, editar e ativar/desativar dentistas e atendentes da equipe' },
     ],
   },
   {
@@ -346,6 +366,8 @@ export function canAccessTab(
       );
     case 'agenda':
       return hasPermission(role, 'agenda:view', customPermissions, isPrimary);
+    case 'budgets':
+      return hasPermission(role, 'budgets:view', customPermissions, isPrimary);
     case 'patients':
       return hasPermission(role, 'patients:view', customPermissions, isPrimary);
     case 'sales':
@@ -427,6 +449,7 @@ export const TAB_PERMISSION_BUNDLES: Record<NavTab, AppPermission[]> = {
     'whatsapp:finalize',
   ],
   agenda: ['agenda:view', 'agenda:manage'],
+  budgets: ['budgets:view', 'budgets:manage'],
   patients: ['patients:view', 'patients:manage'],
   sales: ['sales:view', 'sales:manage'],
   receivables: ['receivables:view', 'receivables:manage'],
@@ -454,6 +477,7 @@ export const NAV_TAB_OPTIONS: NavTabOptionDef[] = [
   { id: 'whatsapp', label: 'WhatsApp', category: 'Pacientes & Atendimento' },
   { id: 'patients', label: 'Pacientes', category: 'Pacientes & Atendimento' },
   { id: 'agenda', label: 'Agenda', category: 'Pacientes & Atendimento' },
+  { id: 'budgets', label: 'Orçamentos', category: 'Pacientes & Atendimento' },
   { id: 'sales', label: 'Receitas / Vendas', category: 'Movimentação' },
   { id: 'receivables', label: 'Contas a Receber', category: 'Movimentação' },
   { id: 'expenses', label: 'Despesas / A Pagar', category: 'Movimentação' },
@@ -511,6 +535,7 @@ export function getTabsFromPermissions(
     'dashboard',
     'whatsapp',
     'agenda',
+    'budgets',
     'patients',
     'sales',
     'receivables',

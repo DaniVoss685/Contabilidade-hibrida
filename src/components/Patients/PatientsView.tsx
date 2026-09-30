@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useIsDesktop } from '../../hooks/useMediaQuery';
 import {
   Users,
   Search,
@@ -16,6 +17,8 @@ import {
   Pencil,
   MessageSquare,
   Cake,
+  AlertTriangle,
+  ArrowLeft,
   TrendingUp,
   Clock,
   ArrowUpRight,
@@ -45,10 +48,25 @@ import {
 } from '../../lib/patientHistory';
 import { db } from '../../lib/db';
 import { SupabaseService } from '../../lib/supabaseClient';
+import { absentValueLabel, listMissingFields, describeMissingFields } from '../../lib/patientRequiredFields';
 import { filterPatientsByGuardian, searchPatientsWithGuardian, GuardianFilter } from '../../lib/patientGuardianDisplay';
 import { useToast, SortableHeader } from '../UI';
 import { useSortableData } from '../../hooks/useSortableData';
 import { PatientModal } from '../Modals/PatientModal';
+import { PatientReviewPanel } from './PatientReviewPanel';
+import { DeletePatientDialog } from './DeletePatientDialog';
+import {
+  PatientReviewIssue,
+  ReviewFilter,
+  filterPatientsByReview,
+  countReviewQueues,
+  groupIssuesByPatient,
+  ISSUE_META,
+  reviewBadge,
+  sortPatientsForReviewFilter,
+  summarizeReview,
+} from '../../lib/patientReviewIssues';
+import { hasPermission } from '../../lib/permissions';
 import { PatientProcedureModal } from './PatientProcedureModal';
 import { PatientSummaryTab } from './Clinical/PatientSummaryTab';
 import { PatientClinicalTimeline } from './Clinical/PatientClinicalTimeline';
@@ -90,6 +108,15 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
   );
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Mobile/tablet: lista e ficha são telas separadas (master/detail). Desktop mantém as duas colunas.
+  const isDesktop = useIsDesktop();
+  const [mobileDetailOpen, setMobileDetailOpen] = useState<boolean>(Boolean(initialSelectedPatientId));
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
+  const PATIENT_LIST_PAGE = 100;
+  const [visiblePatientCount, setVisiblePatientCount] = useState(PATIENT_LIST_PAGE);
+  const showList = isDesktop || !mobileDetailOpen;
+  const showDetail = isDesktop || mobileDetailOpen;
+
   // Aba ativa na Ficha do Paciente
   type PatientTab = 'RESUMO' | 'CLINICAL' | 'FINANCIAL' | 'DOCUMENTS' | 'BEFORE_AFTER';
   const [patientTab, setPatientTab] = useState<PatientTab>('RESUMO');
@@ -111,6 +138,7 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
   React.useEffect(() => {
     if (initialSelectedPatientId) {
       setSelectedPatientId(initialSelectedPatientId);
+      setMobileDetailOpen(true);
     }
   }, [initialSelectedPatientId]);
 
@@ -156,14 +184,42 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
 
   const [guardianFilter, setGuardianFilter] = useState<GuardianFilter>('ALL');
 
+  // Revisão cadastral: fila de pendências ABERTAS do tenant (1 consulta paginada), usada pelo badge da
+  // lista, filtros, ordenação de fila e banner da ficha. Recarrega após salvar/revisar/excluir
+  // (issuesTick) e quando a lista de pacientes muda — sem exigir F5.
+  const [reviewIssues, setReviewIssues] = useState<PatientReviewIssue[]>([]);
+  const [issuesTick, setIssuesTick] = useState(0);
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('ALL');
+  const reloadIssues = React.useCallback(() => setIssuesTick((t) => t + 1), []);
+  React.useEffect(() => {
+    const tenantId = db.getActiveTenantId();
+    if (!tenantId) return;
+    let cancelled = false;
+    SupabaseService.getReviewIssuesForTenant(tenantId, true)
+      .then((res) => {
+        if (!cancelled && !res.error) setReviewIssues(res.data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [issuesTick, patients.length]);
+  const issuesByPatient = useMemo(() => groupIssuesByPatient(reviewIssues), [reviewIssues]);
+  // Contagem por FILA (pacientes distintos com pendência ABERTA do nível): "Revisar cadastro" NÃO conta
+  // simples ausência de CPF/nascimento/telefone; "Cadastro incompleto" conta só campos ausentes.
+  const reviewCounts = useMemo(() => countReviewQueues(reviewIssues).patients, [reviewIssues]);
+
   const filteredPatients = useMemo(() => {
     const searched = searchPatientsWithGuardian(patients, guardianSummaries, searchTerm);
-    return filterPatientsByGuardian(searched, guardianSummaries, guardianFilter);
-  }, [patients, searchTerm, guardianFilter, guardianSummaries]);
+    const byGuardian = filterPatientsByGuardian(searched, guardianSummaries, guardianFilter);
+    return filterPatientsByReview(byGuardian, issuesByPatient, reviewFilter);
+  }, [patients, searchTerm, guardianFilter, guardianSummaries, issuesByPatient, reviewFilter]);
 
   const [patientSort, setPatientSort] = useState<'AZ' | 'ZA' | 'RECENT'>('AZ');
 
   const sortedPatients = useMemo(() => {
+    // Fila de revisão (filtro de pendências ativo): duplicidade -> dado inválido -> outros -> dado faltante.
+    if (reviewFilter !== 'ALL') return sortPatientsForReviewFilter(filteredPatients, issuesByPatient, reviewFilter);
     return [...filteredPatients].sort((a, b) => {
       if (patientSort === 'AZ') {
         return (a.name || '').localeCompare(b.name || '', 'pt-BR');
@@ -173,7 +229,7 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
       }
       return (b.createdAt || b.id || '').localeCompare(a.createdAt || a.id || '');
     });
-  }, [filteredPatients, patientSort]);
+  }, [filteredPatients, patientSort, reviewFilter, issuesByPatient]);
 
   // Paciente Ativo
   const activePatient = useMemo(() => {
@@ -213,6 +269,27 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
 
   // Idade e Aniversário dinâmicos
   const patientAge = useMemo(() => calculateAge(activePatient?.birthDate), [activePatient?.birthDate]);
+  const activeMissingFields = useMemo(
+    () => (activePatient ? listMissingFields(activePatient) : []),
+    [activePatient]
+  );
+  const activeReview = useMemo(
+    () => summarizeReview(activePatient ? issuesByPatient[activePatient.id] : undefined),
+    [activePatient, issuesByPatient]
+  );
+
+  // Painel de pendências (histórico completo do paciente, carregado ao abrir).
+  const [reviewPanelIssues, setReviewPanelIssues] = useState<PatientReviewIssue[] | null>(null);
+  const openReviewPanel = React.useCallback(() => {
+    const tenantId = db.getActiveTenantId();
+    if (!tenantId || !activePatient) return;
+    SupabaseService.getReviewIssuesForPatient(tenantId, activePatient.id)
+      .then(setReviewPanelIssues)
+      .catch(() => setReviewPanelIssues([]));
+  }, [activePatient]);
+  const currentUser = db.getUser();
+  const canManagePatients = hasPermission(currentUser?.role, 'patients:manage', currentUser?.permissions, currentUser?.isPrimary);
+  const [deleteTarget, setDeleteTarget] = useState<Patient | null>(null);
   const nextBirthday = useMemo(() => calculateNextBirthday(activePatient?.birthDate), [activePatient?.birthDate]);
 
   // Resumo Financeiro do Paciente (4 Cards Consolidados)
@@ -311,25 +388,25 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Header com Ações Globais */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div className={`${showList ? 'flex' : 'hidden lg:flex'} flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4`}>
         <div>
-          <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
+          <h2 className="text-base sm:text-xl font-bold text-slate-900 tracking-tight flex items-center gap-2">
             <Users className="w-5 h-5 text-emerald-600" />
             Gestão Integrada de Pacientes & Prontuário
           </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <p className="hidden sm:block text-xs text-slate-500 mt-0.5">
             Prontuário clínico odontológico, anamnese, linha do tempo, antes/depois e controle financeiro
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full sm:w-auto">
           {/* Importar Planilha */}
           <button
             type="button"
             onClick={() => setIsImportModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 shadow-2xs transition-all cursor-pointer"
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-xl text-xs font-bold text-teal-800 bg-teal-50 border border-teal-200 hover:bg-teal-100 shadow-2xs transition-all cursor-pointer"
             title="Importar pacientes e prontuários via planilha CSV ou Excel"
           >
             <UploadCloud className="w-4 h-4 text-teal-600" />
@@ -340,7 +417,7 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
           <button
             type="button"
             onClick={() => setIsExportModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-2xs transition-all cursor-pointer"
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-xl text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-2xs transition-all cursor-pointer"
             title="Exportar base de pacientes em CSV ou Excel"
           >
             <Download className="w-4 h-4 text-slate-500" />
@@ -354,7 +431,7 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
               setEditingPatient(null);
               setIsModalOpen(true);
             }}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs transition-all cursor-pointer"
+            className="order-first col-span-2 sm:order-none sm:col-span-1 flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs transition-all cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Cadastrar Paciente</span>
@@ -363,20 +440,38 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
       </div>
 
       {/* Main Grid: List on Left, Detail on Right */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6">
         {/* Left Column: Patient List (4 cols) */}
-        <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200/80 shadow-xs flex flex-col h-[680px] overflow-hidden">
+        <div className={`${showList ? 'flex' : 'hidden'} lg:col-span-4 bg-white rounded-2xl border border-slate-200/80 shadow-xs flex-col h-[calc(100dvh-13.5rem)] min-h-[420px] lg:h-[680px] overflow-hidden min-w-0`}>
           <div className="p-3.5 border-b border-slate-100 bg-slate-50/50 space-y-2">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                placeholder="Buscar por nome, CPF, tel. ou responsável..."
+                placeholder="Nome, CPF, tel. ou responsável"
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setVisiblePatientCount(PATIENT_LIST_PAGE);
+                }}
+                className="w-full pl-9 pr-3 py-2.5 sm:py-2 text-xs rounded-xl border border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
               />
             </div>
+            {/* Filtros: no mobile ficam recolhidos atrás de um botão com contador */}
+            <button
+              type="button"
+              onClick={() => setShowMobileFilters((v) => !v)}
+              className="lg:hidden w-full flex items-center justify-between px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 cursor-pointer"
+              aria-expanded={showMobileFilters}
+            >
+              <span>
+                Filtros e ordem
+                {(patientSort !== 'AZ' ? 1 : 0) + (guardianFilter !== 'ALL' ? 1 : 0) + (reviewFilter !== 'ALL' ? 1 : 0) > 0 &&
+                  ` • ${(patientSort !== 'AZ' ? 1 : 0) + (guardianFilter !== 'ALL' ? 1 : 0) + (reviewFilter !== 'ALL' ? 1 : 0)} ativo(s)`}
+              </span>
+              <span className="text-slate-400">{showMobileFilters ? '▲' : '▼'}</span>
+            </button>
+            <div className={`${showMobileFilters ? 'block' : 'hidden'} lg:block space-y-2`}>
             <div className="flex items-center justify-between text-[11px] px-0.5">
               <span className="text-slate-400 font-medium">Ordem:</span>
               <div className="flex items-center gap-1">
@@ -445,6 +540,37 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                 ))}
               </div>
             </div>
+            <div className="flex items-center justify-between text-[11px] px-0.5">
+              <span className="text-slate-400 font-medium">Cadastro:</span>
+              <div className="flex items-center gap-1 flex-wrap justify-end">
+                {(
+                  [
+                    { key: 'ALL', label: 'Todos' },
+                    { key: 'NEEDS_REVIEW', label: `Revisar cadastro (${reviewCounts.review})` },
+                    { key: 'INCOMPLETE', label: `Cadastro incompleto (${reviewCounts.incomplete})` },
+                    { key: 'POSSIBLE_DUPLICATE', label: `Possível duplicidade (${reviewCounts.duplicate})` },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => {
+                      setReviewFilter(opt.key);
+                      setVisiblePatientCount(PATIENT_LIST_PAGE);
+                    }}
+                    className={`px-2 py-0.5 rounded-md font-bold transition-all cursor-pointer ${
+                      reviewFilter === opt.key
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'text-slate-500 hover:text-slate-800 bg-white border border-slate-200'
+                    }`}
+                    title={opt.label}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
@@ -453,8 +579,8 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                 Nenhum paciente encontrado.
               </div>
             ) : (
-              sortedPatients.map((p) => {
-                const isSelected = p.id === activePatient?.id;
+              sortedPatients.slice(0, visiblePatientCount).map((p) => {
+                const isSelected = isDesktop && p.id === activePatient?.id;
                 const initials = p.name
                   .split(' ')
                   .map((n) => n[0])
@@ -468,8 +594,11 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                 return (
                   <div
                     key={p.id}
-                    onClick={() => setSelectedPatientId(p.id)}
-                    className={`w-full p-3.5 text-left transition-all flex items-center justify-between cursor-pointer group ${
+                    onClick={() => {
+                      setSelectedPatientId(p.id);
+                      setMobileDetailOpen(true);
+                    }}
+                    className={`w-full p-3.5 min-h-[64px] text-left transition-all flex items-center justify-between cursor-pointer group ${
                       isSelected
                         ? 'bg-emerald-50/70 border-l-3 border-emerald-600'
                         : 'hover:bg-slate-50/80'
@@ -505,8 +634,30 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                           )}
                         </div>
                         <div className="text-[11px] text-slate-400 font-mono mt-0.5 truncate">
-                          {p.documentType === 'CNPJ' ? 'CNPJ' : 'CPF'}: {formatCpfOrCnpj(p.cpf, maskCpf)}
+                          {p.cpf
+                            ? `${p.documentType === 'CNPJ' ? 'CNPJ' : 'CPF'}: ${formatCpfOrCnpj(p.cpf, maskCpf)}`
+                            : <span className="font-sans italic">{absentValueLabel('cpf', false)}</span>}
                         </div>
+                        {(() => {
+                          const badge = reviewBadge(summarizeReview(issuesByPatient[p.id]));
+                          if (!badge) return null;
+                          return (
+                            <span
+                              data-testid="review-badge"
+                              title={badge.title}
+                              className={`mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border ${
+                                badge.kind === 'DUPLICATE'
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : badge.kind === 'REVIEW'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-slate-50 text-slate-500 border-slate-200'
+                              }`}
+                            >
+                              {badge.kind !== 'INCOMPLETE' && <AlertTriangle className="w-2.5 h-2.5" />}
+                              {badge.text}
+                            </span>
+                          );
+                        })()}
                         {guardianSummaries.byPatientId[p.id] && (
                           <div className="text-[11px] text-emerald-700 mt-0.5 truncate">
                             Resp.: {guardianSummaries.byPatientId[p.id].guardianName}
@@ -519,10 +670,10 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                     </div>
                     <div className="flex flex-col items-end gap-0.5 shrink-0">
                       {p.phone && (
-                        <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">{formatPhone(p.phone)}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">{formatPhone(p.phone)}</span>
                       )}
                       {p.phoneOwner === 'RESPONSIBLE' && (
-                        <span className="text-[9px] text-emerald-600 font-semibold hidden sm:inline">Tel. responsável</span>
+                        <span className="text-[9px] text-emerald-600 font-semibold">Tel. responsável</span>
                       )}
                       <button
                         type="button"
@@ -531,27 +682,47 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                           setEditingPatient(p);
                           setIsModalOpen(true);
                         }}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer"
+                        className="p-2 lg:p-1.5 rounded-lg text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer"
                         title="Editar paciente"
                         aria-label="Editar paciente"
                       >
-                        <Pencil className="w-3.5 h-3.5" />
+                        <Pencil className="w-4 h-4 lg:w-3.5 lg:h-3.5" />
                       </button>
                     </div>
                   </div>
                 );
               })
             )}
+            {sortedPatients.length > visiblePatientCount && (
+              <div className="p-3">
+                <button
+                  type="button"
+                  onClick={() => setVisiblePatientCount((n) => n + PATIENT_LIST_PAGE)}
+                  className="w-full py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Mostrar mais ({sortedPatients.length - visiblePatientCount} restantes) — ou refine a busca
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Right Column: Active Patient Details (8 cols) */}
-        <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200/80 shadow-xs p-6 flex flex-col justify-between">
+        <div className={`${showDetail ? 'flex' : 'hidden'} lg:col-span-8 bg-white rounded-2xl border border-slate-200/80 shadow-xs p-4 sm:p-6 flex-col justify-between min-w-0`}>
           {activePatient ? (
-            <div className="space-y-6">
+            <div className="space-y-4 sm:space-y-6 min-w-0">
+              {/* Voltar para a lista (mobile/tablet) */}
+              <button
+                type="button"
+                onClick={() => setMobileDetailOpen(false)}
+                className="lg:hidden -mt-1 -ml-1 inline-flex items-center gap-1.5 min-h-[44px] px-2 rounded-xl text-sm font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Voltar para pacientes
+              </button>
               {/* Profile Card Header */}
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-5 border-b border-slate-100 gap-4">
-                <div className="flex items-start gap-3.5">
+                <div className="flex items-start gap-3.5 min-w-0 w-full sm:w-auto">
                   <div className="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold text-sm shrink-0 overflow-hidden">
                     {db.getEffectivePatientPhotoUrl(activePatient) ? (
                       <img
@@ -571,13 +742,18 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                         .toUpperCase()
                     )}
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-base font-black text-slate-900">{activePatient.name}</h3>
+                      <h3 className="text-base font-black text-slate-900 break-words">{activePatient.name}</h3>
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
                         <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                         Paciente Ativo
                       </span>
+                      {activeReview.status === 'REVISADO' && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                          Cadastro revisado
+                        </span>
+                      )}
 
                       {/* Badge Comemorativo de Aniversário Próximo (dentro de 7 dias ou hoje) */}
                       {nextBirthday?.isUpcoming && (
@@ -591,6 +767,41 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                         </span>
                       )}
                     </div>
+
+                    {activeReview.hasReview && (
+                      <div
+                        data-testid="review-banner"
+                        className={`mt-2 flex items-center gap-2 flex-wrap px-2.5 py-1.5 rounded-lg border text-[11px] font-sans w-fit ${
+                          activeReview.hasDuplicate ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-amber-50 border-amber-200 text-amber-900'
+                        }`}
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span className="font-bold">
+                          {activeReview.hasDuplicate ? 'Possível duplicidade — conferir identidade' : 'Cadastro precisa de revisão'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={openReviewPanel}
+                          className="font-bold underline underline-offset-2 hover:no-underline cursor-pointer"
+                        >
+                          Ver pendências
+                        </button>
+                      </div>
+                    )}
+                    {!activeReview.hasReview && activeReview.hasIncomplete && (
+                      <div
+                        data-testid="incomplete-banner"
+                        className="mt-2 flex items-center gap-2 flex-wrap px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-sans w-fit text-slate-600"
+                      >
+                        <span className="font-semibold">Cadastro incompleto</span>
+                        <span className="text-slate-400">
+                          — {[...new Set(activeReview.openIssues.map((i) => ISSUE_META[i.issueCode].field))].join(', ')} não informado(s) no sistema anterior
+                        </span>
+                        <button type="button" onClick={openReviewPanel} className="font-semibold underline underline-offset-2 hover:no-underline cursor-pointer">
+                          Ver detalhes
+                        </button>
+                      </div>
+                    )}
 
                     {activePatient.phoneOwner === 'RESPONSIBLE' && guardianSummaries.byPatientId[activePatient.id] && (
                       <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200/70 text-[11px] text-emerald-800 font-sans w-fit">
@@ -606,10 +817,16 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                     )}
 
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-500 mt-2 font-mono">
-                      <span>{activePatient.documentType === 'CNPJ' ? 'CNPJ' : 'CPF'}: {formatCpfOrCnpj(activePatient.cpf, maskCpf)}</span>
-                      {activePatient.phone && activePatient.phoneOwner !== 'RESPONSIBLE' && (
-                        <span>Tel: {formatPhone(activePatient.phone)}</span>
+                      {activePatient.cpf ? (
+                        <span>{activePatient.documentType === 'CNPJ' ? 'CNPJ' : 'CPF'}: {formatCpfOrCnpj(activePatient.cpf, maskCpf)}</span>
+                      ) : (
+                        <span className="text-slate-400 font-sans italic">{absentValueLabel('cpf', Boolean(activePatient.isLegacyImport))}</span>
                       )}
+                      {activePatient.phone && activePatient.phoneOwner !== 'RESPONSIBLE' ? (
+                        <span>Tel: {formatPhone(activePatient.phone)}</span>
+                      ) : !activePatient.phone ? (
+                        <span className="text-slate-400 font-sans italic">{absentValueLabel('phone', Boolean(activePatient.isLegacyImport))}</span>
+                      ) : null}
                       {activePatient.documentType === 'CNPJ' ? (
                         <span className="text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[11px] font-sans font-semibold">
                           Pessoa Jurídica
@@ -625,36 +842,47 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                           )}
                         </>
                       ) : (
-                        <span className="text-amber-700 bg-amber-50 px-2 py-0.5 rounded text-[11px] font-sans">
-                          Nascimento não informado (exigido ao editar)
+                        <span className="text-slate-400 font-sans italic">
+                          {absentValueLabel('birthDate', Boolean(activePatient.isLegacyImport))}
                         </span>
                       )}
-                      {activePatient.email && <span>Email: {activePatient.email}</span>}
+                      {activePatient.email && <span className="break-all">Email: {activePatient.email}</span>}
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 sm:flex-wrap w-full sm:w-auto">
                   <button
                     type="button"
                     onClick={() => {
                       setEditingPatient(activePatient);
                       setIsModalOpen(true);
                     }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-900 shadow-2xs cursor-pointer transition-all"
+                    className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-xl text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-900 shadow-2xs cursor-pointer transition-all"
                     title="Editar paciente"
                   >
                     <Pencil className="w-3.5 h-3.5 text-slate-500" />
                     <span>Editar Paciente</span>
                   </button>
 
-                  {/* Botão de WhatsApp direto */}
+                  {/* Botão de WhatsApp direto — sem telefone válido não há o que abrir (nunca cria contato) */}
+                  {!activePatient.phone && (
+                    <button
+                      type="button"
+                      disabled
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-xl text-xs font-bold text-slate-400 bg-slate-50 border border-slate-200 cursor-not-allowed"
+                      title="Paciente sem telefone válido — cadastre um número em Editar Paciente para conversar por WhatsApp."
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>WhatsApp</span>
+                    </button>
+                  )}
                   {activePatient.phone && (
                     <a
                       href={`https://wa.me/55${activePatient.phone.replace(/\D/g, '')}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 hover:border-emerald-300 shadow-2xs cursor-pointer transition-all"
+                      className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 sm:py-2 rounded-xl text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 hover:border-emerald-300 shadow-2xs cursor-pointer transition-all"
                       title="Conversar via WhatsApp"
                     >
                       <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
@@ -666,7 +894,7 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                     <button
                       type="button"
                       onClick={() => onOpenNewSaleForPatient(activePatient.id)}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs hover:shadow cursor-pointer transition-all"
+                      className="col-span-2 sm:col-span-1 flex items-center justify-center gap-1.5 px-4 py-2.5 sm:py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 shadow-xs hover:shadow cursor-pointer transition-all"
                     >
                       <Plus className="w-4 h-4" />
                       <span>Nova Receita / Atendimento</span>
@@ -676,7 +904,7 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
               </div>
 
               {/* Navegação entre as 4 Abas Principais da Ficha do Paciente */}
-              <div className="flex items-center gap-1 border-b border-slate-200 pb-0 overflow-x-auto text-xs font-bold scrollbar-none">
+              <div className="flex items-center gap-1 border-b border-slate-200 pb-0 scroll-x-touch text-xs font-bold">
                 <button
                   type="button"
                   onClick={() => setPatientTab('RESUMO')}
@@ -1222,8 +1450,50 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
           // Sem isso, edições (patients.length inalterado) deixavam a UI com
           // o guardian antigo até F5 — bug corrigido nesta sessão.
           setRefreshKey((k) => k + 1);
+          reloadIssues(); // badge/banner/filtro refletem a correção (pendência resolvida) imediatamente
         }}
+        onRequestDelete={canManagePatients ? (p) => setDeleteTarget(p) : undefined}
       />
+
+      {/* Painel de pendências cadastrais */}
+      {activePatient && reviewPanelIssues && (
+        <PatientReviewPanel
+          patient={activePatient}
+          issues={reviewPanelIssues}
+          patients={patients}
+          canManage={canManagePatients}
+          onClose={() => setReviewPanelIssues(null)}
+          onEditPatient={() => {
+            setEditingPatient(activePatient);
+            setIsModalOpen(true);
+          }}
+          onSelectPatient={(id) => {
+            setSelectedPatientId(id);
+            setMobileDetailOpen(true);
+          }}
+          onChanged={() => {
+            reloadIssues();
+            openReviewPanel();
+          }}
+        />
+      )}
+
+      {/* Exclusão segura de paciente */}
+      {deleteTarget && (
+        <DeletePatientDialog
+          patient={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={(id) => {
+            toast.success('Paciente excluído.');
+            setDeleteTarget(null);
+            setIsModalOpen(false);
+            setEditingPatient(null);
+            if (selectedPatientId === id) setSelectedPatientId('');
+            setRefreshKey((k) => k + 1);
+            reloadIssues();
+          }}
+        />
+      )}
 
       {/* Modal Central para Nova Evolução ou Edição de Rascunho */}
       {activePatient && (
@@ -1293,6 +1563,9 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
         onClose={() => setIsImportModalOpen(false)}
         onImportSuccess={() => {
           setRefreshKey((k) => k + 1);
+          // Pacientes novos e pendências cadastrais aparecem sem F5.
+          db.reloadPatientsAsync().catch(() => {});
+          reloadIssues();
           toast.success('Pacientes e prontuários importados com sucesso!');
         }}
       />

@@ -15,6 +15,23 @@ import {
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
 import { formatPhoneDisplay } from '../../lib/phoneUtils';
 import { WhatsAppMessageTemplatesTab } from './WhatsAppMessageTemplatesTab';
+import { supabase } from '../../lib/supabaseClient';
+
+// Erro de rede (fetch falhou antes de chegar resposta do servidor) é uma causa concreta e
+// distinguível de um erro de negócio retornado pelo backend — mensagens diferentes ajudam o
+// usuário a saber se o problema é a própria internet ou algo do lado da Evolution/servidor.
+function describeConnectError(err: any): string {
+  if (err instanceof TypeError || /failed to fetch|network/i.test(String(err?.message || ''))) {
+    return 'Não foi possível conectar ao servidor. Verifique sua internet e tente novamente.';
+  }
+  return err?.message || 'Erro ao conectar. Tente novamente em instantes.';
+}
+
+// Baileys/Evolution rotacionam o QR periodicamente; sem um sinal explícito de expiração do
+// provider, usamos uma margem conservadora só para AVISAR (nunca esconder) que o código pode
+// já ter sido substituído — o Realtime abaixo mantém a imagem atualizada automaticamente
+// quando o provider realmente rotaciona.
+const QR_STALE_WARNING_MS = 45_000;
 
 interface InstanceConfigModalProps {
   isOpen: boolean;
@@ -37,6 +54,8 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
   const [phoneNumber, setPhoneNumber] = useState<string | null>(null);
   const [profileName, setProfileName] = useState<string | null>(null);
   const [qrCode, setQrCode] = useState<string | null>(null);
+  const [qrIssuedAt, setQrIssuedAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState<number>(Date.now());
   const [justConnected, setJustConnected] = useState<boolean>(false);
 
   const [loading, setLoading] = useState<boolean>(true);
@@ -46,6 +65,13 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  // Guarda de sequência: descarta respostas de requisições antigas que chegam DEPOIS de uma mais
+  // nova (ex.: um create_instance lento respondendo depois de um poll mais recente já ter
+  // atualizado a tela) — sem isso, a resposta que chega por último "vence" mesmo sendo obsoleta.
+  const requestSeqRef = useRef(0);
+  // Guarda de concorrência: evita que o poll automático, o "Verificar Status" e o "Atualizar QR"
+  // disparem chamadas sobrepostas ao mesmo tempo (era a causa raiz do QR piscando/sumindo).
+  const busyRef = useRef(false);
 
   useEffect(() => {
     if (!isOpen) {
@@ -53,13 +79,18 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
     }
   }, [isOpen]);
 
-  // Iniciar fluxo de conexão / gerar QR Code
+  // Iniciar fluxo de conexão / gerar QR Code (ação explícita: cria a instância se não existir, ou
+  // solicita um QR novo para a existente — nunca chamada automaticamente a cada checagem de status).
   const handleConnect = async (showActionLoading = true) => {
+    if (busyRef.current) return;
+    const seq = ++requestSeqRef.current;
+    busyRef.current = true;
     if (showActionLoading) setActionLoading(true);
     setErrorMessage(null);
 
     try {
       const res = await DentalWhatsAppService.createInstance(cleanTenantId);
+      if (requestSeqRef.current !== seq) return; // resposta obsoleta — uma mais nova já chegou
       if (!res.success) {
         throw new Error(res.error || 'Falha ao iniciar conexão');
       }
@@ -69,30 +100,43 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
         setPhoneNumber(res.phone_number || null);
         setProfileName(res.profile_name || null);
         setQrCode(null);
+        setQrIssuedAt(null);
       } else {
         setStatus((res.status as any) || 'qrcode');
         if (res.qrcode) {
           setQrCode(res.qrcode);
+          setQrIssuedAt(Date.now());
         }
       }
       if (res.instance_name) {
         setInstanceName(res.instance_name);
       }
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Erro ao conectar. Tente novamente em instantes.');
+      if (requestSeqRef.current === seq) setErrorMessage(describeConnectError(err));
     } finally {
-      if (showActionLoading) setActionLoading(false);
+      busyRef.current = false;
+      if (requestSeqRef.current === seq && showActionLoading) setActionLoading(false);
     }
   };
 
-  // Carregar status da conexão ao abrir
+  // Carregar status da conexão ao abrir — SOMENTE LEITURA: nunca solicita/gera um QR novo por
+  // conta própria. Bug real corrigido: antes, toda checagem de status (mount, "Verificar Status",
+  // e cada tick do polling) também disparava create_instance, entrando em corrida com o próprio
+  // polling e com os eventos do webhook — a resposta que chegasse por último vencia, mesmo sendo
+  // mais velha, apagando um QR ainda válido. Só busca um QR pela primeira vez, quando a instância
+  // realmente ainda não tem nenhum (bootstrap único), nunca a cada checagem.
   const loadStatus = async (showLoading = true) => {
-    if (!cleanTenantId) return;
+    if (!cleanTenantId || busyRef.current) return;
+    const seq = ++requestSeqRef.current;
+    busyRef.current = true;
     if (showLoading) setLoading(true);
     setErrorMessage(null);
 
+    let needsBootstrapQr = false;
+
     try {
       const res = await DentalWhatsAppService.getInstanceStatus(cleanTenantId);
+      if (requestSeqRef.current !== seq) return; // resposta obsoleta — descarta
       if (res.exists) {
         setInstanceName(res.instance_name || '');
         setPhoneNumber(res.phone_number || null);
@@ -101,26 +145,33 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
         if (res.status === 'connected') {
           setStatus('connected');
           setQrCode(null);
+          setQrIssuedAt(null);
         } else {
-          // Instância aguardando conexão (qrcode, connecting ou disconnected):
-          // Seta status qrcode e se houver QR prévio em cache exibe imediatamente
           setStatus('qrcode');
           if (res.qrcode) {
-            setQrCode(res.qrcode);
+            setQrCode((prev) => (prev === res.qrcode ? prev : res.qrcode));
+            setQrIssuedAt((prev) => prev ?? Date.now());
+          } else {
+            needsBootstrapQr = true;
           }
-          // Obtém automaticamente QR Code novo e válido da Evolution API
-          // sem obrigar o usuário a clicar em 'Atualizar QR Code'
-          await handleConnect(false);
         }
       } else {
         setStatus('not_configured');
         setQrCode(null);
+        setQrIssuedAt(null);
       }
     } catch (err: any) {
-      console.warn('[InstanceConfigModal] Erro ao carregar status:', err);
-      setErrorMessage(err?.message || 'Não foi possível consultar o status da conexão.');
+      if (requestSeqRef.current === seq) {
+        console.warn('[InstanceConfigModal] Erro ao carregar status:', err);
+        setErrorMessage(describeConnectError(err) || 'Não foi possível consultar o status da conexão.');
+      }
     } finally {
-      if (showLoading) setLoading(false);
+      busyRef.current = false;
+      if (requestSeqRef.current === seq && showLoading) setLoading(false);
+    }
+
+    if (needsBootstrapQr && requestSeqRef.current === seq) {
+      await handleConnect(false);
     }
   };
 
@@ -142,27 +193,41 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
     };
   }, [isOpen, cleanTenantId]);
 
-  // Polling automático suave quando aguardando leitura do QR Code
+  // Polling automático suave quando aguardando leitura do QR Code — rede de segurança além do
+  // Realtime abaixo (que é o caminho principal para detectar conexão/QR novo sem F5). Nunca chama
+  // create_instance — só lê o status já persistido, e é pulado quando outra chamada já está em voo
+  // (busyRef) para não competir com "Verificar Status"/"Atualizar QR"/Realtime.
   useEffect(() => {
     if (isOpen && (status === 'qrcode' || status === 'connecting')) {
       pollingRef.current = setInterval(async () => {
+        if (busyRef.current) return;
+        const seq = ++requestSeqRef.current;
+        busyRef.current = true;
         try {
           const res = await DentalWhatsAppService.getInstanceStatus(cleanTenantId);
+          if (requestSeqRef.current !== seq) return;
           if (res.status === 'connected') {
             setStatus('connected');
             setPhoneNumber(res.phone_number || null);
             setProfileName(res.profile_name || null);
             setQrCode(null);
+            setQrIssuedAt(null);
             setJustConnected(true);
             if (pollingRef.current) {
               clearInterval(pollingRef.current);
               pollingRef.current = null;
             }
-          } else if (res.qrcode && res.qrcode !== qrCode) {
-            setQrCode(res.qrcode);
+          } else if (res.qrcode) {
+            setQrCode((prev) => {
+              if (prev === res.qrcode) return prev;
+              setQrIssuedAt(Date.now());
+              return res.qrcode;
+            });
           }
         } catch (_e) {
-          // Silencioso no polling
+          // Silencioso no polling — é só uma rede de segurança
+        } finally {
+          busyRef.current = false;
         }
       }, 4000);
     } else {
@@ -177,7 +242,69 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
         clearInterval(pollingRef.current);
       }
     };
-  }, [isOpen, status, cleanTenantId, qrCode]);
+  }, [isOpen, status, cleanTenantId]);
+
+  // Realtime: reflete IMEDIATAMENTE o que o webhook grava (connection.update/qrcode.updated) assim
+  // que a Evolution avisa — é o caminho principal para "escaneou -> conectado sem F5", sem depender
+  // só do tick de 4s do polling acima.
+  useEffect(() => {
+    if (!isOpen || !cleanTenantId) return;
+
+    const channel = supabase
+      .channel(`wa_instance_config_${cleanTenantId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'df_wa_instances',
+          filter: `tenant_id=eq.${cleanTenantId}`,
+        },
+        (payload) => {
+          const row = payload.new as any;
+          if (!row) return;
+          // Ignora eventos enquanto uma ação explícita do usuário está em voo, para não competir
+          // com o resultado que essa ação já vai aplicar.
+          if (busyRef.current) return;
+          requestSeqRef.current += 1; // invalida qualquer resposta antiga ainda em trânsito
+
+          if (row.status === 'connected') {
+            setStatus('connected');
+            setPhoneNumber(row.phone_number || null);
+            setProfileName(row.profile_name || null);
+            setQrCode(null);
+            setQrIssuedAt(null);
+            setJustConnected(true);
+            if (pollingRef.current) {
+              clearInterval(pollingRef.current);
+              pollingRef.current = null;
+            }
+          } else if (row.status === 'qrcode' && row.qrcode) {
+            setStatus('qrcode');
+            setQrCode((prev) => {
+              if (prev === row.qrcode) return prev;
+              setQrIssuedAt(Date.now());
+              return row.qrcode;
+            });
+          } else if (row.status === 'connecting') {
+            setStatus('connecting');
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isOpen, cleanTenantId]);
+
+  // Só para recalcular o aviso de "QR pode estar desatualizado" (ver QR_STALE_WARNING_MS) —
+  // não dispara nenhuma requisição, é puramente de exibição.
+  useEffect(() => {
+    if (!isOpen || status !== 'qrcode' || !qrIssuedAt) return;
+    const tick = setInterval(() => setNowTick(Date.now()), 5000);
+    return () => clearInterval(tick);
+  }, [isOpen, status, qrIssuedAt]);
 
   // Desconectar o WhatsApp
   const handleDisconnect = async () => {
@@ -194,8 +321,10 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
       if (!res.success) {
         throw new Error(res.error || 'Erro ao desconectar');
       }
+      requestSeqRef.current += 1; // invalida qualquer poll/Realtime antigo ainda em trânsito
       setStatus('disconnected');
       setQrCode(null);
+      setQrIssuedAt(null);
       setPhoneNumber(null);
       setProfileName(null);
     } catch (err: any) {
@@ -484,6 +613,13 @@ export const InstanceConfigModal: React.FC<InstanceConfigModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {qrCode && qrIssuedAt && nowTick - qrIssuedAt > QR_STALE_WARNING_MS && (
+                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 flex items-center justify-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  Este código pode ter expirado. Se o celular não conseguir ler, toque em "Atualizar QR Code".
+                </p>
+              )}
 
               {/* Instruções */}
               <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-100 text-left text-xs space-y-1.5 text-slate-600">

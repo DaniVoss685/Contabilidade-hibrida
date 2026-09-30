@@ -81,6 +81,10 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Honors an externally assigned port (harness/autoPort) when present; falls back to 3000
+      // for a plain `npm run dev` outside the harness. Never hardcoded in package.json's script.
+      port: process.env.PORT ? Number(process.env.PORT) : 3000,
+      strictPort: false,
     },
   };
 });

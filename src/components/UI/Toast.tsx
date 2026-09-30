@@ -102,7 +102,7 @@ export const ToastCard: React.FC<ToastCardProps> = ({ toast, onDismiss }) => {
         <button
           type="button"
           onClick={() => onDismiss(toast.id)}
-          className="p-1 -mr-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer flex-shrink-0"
+          className="p-2.5 -m-1.5 sm:p-1 sm:m-0 sm:-mr-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer flex-shrink-0"
           aria-label="Dispensar notificação"
         >
           <X className="w-3.5 h-3.5" />
@@ -130,7 +130,7 @@ export const ToastContainer: React.FC = () => {
   return (
     <Portal>
       <div
-        className="fixed top-4 right-4 z-[999999] flex flex-col gap-2.5 max-w-sm w-full pointer-events-none sm:top-5 sm:right-5 px-3 sm:px-0"
+        className="fixed top-[calc(env(safe-area-inset-top)+0.5rem)] left-3 right-3 z-[999999] flex flex-col gap-2.5 pointer-events-none sm:left-auto sm:top-5 sm:right-5 sm:w-full sm:max-w-sm"
         tabIndex={-1}
       >
         {toasts.map((toast) => (

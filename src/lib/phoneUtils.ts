@@ -63,6 +63,62 @@ export function isPlaceholderPhoneNumber(rawNumber: string): boolean {
   return ascending || descending;
 }
 
+// DDDs brasileiros ativos (Anatel). Número com DDD fora desta lista não é
+// telefone real — nunca vira patient.phone/guardian.phone nem contato WhatsApp.
+const VALID_BRAZILIAN_DDDS = new Set([
+  11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24, 27, 28, 31, 32, 33, 34, 35, 37, 38,
+  41, 42, 43, 44, 45, 46, 47, 48, 49, 51, 53, 54, 55, 61, 62, 63, 64, 65, 66, 67, 68, 69,
+  71, 73, 74, 75, 77, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92, 93, 94, 95, 96, 97, 98, 99,
+]);
+
+export type PhoneClassification = 'VALID' | 'BLANK' | 'PLACEHOLDER' | 'INVALID';
+
+export interface PhoneClassificationResult {
+  classification: PhoneClassification;
+  /** DDD + número (sem DDI 55), no formato de df_patients.phone. Vazio se não for VALID. */
+  normalized: string;
+  reason?: string;
+}
+
+/**
+ * Classificação estrita de um telefone brasileiro vindo de fonte não confiável
+ * (ex.: migração de sistema anterior). Diferente do cadastro manual, aqui um
+ * número ruim nunca é "corrigido": só VALID pode virar telefone do paciente/
+ * responsável, participar de matching ou gerar contato WhatsApp.
+ * - BLANK: vazio.
+ * - PLACEHOLDER: estruturalmente válido mas fictício (isPlaceholderPhoneNumber —
+ *   mesma regra da trigger fn_is_placeholder_phone_local — ex. 99999999999).
+ * - INVALID: comprimento errado, DDD inexistente ou prefixo impossível.
+ */
+export function classifyBrazilianPhone(raw: string | null | undefined): PhoneClassificationResult {
+  let digits = (raw || '').replace(/\D/g, '');
+  if (!digits) return { classification: 'BLANK', normalized: '' };
+
+  if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) digits = digits.slice(2);
+  else if (digits.startsWith('0') && (digits.length === 11 || digits.length === 12)) digits = digits.slice(1);
+
+  if (digits.length !== 10 && digits.length !== 11) {
+    return { classification: 'INVALID', normalized: '', reason: 'Comprimento inválido' };
+  }
+  if (isPlaceholderPhoneNumber(digits)) {
+    return { classification: 'PLACEHOLDER', normalized: '', reason: 'Número fictício (sequência repetida/consecutiva)' };
+  }
+
+  const ddd = parseInt(digits.slice(0, 2), 10);
+  let local = digits.slice(2);
+  if (!VALID_BRAZILIAN_DDDS.has(ddd)) {
+    return { classification: 'INVALID', normalized: '', reason: 'DDD inexistente' };
+  }
+  if (local.length === 9) {
+    if (local[0] !== '9') return { classification: 'INVALID', normalized: '', reason: 'Celular de 9 dígitos sem o prefixo 9' };
+  } else {
+    const first = local[0];
+    if (first === '0' || first === '1') return { classification: 'INVALID', normalized: '', reason: 'Prefixo local impossível' };
+    if (['6', '7', '8', '9'].includes(first)) local = `9${local}`;
+  }
+  return { classification: 'VALID', normalized: `${digits.slice(0, 2)}${local}` };
+}
+
 /**
  * Identifica se um identificador ou número representa um Grupo do WhatsApp.
  * Critérios:

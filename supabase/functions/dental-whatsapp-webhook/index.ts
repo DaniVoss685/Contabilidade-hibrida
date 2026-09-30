@@ -549,7 +549,6 @@ Deno.serve(async (req) => {
         // 4. RESOLVER REPLY_TO (QUOTED MESSAGE) E CONTEXTO DE CONFIRMAÇÃO DE CONSULTA
         let replyToId: string | null = null;
         let matchedAppointmentId: string | null = null;
-        let isConfirmedAction = false;
         const responseClassification = !isFromMe && content ? classifyPatientResponse(content) : 'UNKNOWN';
 
         const contextInfo =
@@ -682,8 +681,6 @@ Deno.serve(async (req) => {
               .eq('tenant_id', tenantId)
               .eq('appointment_id', matchedAppointmentId)
               .eq('reminder_type', 'confirmation');
-
-            isConfirmedAction = true;
           }
         }
 
@@ -727,10 +724,14 @@ Deno.serve(async (req) => {
         if (activeConv) {
           // Se já existe atendimento humano ativo, associa à conversa existente sem fechá-la
           conversationId = activeConv.id;
-        } else if (!isTransactionalReminder && !isConfirmedAction) {
-          // REGRA DEFINITIVA: Nem disparo automático nem confirmação de agendamento do paciente
-          // criam df_wa_conversations quando não existe atendimento humano ativo.
-          // Somente mensagens livres que demandem suporte humano criam atendimento na fila.
+        } else if (!isTransactionalReminder) {
+          // REGRA (revisada — antes excluía também !isConfirmedAction, o que fazia uma resposta
+          // humana tipo "Pode confirmar" nunca criar conversa/fila quando batia com um agendamento
+          // pendente: confirmar a consulta e sinalizar a operação NÃO são mutuamente exclusivos).
+          // Só o disparo automático do próprio sistema (isTransactionalReminder, sempre fromMe)
+          // não cria conversa. Qualquer mensagem humana real — inclusive uma resposta que também
+          // confirma um agendamento — cria/reabre a conversa. Espelhado em
+          // src/lib/whatsappQueueRouting.ts (edge functions não importam src/lib).
           const initialStatus = isFromMe ? 'em_atendimento' : 'na_fila';
 
           const newConvId = `cnv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -841,8 +842,9 @@ Deno.serve(async (req) => {
           console.error('[Dental Webhook] Erro ao salvar mensagem:', saveErr);
         }
 
-        // 6.5 NOTIFICAÇÃO GLOBAL IN-APP & WEB PUSH (Para mensagens recebidas que não sejam automação da agenda)
-        if (!isFromMe && !isConfirmedAction) {
+        // 6.5 NOTIFICAÇÃO GLOBAL IN-APP & WEB PUSH (para toda mensagem humana recebida, mesmo
+        // quando ela também confirmou um agendamento — a recepção precisa ver que o paciente respondeu)
+        if (!isFromMe) {
           const finalMsgDbId = savedMsg?.id || messageId;
           // Id determinístico por tenant+evolution_msg_id (NUNCA aleatório): garante que
           // reentregas do mesmo webhook pela Evolution (retry de rede, reconexão) colidam
@@ -932,39 +934,24 @@ Deno.serve(async (req) => {
             console.warn('[Dental Webhook] Aviso ao persistir notificação:', notifErr.message);
           }
 
-          // Disparo assíncrono de Web Push para os dispositivos registrados
-          // (só na primeira entrega real do webhook para esta mensagem — nunca em reentregas)
+          // Web Push = NOVO CANAL da notificação já persistida acima (mesma regra de destinatário do sino).
+          // Só na primeira entrega real do webhook (nunca em reentregas). O dispatcher resolve
+          // destinatários elegíveis, aplica idempotência por (notification, subscription) e privacidade.
           if (notificationIsNew) {
-            try {
-              fetch(`${supabaseUrl}/functions/v1/dental-whatsapp-api`, {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${supabaseServiceKey}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  action: 'send_push_notification',
-                  tenant_id: tenantId,
-                  user_id: targetUserId,
-                  title: notifTitle,
-                  body: notificationPreview,
-                  icon: existingContact?.profile_pic_url || '/icon-192.png',
-                  badge: '/favicon-32x32.png',
-                  tag: `wa_${tenantId}_${conversationId || whatsappNumber}`,
-                  data: {
-                    url: `/whatsapp?conversationId=${conversationId || ''}&contactId=${contactId}&tenantId=${tenantId}`,
-                    conversationId: conversationId,
-                    contactId: contactId,
-                    tenantId: tenantId,
-                    messageId: finalMsgDbId,
-                  },
-                }),
-              }).catch((pErr: any) => {
-                console.warn('[Dental Webhook] Falha silenciosa no envio do push:', pErr.message);
-              });
-            } catch (pushEx) {
-              // Não interrompe o processamento do webhook
-            }
+            const pushTask = fetch(`${supabaseUrl}/functions/v1/dental-web-push-dispatch`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${supabaseServiceKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ action: 'dispatch', notification_id: notifId }),
+            }).catch((pErr: any) => {
+              console.warn('[Dental Webhook] Falha no dispatch de Web Push:', pErr?.message);
+            });
+            // Mantém a tarefa viva após a resposta do webhook quando o runtime suporta
+            const rt = (globalThis as any).EdgeRuntime;
+            if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(pushTask);
+            else await pushTask;
           }
         }
 

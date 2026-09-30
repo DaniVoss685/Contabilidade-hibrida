@@ -28,7 +28,7 @@ import { db, getSalePaymentSummary } from '../../lib/db';
 import { NewSaleModal } from '../Modals/NewSaleModal';
 import { CardFeeSimulatorModal } from '../Modals/CardFeeSimulatorModal';
 import { saleHasPaymentMethod, saleMethodsLabel, isSplitSale, getFiscalCoverage } from '../../lib/salePayments';
-import { CustomSelect, ConfirmDialog, useToast, SortableHeader } from '../UI';
+import { CustomSelect, ConfirmDialog, useToast, SortableHeader, MobileFilters } from '../UI';
 import { useSortableData } from '../../hooks/useSortableData';
 
 const MONTH_NAMES = [
@@ -244,6 +244,111 @@ export const SalesView: React.FC<SalesViewProps> = ({
     setDocInputNumber('');
   };
 
+  const renderInstallmentsDetail = (sale: Sale) => (
+                            <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                                  Detalhamento das Parcelas & Vínculos Tributários
+                                </h4>
+                                <span className="text-[11px] text-slate-500">
+                                  Forma de Pagamento: {saleMethodsLabel(sale).title.split('\n')[0]}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                                {sale.installments.map((inst) => {
+                                  const isReceived = inst.status === 'RECEBIDO';
+                                  return (
+                                    <div
+                                      key={inst.id}
+                                      className={`p-3 rounded-xl border text-xs space-y-2 ${
+                                        isReceived
+                                          ? 'border-emerald-200 bg-emerald-50/40'
+                                          : 'border-slate-200 bg-white'
+                                      }`}
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <span className="font-bold text-slate-800">
+                                          Parcela {inst.installmentNumber}/{inst.totalInstallments}
+                                        </span>
+                                        <span
+                                          className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                                            isReceived
+                                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
+                                              : 'bg-amber-50 text-amber-700 border border-amber-200/80'
+                                          }`}
+                                        >
+                                          {isReceived ? 'Recebida' : 'A Receber'}
+                                        </span>
+                                      </div>
+
+                                      <div className="flex justify-between font-semibold">
+                                        <span className="text-slate-500">Valor:</span>
+                                        <span className="text-slate-900">
+                                          {formatCurrency(inst.value)}
+                                        </span>
+                                      </div>
+
+                                      <div className="flex justify-between text-[11px] text-slate-500">
+                                        <span>Vencimento:</span>
+                                        <span>{formatDateBr(inst.dueDate)}</span>
+                                      </div>
+
+                                      {isReceived ? (
+                                        <div className="pt-2 border-t border-emerald-200 text-[11px] text-emerald-900 space-y-1">
+                                          <div className="flex justify-between">
+                                            <span>Recebido em:</span>
+                                            <span className="font-semibold">
+                                              {formatDateBr(inst.paymentDate || '')}
+                                            </span>
+                                          </div>
+                                          {sale.taxOrigin === 'CPF' && (
+                                            <div className="flex justify-between items-center pt-1 font-mono">
+                                              <span>Receita Saúde:</span>
+                                              <span className="font-bold text-emerald-700">
+                                                {inst.receitaSaudeId || 'A Emitir'}
+                                              </span>
+                                            </div>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleUnsettleInstallment(sale.id, inst.id)}
+                                            className="w-full mt-2 py-1 px-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 border border-rose-200 rounded-lg text-[10px] font-semibold transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                                          >
+                                            <RotateCcw className="w-3 h-3" />
+                                            Desfazer Recebimento
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <div className="pt-2">
+                                          <button
+                                            onClick={() =>
+                                              onOpenSettleModal({
+                                                installmentId: inst.id,
+                                                saleId: sale.id,
+                                                patientName: sale.patientName,
+                                                procedureName: sale.procedureName,
+                                                taxOrigin: sale.taxOrigin,
+                                                dueDate: inst.dueDate,
+                                                value: inst.value,
+                                                balance: inst.value,
+                                                installmentNumber: inst.installmentNumber,
+                                                totalInstallments: inst.totalInstallments,
+                                              })
+                                            }
+                                            className="w-full py-1.5 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-[11px] transition-colors cursor-pointer"
+                                          >
+                                            Confirmar Recebimento
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+  );
+
   return (
     <div className="space-y-6">
       {/* Header with Title and Prominent CTA */}
@@ -310,19 +415,24 @@ export const SalesView: React.FC<SalesViewProps> = ({
       {/* Filter and Search Bar */}
       <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
         {/* Search */}
-        <div className="relative flex-1 min-w-[200px]">
+        <div className="relative flex-1 min-w-0 md:min-w-[200px]">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             placeholder="Buscar por paciente ou CPF..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/70 focus:bg-white focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 focus:outline-none transition-all"
+            className="w-full pl-9 pr-4 py-2.5 md:py-2 text-xs rounded-xl border border-slate-200 bg-slate-50/70 focus:bg-white focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 focus:outline-none transition-all"
           />
         </div>
 
+        <MobileFilters
+          activeCount={
+            [taxOriginFilter !== 'ALL', procedureFilter !== 'ALL', paymentMethodFilter !== 'ALL', docFilter !== 'ALL'].filter(Boolean).length
+          }
+        >
         {/* Origin Filter Tabs */}
-        <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 text-xs shrink-0">
+        <div className="grid grid-cols-3 md:flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70 text-xs shrink-0">
           <button
             onClick={() => setTaxOriginFilter('ALL')}
             className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
@@ -356,7 +466,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
         </div>
 
         {/* Procedure Filter */}
-        <div className="w-44 shrink-0">
+        <div className="w-full md:w-44 shrink-0">
           <CustomSelect
             value={procedureFilter}
             onChange={(val) => setProcedureFilter(val)}
@@ -368,7 +478,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
         </div>
 
         {/* Payment Method Filter */}
-        <div className="w-52 shrink-0">
+        <div className="w-full md:w-52 shrink-0">
           <CustomSelect
             value={paymentMethodFilter}
             onChange={(val) => setPaymentMethodFilter(val)}
@@ -386,7 +496,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
         </div>
 
         {/* Document Status Filter */}
-        <div className="w-48 shrink-0">
+        <div className="w-full md:w-48 shrink-0">
           <CustomSelect
             value={docFilter}
             onChange={(val) => setDocFilter(val)}
@@ -397,6 +507,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
             ]}
           />
         </div>
+        </MobileFilters>
       </div>
 
       {/* Floating Bulk Action Bar */}
@@ -430,8 +541,166 @@ export const SalesView: React.FC<SalesViewProps> = ({
         </div>
       )}
 
-      {/* Table of Sales */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+      {/* Lista em cards (mobile/tablet). A tabela completa continua no desktop (lg+). */}
+      <div className="lg:hidden space-y-3">
+        {displaySales.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 py-8 px-4 text-center text-sm text-slate-400">
+            Nenhuma receita encontrada com os filtros selecionados.
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between px-1">
+              <button
+                type="button"
+                onClick={() => handleSelectAll(displaySales)}
+                className="inline-flex items-center gap-2 min-h-[44px] pr-2 text-xs font-semibold text-slate-600 cursor-pointer"
+              >
+                {displaySales.length > 0 && selectedIds.size === displaySales.length ? (
+                  <CheckSquare className="w-5 h-5 text-teal-600" />
+                ) : (
+                  <Square className="w-5 h-5 text-slate-400" />
+                )}
+                {selectedIds.size === displaySales.length && displaySales.length > 0 ? 'Desmarcar todas' : 'Selecionar todas'}
+              </button>
+              <span className="text-[11px] font-semibold text-slate-500">{displaySales.length} receita(s)</span>
+            </div>
+            {displaySales.map((sale) => {
+              const isExpanded = expandedSaleId === sale.id;
+              const isSelected = selectedIds.has(sale.id);
+              const summary = getSalePaymentSummary(sale);
+              const receivedInstallments = sale.installments.filter((i) => i.status === 'RECEBIDO');
+              const isTotallyUnreceived = receivedInstallments.length === 0;
+              const hasPendingReceitaSaude =
+                sale.taxOrigin === 'CPF' &&
+                receivedInstallments.some((i) => i.receitaSaudeStatus !== 'EMITIDO' && i.documentRequested !== false);
+              const fiscalLabel =
+                sale.taxOrigin === 'CPF'
+                  ? isTotallyUnreceived
+                    ? 'A emitir (aguardando recebimento)'
+                    : hasPendingReceitaSaude
+                    ? 'Receita Saúde pendente'
+                    : 'Receita Saúde emitido'
+                  : sale.nfseStatus === 'EMITIDA'
+                  ? `NFS-e #${sale.nfseNumber || 'emitida'}`
+                  : getFiscalCoverage(sale).covered <= 0
+                  ? 'Sem nota (dinheiro)'
+                  : 'NFS-e a emitir';
+              const fiscalWarn = sale.taxOrigin === 'CPF' ? hasPendingReceitaSaude : sale.nfseStatus !== 'EMITIDA' && getFiscalCoverage(sale).covered > 0;
+              return (
+                <div
+                  key={sale.id}
+                  className={`rounded-xl border bg-white p-3.5 shadow-xs ${isSelected ? 'border-teal-400 bg-teal-50/50' : 'border-slate-200'}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSelect(sale.id)}
+                      aria-label={isSelected ? 'Desmarcar receita' : 'Selecionar receita'}
+                      className="tap-target -ml-2 -mt-2 shrink-0 cursor-pointer"
+                    >
+                      {isSelected ? <CheckSquare className="w-5 h-5 text-teal-600" /> : <Square className="w-5 h-5 text-slate-300" />}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 text-sm leading-snug break-words">{sale.patientName}</div>
+                          <div className="text-xs text-slate-500 leading-snug break-words">{sale.procedureName}</div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="font-bold text-slate-900 text-base font-mono">{formatCurrency(sale.totalValue)}</div>
+                          <div className="text-[11px] font-mono text-slate-500">{formatDateBr(sale.serviceDate)}</div>
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9.5px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                          {sale.taxOrigin === 'CPF' ? 'CPF' : 'CNPJ'}
+                        </span>
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9.5px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                          {sale.origin === 'AGENDA' || sale.appointmentId ? '📅 Via Agenda' : '✍️ Manual'}
+                        </span>
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-slate-100 text-slate-700">
+                          {sale.installmentsCount}x
+                        </span>
+                        {isSplitSale(sale) && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/80">
+                            {saleMethodsLabel(sale).label}
+                          </span>
+                        )}
+                        <span
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold border ${
+                            summary.overallStatus === 'TOTALMENTE_RECEBIDA'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200/80'
+                              : summary.overallStatus === 'PARCIALMENTE_RECEBIDA'
+                              ? 'bg-teal-50 text-teal-700 border-teal-200/80'
+                              : summary.overallStatus === 'VENCIDA'
+                              ? 'bg-rose-50 text-rose-700 border-rose-200/80'
+                              : 'bg-amber-50 text-amber-700 border-amber-200/80'
+                          }`}
+                        >
+                          {summary.overallStatus === 'TOTALMENTE_RECEBIDA'
+                            ? 'Totalmente recebida'
+                            : summary.overallStatus === 'PARCIALMENTE_RECEBIDA'
+                            ? `Parcial (${summary.receivedCount}/${summary.totalInstallments})`
+                            : summary.overallStatus === 'VENCIDA'
+                            ? 'Vencida'
+                            : 'A receber'}
+                        </span>
+                      </div>
+
+                      <div
+                        className={`mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-semibold border ${
+                          fiscalWarn ? 'bg-amber-50 text-amber-900 border-amber-200/80' : 'bg-slate-50 text-slate-600 border-slate-200'
+                        }`}
+                      >
+                        <FileText className="w-3 h-3 shrink-0" />
+                        {fiscalLabel}
+                      </div>
+
+                      {!sale.payerIsBeneficiary && sale.payerName && (
+                        <div className="text-[11px] text-amber-700 font-medium mt-1">Pagador: {sale.payerName}</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedSaleId(isExpanded ? null : sale.id)}
+                      aria-expanded={isExpanded}
+                      className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-sm cursor-pointer"
+                    >
+                      Parcelas
+                      {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingSale(sale)}
+                      aria-label="Editar receita"
+                      className="tap-target rounded-xl border border-slate-200 text-slate-600 cursor-pointer"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSingleSale(sale.id, sale.patientName)}
+                      aria-label="Excluir receita"
+                      className="tap-target rounded-xl border border-slate-200 text-rose-500 cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {isExpanded && <div className="mt-3">{renderInstallmentsDetail(sale)}</div>}
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {/* Table of Sales (desktop) */}
+      <div className="hidden lg:block bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50/80 text-slate-500 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200/80">
@@ -765,108 +1034,7 @@ export const SalesView: React.FC<SalesViewProps> = ({
                       {isExpanded && (
                         <tr className="bg-slate-50/70 border-b border-slate-200">
                           <td colSpan={9} className="p-4">
-                            <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
-                              <div className="flex items-center justify-between">
-                                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                                  Detalhamento das Parcelas & Vínculos Tributários
-                                </h4>
-                                <span className="text-[11px] text-slate-500">
-                                  Forma de Pagamento: {saleMethodsLabel(sale).title.split('\n')[0]}
-                                </span>
-                              </div>
-
-                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                                {sale.installments.map((inst) => {
-                                  const isReceived = inst.status === 'RECEBIDO';
-                                  return (
-                                    <div
-                                      key={inst.id}
-                                      className={`p-3 rounded-xl border text-xs space-y-2 ${
-                                        isReceived
-                                          ? 'border-emerald-200 bg-emerald-50/40'
-                                          : 'border-slate-200 bg-white'
-                                      }`}
-                                    >
-                                      <div className="flex items-center justify-between">
-                                        <span className="font-bold text-slate-800">
-                                          Parcela {inst.installmentNumber}/{inst.totalInstallments}
-                                        </span>
-                                        <span
-                                          className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                                            isReceived
-                                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
-                                              : 'bg-amber-50 text-amber-700 border border-amber-200/80'
-                                          }`}
-                                        >
-                                          {isReceived ? 'Recebida' : 'A Receber'}
-                                        </span>
-                                      </div>
-
-                                      <div className="flex justify-between font-semibold">
-                                        <span className="text-slate-500">Valor:</span>
-                                        <span className="text-slate-900">
-                                          {formatCurrency(inst.value)}
-                                        </span>
-                                      </div>
-
-                                      <div className="flex justify-between text-[11px] text-slate-500">
-                                        <span>Vencimento:</span>
-                                        <span>{formatDateBr(inst.dueDate)}</span>
-                                      </div>
-
-                                      {isReceived ? (
-                                        <div className="pt-2 border-t border-emerald-200 text-[11px] text-emerald-900 space-y-1">
-                                          <div className="flex justify-between">
-                                            <span>Recebido em:</span>
-                                            <span className="font-semibold">
-                                              {formatDateBr(inst.paymentDate || '')}
-                                            </span>
-                                          </div>
-                                          {sale.taxOrigin === 'CPF' && (
-                                            <div className="flex justify-between items-center pt-1 font-mono">
-                                              <span>Receita Saúde:</span>
-                                              <span className="font-bold text-emerald-700">
-                                                {inst.receitaSaudeId || 'A Emitir'}
-                                              </span>
-                                            </div>
-                                          )}
-                                          <button
-                                            type="button"
-                                            onClick={() => handleUnsettleInstallment(sale.id, inst.id)}
-                                            className="w-full mt-2 py-1 px-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 border border-rose-200 rounded-lg text-[10px] font-semibold transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                                          >
-                                            <RotateCcw className="w-3 h-3" />
-                                            Desfazer Recebimento
-                                          </button>
-                                        </div>
-                                      ) : (
-                                        <div className="pt-2">
-                                          <button
-                                            onClick={() =>
-                                              onOpenSettleModal({
-                                                installmentId: inst.id,
-                                                saleId: sale.id,
-                                                patientName: sale.patientName,
-                                                procedureName: sale.procedureName,
-                                                taxOrigin: sale.taxOrigin,
-                                                dueDate: inst.dueDate,
-                                                value: inst.value,
-                                                balance: inst.value,
-                                                installmentNumber: inst.installmentNumber,
-                                                totalInstallments: inst.totalInstallments,
-                                              })
-                                            }
-                                            className="w-full py-1.5 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-[11px] transition-colors cursor-pointer"
-                                          >
-                                            Confirmar Recebimento
-                                          </button>
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
+                            {renderInstallmentsDetail(sale)}
                           </td>
                         </tr>
                       )}

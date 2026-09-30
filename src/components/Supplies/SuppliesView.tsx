@@ -24,6 +24,7 @@ import { ClinicalInputModal } from '../Modals/ClinicalInputModal';
 import { formatUnitCost } from '../../lib/procedureCosting';
 import { CustomSelect, ConfirmDialog, useToast, SortableHeader } from '../UI';
 import { useSortableData } from '../../hooks/useSortableData';
+import { StockManagementTab } from './StockManagementTab';
 
 interface SuppliesViewProps {
   onSelectInputForProcedure?: (input: ClinicalInput) => void;
@@ -45,6 +46,7 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
   onClearAction,
 }) => {
   const toast = useToast();
+  const [activeTab, setActiveTab] = useState<'catalog' | 'stock'>('catalog');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedUnit, setSelectedUnit] = useState<string>('ALL');
@@ -279,6 +281,32 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
         </div>
       </div>
 
+      {/* Tabs: Catálogo (custos/precificação) x Estoque (quantidade física, alertas, movimentações) */}
+      <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 w-fit">
+        <button
+          type="button"
+          onClick={() => setActiveTab('catalog')}
+          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            activeTab === 'catalog' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          Catálogo
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('stock')}
+          className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            activeTab === 'stock' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          Estoque
+        </button>
+      </div>
+
+      {activeTab === 'stock' ? (
+        <StockManagementTab inputs={inputs} />
+      ) : (
+      <>
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
@@ -408,8 +436,102 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
         </div>
       )}
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      {/* Lista em cards (mobile/tablet). A tabela completa continua no desktop (lg+). */}
+      <div className="lg:hidden space-y-3">
+        {displayInputs.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 py-8 px-4 text-center text-sm text-slate-400">
+            Nenhum insumo encontrado com os filtros atuais.
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={handleSelectAll}
+              className="inline-flex items-center gap-2 min-h-[44px] pl-1 pr-2 text-xs font-semibold text-slate-600 cursor-pointer"
+            >
+              {selectedIds.size === displayInputs.length ? <CheckSquare className="w-5 h-5 text-teal-600" /> : <Square className="w-5 h-5 text-slate-400" />}
+              {selectedIds.size === displayInputs.length ? 'Desmarcar todos' : 'Selecionar todos'}
+            </button>
+            {displayInputs.map((item) => {
+              const isSelected = selectedIds.has(item.id);
+              const unitMeta = UNIT_LABELS[item.usageUnit] || {
+                label: item.usageUnit,
+                color: 'bg-slate-100 text-slate-800 border-slate-300',
+              };
+              return (
+                <div
+                  key={item.id}
+                  className={`rounded-xl border bg-white p-3.5 shadow-xs ${isSelected ? 'border-teal-400 bg-teal-50/50' : 'border-slate-200'}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSelect(item.id)}
+                      aria-label={isSelected ? 'Desmarcar insumo' : 'Selecionar insumo'}
+                      className="tap-target -ml-2 -mt-2 shrink-0 cursor-pointer"
+                    >
+                      {isSelected ? <CheckSquare className="w-5 h-5 text-teal-600" /> : <Square className="w-5 h-5 text-slate-300" />}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-slate-900 text-sm break-words">{item.name}</div>
+                      {item.brand && <div className="text-[11px] text-slate-500">Marca: {item.brand}</div>}
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                        <span className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                          {item.category}
+                        </span>
+                        <span className={`inline-block px-2.5 py-0.5 rounded-full font-bold text-[10px] border ${unitMeta.color}`}>
+                          {unitMeta.label}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-400">Embalagem</div>
+                          <div className="font-mono text-slate-800 break-words">{item.purchasePackageName}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-400">Preço compra</div>
+                          <div className="font-mono font-medium text-slate-900">{formatCurrency(item.purchasePrice)}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-400">Qtd. na embalagem</div>
+                          <div className="font-mono font-semibold text-slate-700">{item.packageQuantity} {item.usageUnit}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-400">Custo unitário</div>
+                          <div className="font-mono font-bold text-teal-800">
+                            {formatUnitCost(item.unitCost, 'compact')} / {item.usageUnit}
+                          </div>
+                        </div>
+                      </div>
+                      {item.notes && <div className="text-[11px] text-teal-700 italic mt-2">{item.notes}</div>}
+                    </div>
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEdit(item)}
+                      className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-sm cursor-pointer"
+                    >
+                      <Edit className="w-4 h-4" /> Editar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSingle(item.id, item.name)}
+                      aria-label="Excluir insumo"
+                      className="tap-target rounded-xl border border-slate-200 text-rose-500 cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden lg:block bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-700 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200">
@@ -612,6 +734,8 @@ export const SuppliesView: React.FC<SuppliesViewProps> = ({
           </table>
         </div>
       </div>
+      </>
+      )}
 
       {/* Modal */}
       <ClinicalInputModal

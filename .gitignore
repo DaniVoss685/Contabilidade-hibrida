@@ -21,3 +21,4 @@ scratch/
 
 # Forensic/audit snapshots (schema introspection, may reference real tenant/user identifiers)
 .audit/
+.vercel

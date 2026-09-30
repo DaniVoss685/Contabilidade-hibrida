@@ -2,7 +2,7 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Dental Finance</title>
     <meta name="description" content="Contabilidade Híbrida Odontológica — Gestão Tributária e Financeira de Alta Performance para Cirurgiões-Dentistas." />
     
@@ -13,6 +13,11 @@
     <link rel="shortcut icon" href="/favicon.ico?v=2" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=2" />
     <meta name="theme-color" content="#059669" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Dental Finance" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 
     <meta property="og:title" content="Dental Finance" />
     <meta property="og:description" content="Contabilidade Híbrida Odontológica — Gestão Tributária e Financeira de Alta Performance para Cirurgiões-Dentistas." />
@@ -25,13 +30,14 @@
   <body>
     <div id="root"></div>
     <script>
-      // Desregistra automaticamente qualquer Service Worker antigo de outros apps que tenha ficado no localhost:3000
+      // Remove apenas Service Workers de OUTROS apps que ficaram no mesmo host (ex.: localhost:3000).
+      // O sw.js do Dental Finance é preservado — ele é o responsável pelo Web Push.
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations().then(function(registrations) {
-          for (const registration of registrations) {
-            registration.unregister();
-            console.log('[Dental Finance] Service Worker antigo desregistrado com sucesso:', registration);
-          }
+        navigator.serviceWorker.getRegistrations().then(function (registrations) {
+          registrations.forEach(function (registration) {
+            var url = (registration.active || registration.waiting || registration.installing || {}).scriptURL || '';
+            if (url && !/\/sw\.js(\?|$)/.test(url)) registration.unregister();
+          });
         });
       }
     </script>

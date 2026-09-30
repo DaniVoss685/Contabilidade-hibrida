@@ -36,3 +36,132 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* ==========================================================================
+   MOBILE / RESPONSIVIDADE (mobile-first; breakpoints Tailwind: sm 640, md 768, lg 1024)
+   ========================================================================== */
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    min-width: 320px;
+    overflow-wrap: anywhere;
+  }
+  /* Tabelas/pre/inputs mantêm quebra normal onde faz sentido */
+  table, pre, input, textarea { overflow-wrap: normal; }
+  img, video, canvas, svg { max-width: 100%; }
+}
+
+@layer components {
+  /* Safe areas (notch, Dynamic Island, home indicator). Só têm efeito com viewport-fit=cover. */
+  .pt-safe { padding-top: env(safe-area-inset-top); }
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+  .pl-safe { padding-left: env(safe-area-inset-left); }
+  .pr-safe { padding-right: env(safe-area-inset-right); }
+  .px-safe { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+
+  /* Alvo de toque confortável (~44px) para ícones/ações em telas de toque */
+  .tap-target { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  @media (min-width: 1024px) and (pointer: fine) {
+    .tap-target { min-width: 0; min-height: 0; }
+  }
+
+  /* Barras de abas/scroll horizontal controlado, sem barra visível no toque */
+  .scroll-x-touch { overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; scrollbar-width: none; }
+  .scroll-x-touch::-webkit-scrollbar { display: none; }
+}
+
+/* Trava de scroll do body quando drawer/sheet abre (aplicada via classe no <html>) */
+html.scroll-locked, html.scroll-locked body { overflow: hidden; }
+
+@media (pointer: coarse) {
+  input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; }
+}
+
+/* iOS Safari dá zoom automático em foco de campo com fonte < 16px */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+/* Barras superiores escondidas no WhatsApp mobile quando há conversa aberta (tela cheia de chat) */
+@media (max-width: 1023px) {
+  body[data-wa-chat-open="1"] [data-app-topbar] { display: none; }
+}
+
+/* --------------------------------------------------------------------------
+   MODAIS no mobile: painel vira "bottom sheet" quase tela cheia.
+   Alvo: overlays padrão do projeto (fixed inset-0 z-50, centralizados).
+   Desktop (>=640px) permanece inalterado. Confirmações (z-[99999+]) ficam centralizadas.
+   -------------------------------------------------------------------------- */
+@media (max-width: 639px) {
+  [class*="fixed"][class*="inset-0"][class*="items-center"][class*="justify-center"][class*="z-50"],
+  [class*="fixed"][class*="inset-0"][class*="items-center"][class*="justify-center"][class*="z-\[60\]"] {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    padding: 0;
+    padding-top: max(env(safe-area-inset-top), 12px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  [class*="fixed"][class*="inset-0"][class*="items-center"][class*="justify-center"][class*="z-50"] > *,
+  [class*="fixed"][class*="inset-0"][class*="items-center"][class*="justify-center"][class*="z-\[60\]"] > * {
+    width: 100%;
+    max-width: 100%;
+    margin: auto 0 0 0;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  /* Painéis com rolagem interna própria (max-h-*) passam a respeitar a altura dinâmica do iOS */
+  [class*="fixed"][class*="inset-0"][class*="items-center"][class*="justify-center"][class*="z-50"] > [class*="max-h-"],
+  [class*="fixed"][class*="inset-0"][class*="items-center"][class*="justify-center"][class*="z-\[60\]"] > [class*="max-h-"] {
+    max-height: calc(100dvh - max(env(safe-area-inset-top), 12px));
+  }
+}
+
+/* Modais mobile: rodapé de ações fixo na base do sheet e corpo com altura dinâmica */
+@media (max-width: 639px) {
+  [class*="fixed"][class*="inset-0"][class*="items-center"][class*="justify-center"][class*="z-50"] > * {
+    overflow: clip;
+  }
+  [class*="fixed"][class*="inset-0"][class*="z-50"] form[class*="max-h-"] {
+    max-height: calc(100dvh - 8.5rem);
+    padding-bottom: 0;
+  }
+  [class*="fixed"][class*="inset-0"][class*="z-50"] form > div:last-child[class*="border-t"][class*="justify-end"] {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    background: #fff;
+    margin-top: 1rem;
+    padding-bottom: max(env(safe-area-inset-bottom), 0.75rem);
+    box-shadow: 0 -10px 14px -10px rgba(15, 23, 42, 0.15);
+  }
+  [class*="fixed"][class*="inset-0"][class*="z-50"] form > div:last-child[class*="border-t"][class*="justify-end"] > button {
+    flex: 1 1 0%;
+    min-height: 44px;
+    justify-content: center;
+  }
+}
+
+/* Faixa sólida sob o notch/status bar (PWA/standalone): o conteúdo nunca rola por baixo dele. Zero fora disso. */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top);
+  background: #ffffff;
+  z-index: 45;
+  pointer-events: none;
+}

@@ -33,7 +33,7 @@ import { db } from '../../lib/db';
 import { getEffectiveReceivableStatus } from '../../lib/statusHelper';
 import { EditReceivableModal } from '../Modals/EditReceivableModal';
 import { NewSaleModal } from '../Modals/NewSaleModal';
-import { CustomSelect, DatePicker, ConfirmDialog, useToast, SortableHeader } from '../UI';
+import { CustomSelect, DatePicker, ConfirmDialog, useToast, SortableHeader, MobileFilters } from '../UI';
 import { useSortableData } from '../../hooks/useSortableData';
 
 const MONTH_NAMES = [
@@ -399,7 +399,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4 [&>:last-child:nth-child(odd)]:col-span-2 lg:[&>:last-child:nth-child(odd)]:col-span-1">
         {/* 1. Total Bruto Recebido */}
         <div className="bg-white p-4 rounded-xl border border-emerald-100 bg-emerald-50/20 shadow-xs">
           <div className="flex items-center justify-between text-emerald-600 text-xs font-semibold mb-1">
@@ -522,19 +522,24 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
       {/* Filters Bar */}
       <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
         {/* Search */}
-        <div className="relative flex-1 min-w-[200px]">
+        <div className="relative flex-1 min-w-0 md:min-w-[200px]">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             type="text"
             placeholder="Buscar por paciente ou CPF..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+            className="w-full pl-9 pr-3 py-2.5 md:py-1.5 text-xs rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
           />
         </div>
 
+        <MobileFilters
+          activeCount={
+            [taxOriginFilter !== 'ALL', procedureFilter !== 'ALL', paymentMethodFilter !== 'ALL', statusFilter !== 'ALL'].filter(Boolean).length
+          }
+        >
         {/* Origin Filter */}
-        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs shrink-0">
+        <div className="grid grid-cols-3 md:flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs shrink-0">
           <button
             onClick={() => setTaxOriginFilter('ALL')}
             className={`px-3 py-1.5 rounded-md font-semibold transition-all cursor-pointer ${
@@ -549,7 +554,8 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
               taxOriginFilter === 'CPF' ? 'bg-emerald-600 text-white shadow-xs' : 'text-emerald-800'
             }`}
           >
-            Pessoa Física (CPF)
+            <span className="md:hidden">CPF</span>
+            <span className="hidden md:inline">Pessoa Física (CPF)</span>
           </button>
           <button
             onClick={() => setTaxOriginFilter('CNPJ')}
@@ -557,12 +563,13 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
               taxOriginFilter === 'CNPJ' ? 'bg-blue-600 text-white shadow-xs' : 'text-blue-800'
             }`}
           >
-            Pessoa Jurídica (CNPJ)
+            <span className="md:hidden">CNPJ</span>
+            <span className="hidden md:inline">Pessoa Jurídica (CNPJ)</span>
           </button>
         </div>
 
         {/* Procedure Filter */}
-        <div className="w-44 shrink-0">
+        <div className="w-full md:w-44 shrink-0">
           <CustomSelect
             value={procedureFilter}
             onChange={(val) => setProcedureFilter(val)}
@@ -574,7 +581,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
         </div>
 
         {/* Payment Method Filter */}
-        <div className="w-52 shrink-0">
+        <div className="w-full md:w-52 shrink-0">
           <CustomSelect
             value={paymentMethodFilter}
             onChange={(val) => setPaymentMethodFilter(val)}
@@ -592,7 +599,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
         </div>
 
         {/* Status Filter */}
-        <div className="w-44 shrink-0">
+        <div className="w-full md:w-44 shrink-0">
           <CustomSelect
             value={statusFilter}
             onChange={(val) => setStatusFilter(val)}
@@ -604,6 +611,7 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
             ]}
           />
         </div>
+        </MobileFilters>
       </div>
 
       {/* Floating Bulk Action Bar */}
@@ -657,8 +665,228 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
         </div>
       )}
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      {/* Lista em cards (mobile/tablet). A tabela completa continua no desktop (lg+). */}
+      <div className="lg:hidden space-y-3">
+        {displayItems.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 py-8 text-center text-sm text-slate-400">
+            Nenhuma parcela encontrada.
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between px-1">
+              <button
+                type="button"
+                onClick={handleSelectAll}
+                className="inline-flex items-center gap-2 min-h-[44px] pr-2 text-xs font-semibold text-slate-600 cursor-pointer"
+              >
+                {displayItems.length > 0 && selectedIds.size === displayItems.length ? (
+                  <CheckSquare className="w-5 h-5 text-teal-600" />
+                ) : (
+                  <Square className="w-5 h-5 text-slate-400" />
+                )}
+                {selectedIds.size === displayItems.length && displayItems.length > 0 ? 'Desmarcar todas' : 'Selecionar todas'}
+              </button>
+              <span className="text-[11px] font-semibold text-slate-500">{displayItems.length} parcela(s)</span>
+            </div>
+            {groupedItems.map((item) => {
+              const groupAll = splitGroups.get(item.saleId);
+              const isGroupMember = Boolean(groupAll);
+              const isSelected = selectedIds.has(item.installmentId);
+              const effectiveStatus = getEffectiveReceivableStatus(item);
+              const isOverdue = effectiveStatus === 'EM_ATRASO' || item.status === 'EM_ATRASO' || item.status === 'VENCIDO';
+              const isReceived = effectiveStatus === 'RECEBIDO' || item.status === 'RECEBIDO';
+              const isPartial = effectiveStatus === 'PARCIALMENTE_RECEBIDO' || item.status === 'PARCIALMENTE_RECEBIDO';
+              const isCpfPendingReceita =
+                item.taxOrigin === 'CPF' &&
+                isReceived &&
+                item.receitaSaudeStatus !== 'EMITIDO' &&
+                item.documentRequested !== false;
+              const openDetails = () => {
+                const sale = db.getSales().find((x) => x.id === item.saleId);
+                if (sale) setViewingSale(sale);
+              };
+              const netValue = item.netValue || (item.cardFeeAmount ? item.value - item.cardFeeAmount : 0);
+              return (
+                <div
+                  key={item.installmentId}
+                  onClick={openDetails}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') openDetails();
+                  }}
+                  aria-label={`Ver detalhes de ${item.procedureName} — ${item.patientName}`}
+                  className={`rounded-xl border bg-white p-3.5 shadow-xs active:bg-slate-50 cursor-pointer ${
+                    isGroupMember ? 'border-l-4 border-l-indigo-400' : ''
+                  } ${isSelected ? 'border-teal-400 bg-teal-50/50' : isOverdue ? 'border-rose-200 bg-rose-50/30' : 'border-slate-200'}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleSelect(item.installmentId);
+                      }}
+                      aria-label={isSelected ? 'Desmarcar parcela' : 'Selecionar parcela'}
+                      className="tap-target -ml-2 -mt-2 shrink-0 cursor-pointer"
+                    >
+                      {isSelected ? <CheckSquare className="w-5 h-5 text-teal-600" /> : <Square className="w-5 h-5 text-slate-300" />}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 text-sm leading-snug break-words">{item.patientName}</div>
+                          <div className="text-xs text-slate-500 leading-snug break-words">{item.procedureName}</div>
+                        </div>
+                        <span
+                          className={`shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full font-bold text-[10px] whitespace-nowrap ${
+                            isReceived
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
+                              : isOverdue
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200/80'
+                              : isPartial
+                              ? 'bg-indigo-50 text-indigo-700 border border-indigo-200/80'
+                              : 'bg-blue-50 text-blue-700 border border-blue-200/80'
+                          }`}
+                        >
+                          {isReceived ? 'Recebida' : isOverdue ? 'Em Atraso' : isPartial ? 'Parcial' : 'A Vencer'}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 flex items-end justify-between gap-2">
+                        <div>
+                          <div className="font-bold text-slate-900 text-base font-mono">{formatCurrency(item.value)}</div>
+                          {item.cardFeeAmount && item.cardFeeAmount > 0 ? (
+                            <div className="text-[11px] text-emerald-700 font-medium">
+                              Líquido: <span className="font-mono font-bold">{formatCurrency(netValue)}</span>
+                              <span className="text-slate-400"> (taxa {formatCurrency(item.cardFeeAmount)})</span>
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="text-right text-[11px] text-slate-600 font-semibold">
+                          {item.paymentMethod
+                            ? formatPaymentMethodWithInstallments(
+                                item.paymentMethod,
+                                (item.customerInstallments ?? item.totalInstallments) > 1
+                                  ? item.customerInstallments ?? item.totalInstallments
+                                  : undefined
+                              )
+                            : 'Forma não informada'}
+                          {item.cardBrandName && <div className="text-slate-400 font-normal">{item.cardBrandName}</div>}
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-mono text-slate-600">
+                        <span>
+                          Vence: <strong className="text-slate-900">{formatDateBr(item.dueDate)}</strong>
+                        </span>
+                        {item.paymentDate && (
+                          <span>
+                            Pago: <strong className="text-emerald-700">{formatDateBr(item.paymentDate)}</strong>
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        {isGroupMember && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9.5px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                            Pagamento dividido ({item.allocationNumber}/{groupAll!.length === 2 ? 2 : new Set(groupAll!.map((x) => x.allocationNumber)).size})
+                          </span>
+                        )}
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9.5px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                          {item.taxOrigin === 'CPF' ? 'CPF' : 'CNPJ'}
+                        </span>
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                          Parcela {item.installmentNumber}/{item.totalInstallments}
+                        </span>
+                        {isCpfPendingReceita && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                            <AlertTriangle className="w-3 h-3 text-amber-600" />
+                            Receita Saúde Pendente
+                          </span>
+                        )}
+                        {item.paymentMethod === 'DINHEIRO' && item.taxOrigin === 'CPF' && (
+                          <button
+                            type="button"
+                            disabled={togglingDocId === item.installmentId}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleDocumentRequested(item, item.documentRequested !== true);
+                            }}
+                            className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold border cursor-pointer disabled:opacity-50 ${
+                              item.documentRequested === true
+                                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                : item.documentRequested === false
+                                ? 'bg-slate-100 text-slate-600 border-slate-200'
+                                : 'bg-white text-slate-500 border-slate-200'
+                            }`}
+                          >
+                            {item.documentRequested === true ? <FileCheck2 className="w-3 h-3" /> : <FileX2 className="w-3 h-3" />}
+                            {item.documentRequested === true
+                              ? 'Documento solicitado'
+                              : item.documentRequested === false
+                              ? 'Documento não solicitado'
+                              : 'Documento: definir'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    {!isReceived ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenSettleModal(item)}
+                        className="flex-1 min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm cursor-pointer"
+                      >
+                        Receber
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={openDetails}
+                        className="flex-1 min-h-[44px] rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-sm cursor-pointer"
+                      >
+                        Ver detalhes
+                      </button>
+                    )}
+                    {isReceived && (
+                      <button
+                        type="button"
+                        onClick={() => handleUnsettle(item.saleId, item.installmentId, item.patientName)}
+                        aria-label="Desfazer recebimento (estorno)"
+                        className="tap-target rounded-xl border border-slate-200 text-slate-500 cursor-pointer"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setEditingItem(item)}
+                      aria-label="Editar parcela"
+                      className="tap-target rounded-xl border border-slate-200 text-slate-600 cursor-pointer"
+                    >
+                      <Edit3 className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSingle(item.installmentId, item.patientName, item.procedureName)}
+                      aria-label="Excluir parcela"
+                      className="tap-target rounded-xl border border-slate-200 text-rose-500 cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden lg:block bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-700 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200">

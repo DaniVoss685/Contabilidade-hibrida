@@ -229,13 +229,22 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
     });
   };
 
-  const handleSaveProcedure = (procData: Omit<DentalProcedure, 'id'>) => {
+  const handleSaveProcedure = (procData: Omit<DentalProcedure, 'id'>, eligibleProfessionalIds?: string[]) => {
+    let savedId: string | null = null;
     if (editingProcedure) {
       db.updateProcedure(editingProcedure.id, procData);
+      savedId = editingProcedure.id;
       toast.success('Procedimento atualizado com sucesso.');
     } else {
-      db.addProcedure(procData);
+      const created = db.addProcedure(procData);
+      savedId = created.id;
       toast.success('Procedimento cadastrado com sucesso.');
+    }
+    // Vínculo de profissionais habilitados — lista vazia = disponível a todos os ativos (nunca
+    // uma restrição implícita). Só grava quando a clínica já tem roster clínico (eligibleProfessionalIds
+    // undefined = tela não ofereceu a opção, nada a fazer).
+    if (savedId && eligibleProfessionalIds !== undefined) {
+      db.setProcedureProfessionals(savedId, eligibleProfessionalIds).catch(console.warn);
     }
     setEditingProcedure(null);
   };
@@ -476,8 +485,125 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
         </div>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      {/* Lista em cards (mobile/tablet). A tabela completa continua no desktop (lg+). */}
+      <div className="lg:hidden space-y-3">
+        {displayProcedures.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 py-8 px-4 text-center text-sm text-slate-400">
+            Nenhum procedimento encontrado. Toque em &quot;+ NOVO PROCEDIMENTO&quot; para cadastrar.
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={handleSelectAll}
+              className="inline-flex items-center gap-2 min-h-[44px] pl-1 pr-2 text-xs font-semibold text-slate-600 cursor-pointer"
+            >
+              {allSelected ? <CheckSquare className="w-5 h-5 text-teal-600" /> : <Square className="w-5 h-5 text-slate-400" />}
+              {allSelected ? 'Desmarcar todos' : 'Selecionar todos'}
+            </button>
+            {displayProcedures.map((proc) => {
+              const isSelected = selectedIds.has(proc.id);
+              const marginInfo = safeMargin(proc.defaultPrice, proc.totalDirectCost);
+              const profitBrl = proc.defaultPrice - proc.totalDirectCost;
+              return (
+                <div
+                  key={proc.id}
+                  className={`rounded-xl border bg-white p-3.5 shadow-xs ${isSelected ? 'border-teal-400 bg-teal-50/50' : 'border-slate-200'}`}
+                >
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSelect(proc.id)}
+                      aria-label={isSelected ? 'Desmarcar procedimento' : 'Selecionar procedimento'}
+                      className="tap-target -ml-2 -mt-2 shrink-0 cursor-pointer"
+                    >
+                      {isSelected ? <CheckSquare className="w-5 h-5 text-teal-600" /> : <Square className="w-5 h-5 text-slate-300" />}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-slate-900 text-sm break-words">{proc.name}</div>
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                        <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold">{proc.code}</span>
+                        <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
+                          {CATEGORY_NAMES[proc.category] || proc.category}
+                        </span>
+                        {proc.isIncomplete && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                            Cadastro Incompleto
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                        <div>
+                          <div className="text-[10px] uppercase font-bold text-slate-400">Preço</div>
+                          <div className="font-black text-slate-900">{formatCurrency(proc.defaultPrice)}</div>
+                        </div>
+                        {canViewCosts && (
+                          <>
+                            <div>
+                              <div className="text-[10px] uppercase font-bold text-slate-400">Custo direto</div>
+                              <div className="font-bold text-slate-800">{formatCurrency(proc.totalDirectCost)}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] uppercase font-bold text-slate-400">Lucro</div>
+                              <div className="font-bold text-emerald-700">+{formatCurrency(profitBrl)}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] uppercase font-bold text-slate-400">Margem</div>
+                              {marginInfo.status === 'NO_PRICE' ? (
+                                <span className="text-slate-400">—</span>
+                              ) : marginInfo.status === 'WAITING_COSTS' ? (
+                                <span className="text-slate-500 font-semibold">Aguardando custos</span>
+                              ) : (
+                                <span className="font-black text-slate-900">{formatPercent(marginInfo.marginPercent)}</span>
+                              )}
+                            </div>
+                          </>
+                        )}
+                        <div className="col-span-2 text-[11px] text-slate-500 inline-flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-slate-400" />
+                          {proc.clinicalDurationMinutes < 60
+                            ? `${proc.clinicalDurationMinutes} min`
+                            : `${Math.floor(proc.clinicalDurationMinutes / 60)}h${
+                                proc.clinicalDurationMinutes % 60 ? ` ${proc.clinicalDurationMinutes % 60}min` : ''
+                              }`}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleEdit(proc)}
+                      className="flex-1 min-h-[44px] inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-sm cursor-pointer"
+                    >
+                      <Edit className="w-4 h-4" /> Editar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDuplicate(proc)}
+                      aria-label="Duplicar procedimento"
+                      className="tap-target rounded-xl border border-slate-200 text-slate-600 cursor-pointer"
+                    >
+                      <Copy className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(proc.id, proc.name)}
+                      aria-label="Excluir procedimento"
+                      className="tap-target rounded-xl border border-slate-200 text-rose-500 cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {/* Table (desktop) */}
+      <div className="hidden lg:block bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-700 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200">

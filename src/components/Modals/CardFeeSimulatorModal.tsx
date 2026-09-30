@@ -100,8 +100,8 @@ export const CardFeeSimulatorModal: React.FC<{ isOpen: boolean; onClose: () => v
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/45 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200/80 my-auto">
-        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+      <div className="bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200/80 my-auto max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-200/80 flex items-center justify-center text-indigo-600">
               <Calculator className="w-4 h-4" />
@@ -116,7 +116,7 @@ export const CardFeeSimulatorModal: React.FC<{ isOpen: boolean; onClose: () => v
           </button>
         </div>
 
-        <div className="p-6 space-y-5">
+        <div className="p-6 space-y-5 overflow-y-auto flex-1 min-h-0">
           {/* Modo: dois conceitos, nunca misturados */}
           <div className="inline-flex w-full sm:w-auto p-1 rounded-xl bg-slate-100 border border-slate-200 text-xs font-bold" role="group" aria-label="Modo da simulação">
             {([
@@ -277,7 +277,7 @@ export const CardFeeSimulatorModal: React.FC<{ isOpen: boolean; onClose: () => v
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-slate-100 flex justify-end">
+        <div className="px-6 py-4 border-t border-slate-100 flex justify-end flex-shrink-0 bg-white">
           <button type="button" onClick={onClose} className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer">
             Fechar
           </button>

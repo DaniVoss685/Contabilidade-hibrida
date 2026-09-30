@@ -114,7 +114,7 @@ export const DreTable: React.FC<DreTableProps> = ({ data, onSelectMonth }) => {
           <table className="w-full text-xs text-left border-collapse min-w-[1100px]">
             <thead>
               <tr className="bg-slate-900 text-white font-semibold divide-x divide-slate-800">
-                <th className="p-3 w-72 sticky left-0 z-20 bg-slate-900 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
+                <th className="p-2 sm:p-3 w-36 sm:w-72 sticky left-0 z-20 bg-slate-900 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.3)]">
                   Conta / Rubrica Econômica
                 </th>
                 {data.months.map((m) => (

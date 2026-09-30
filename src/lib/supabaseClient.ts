@@ -7,6 +7,7 @@ import {
   Patient,
   Sale,
   Expense,
+  ExpenseRecurrenceSeries,
   DentalProcedure,
   ClinicalInput,
   BankAccount,
@@ -24,8 +25,14 @@ import {
   ClinicalRecordAmendment,
   ClinicalBeforeAfterPair,
   LegacyImportMapEntry,
+  ClinicalProfessional,
+  StockMovement,
+  StockMovementType,
+  Budget,
+  BudgetItem,
 } from '../types';
 import { resolveGuardianMatch } from './guardianMatching';
+import type { PatientReviewIssue, ReviewIssueCode, PatientDeleteCheck } from './patientReviewIssues';
 
 export const SUPABASE_URL =
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_SUPABASE_URL) ||
@@ -45,6 +52,29 @@ export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON
 });
 
 const REST_URL = `${SUPABASE_URL}/rest/v1`;
+
+// PostgREST corta respostas em 1000 linhas (max-rows do projeto). Leituras que
+// precisam do conjunto COMPLETO de um tenant (ex.: dry-run da migração legada,
+// que decide o que é duplicata) devem paginar — uma lista truncada em silêncio
+// faria pacientes existentes parecerem "novos". Qualquer erro de página aborta.
+async function fetchAllPages<T>(endpoint: string, pageSize = 1000): Promise<{ data: T[] | null; error: string | null }> {
+  const all: T[] = [];
+  // A ordenação precisa ser total (terminar em id) para a paginação não pular
+  // nem repetir linhas que compartilham o mesmo valor (ex.: created_at igual
+  // em linhas gravadas no mesmo lote).
+  const hasOrder = /[?&]order=/.test(endpoint);
+  for (let offset = 0; ; offset += pageSize) {
+    const sep = endpoint.includes('?') ? '&' : '?';
+    const orderPart = hasOrder ? '' : 'order=id.asc&';
+    const { data, error } = await supabaseFetch<T[]>(`${endpoint}${sep}${orderPart}limit=${pageSize}&offset=${offset}`, {
+      timeoutMs: 30000,
+    });
+    if (error) return { data: null, error };
+    const page = data || [];
+    all.push(...page);
+    if (page.length < pageSize) return { data: all, error: null };
+  }
+}
 
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT';
@@ -151,6 +181,27 @@ export function mapDbTenantToApp(db: any): ClinicTenant {
     isActive: Boolean(db.is_active ?? true),
     isTest: Boolean(db.is_test),
     createdAt: db.created_at || new Date().toISOString(),
+  };
+}
+
+export function mapDbReviewIssueToApp(row: any): PatientReviewIssue {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    patientId: row.patient_id,
+    source: row.source || 'LEGACY_IMPORT',
+    issueCode: row.issue_code as ReviewIssueCode,
+    fieldName: row.field_name || '',
+    severity: row.severity || 'MEDIUM',
+    message: row.message || '',
+    legacyValue: row.legacy_value || undefined,
+    relatedPatientId: row.related_patient_id || undefined,
+    dedupeKey: row.dedupe_key || '',
+    status: row.status || 'OPEN',
+    resolvedAt: row.resolved_at || undefined,
+    resolvedBy: row.resolved_by || undefined,
+    resolutionNote: row.resolution_note || undefined,
+    createdAt: row.created_at || '',
   };
 }
 
@@ -279,6 +330,72 @@ export function mapAppProfessionalToDb(app: Professional, tenantId: string): any
   };
 }
 
+export function mapDbBudgetToApp(db: any): Budget {
+  return {
+    id: db.id,
+    tenantId: db.tenant_id,
+    patientId: db.patient_id,
+    patientName: db.patient_name || '',
+    status: db.status,
+    items: Array.isArray(db.items) ? (db.items as BudgetItem[]) : [],
+    subtotal: Number(db.subtotal || 0),
+    discountType: db.discount_type || null,
+    discountValue: Number(db.discount_value || 0),
+    total: Number(db.total || 0),
+    validUntil: db.valid_until || null,
+    notes: db.notes || '',
+    convertedSaleId: db.converted_sale_id || null,
+    convertedAt: db.converted_at || null,
+    presentedAt: db.presented_at || null,
+    decidedAt: db.decided_at || null,
+    createdBy: db.created_by || undefined,
+    createdByName: db.created_by_name || undefined,
+    createdAt: db.created_at,
+    updatedAt: db.updated_at,
+  };
+}
+
+export function mapAppBudgetToDb(app: Budget, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    patient_id: app.patientId,
+    patient_name: app.patientName,
+    status: app.status,
+    items: app.items,
+    subtotal: Number(app.subtotal || 0),
+    discount_type: app.discountType || null,
+    discount_value: Number(app.discountValue || 0),
+    total: Number(app.total || 0),
+    valid_until: app.validUntil || null,
+    notes: app.notes || '',
+    converted_sale_id: app.convertedSaleId || null,
+    converted_at: app.convertedAt || null,
+    presented_at: app.presentedAt || null,
+    decided_at: app.decidedAt || null,
+    created_by: app.createdBy || null,
+    created_by_name: app.createdByName || null,
+    created_at: app.createdAt || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function mapDbClinicalProfessionalToApp(db: any): ClinicalProfessional {
+  return {
+    id: db.id,
+    tenantId: db.tenant_id,
+    name: db.name || '',
+    cro: db.cro || null,
+    croUf: db.cro_uf || null,
+    especialidade: db.especialidade || null,
+    color: db.color || null,
+    isActive: db.is_active !== false,
+    userId: db.user_id || null,
+    createdAt: db.created_at,
+    updatedAt: db.updated_at,
+  };
+}
+
 export function mapDbPayrollToApp(db: any): PayrollHistoryEntry {
   return {
     month: db.month,
@@ -300,6 +417,24 @@ export function mapAppPayrollToDb(app: PayrollHistoryEntry, tenantId: string): a
     total_payroll: Number(app.totalPayroll || 0),
     updated_at: new Date().toISOString(),
   };
+}
+
+const GENERIC_CLINIC_NAMES = new Set(['Clínica Odontológica', 'Clínica sem nome']);
+
+export function resolveClinicDisplayName(
+  tenant: { name?: string | null; trade_name?: string | null } | null,
+  professional: { nome_fantasia?: string | null; razao_social?: string | null; name?: string | null } | null
+): string {
+  const pick = (v?: string | null) => (v && v.trim() && !GENERIC_CLINIC_NAMES.has(v.trim()) ? v.trim() : '');
+  return (
+    pick(tenant?.name) ||
+    pick(tenant?.trade_name) ||
+    pick(professional?.nome_fantasia) ||
+    pick(professional?.razao_social) ||
+    pick(professional?.name) ||
+    tenant?.name ||
+    'Clínica sem nome'
+  );
 }
 
 function asStringArray(value: any): string[] {
@@ -325,6 +460,7 @@ export function mapDbPatientToApp(db: any): Patient {
     medications: asStringArray(db.medications),
     clinicalNotes: db.clinical_notes || '',
     legacyMetadata: db.legacy_metadata || undefined,
+    isLegacyImport: Boolean(db.legacy_metadata?.legacyClientUuid),
     createdAt: db.created_at || new Date().toISOString(),
   };
 }
@@ -477,6 +613,7 @@ export function mapDbExpenseToApp(db: any): Expense {
     installmentGroupId: db.installment_group_id || undefined,
     installmentNumber: db.installment_number != null ? Number(db.installment_number) : undefined,
     totalInstallments: db.total_installments != null ? Number(db.total_installments) : undefined,
+    intervalMonths: db.interval_months != null ? Number(db.interval_months) : undefined,
   };
 }
 
@@ -522,6 +659,83 @@ export function mapAppExpenseToDb(app: Expense, tenantId: string): any {
     installment_group_id: app.installmentGroupId || null,
     installment_number: app.installmentNumber != null ? Number(app.installmentNumber) : null,
     total_installments: app.totalInstallments != null ? Number(app.totalInstallments) : null,
+    interval_months: app.intervalMonths != null ? Number(app.intervalMonths) : null,
+  };
+}
+
+export function mapDbExpenseRecurrenceToApp(db: any): ExpenseRecurrenceSeries {
+  return {
+    id: db.id,
+    tenantId: db.tenant_id,
+    description: db.description,
+    supplierName: db.supplier_name || undefined,
+    supplierCpfCnpj: db.supplier_cpf_cnpj || undefined,
+    categoryId: db.category_id,
+    categoryCode: db.category_code || undefined,
+    categoryName: db.category_name || undefined,
+    groupCode: db.group_code || undefined,
+    groupName: db.group_name || undefined,
+    subCategory: db.sub_category || undefined,
+    value: Number(db.value || 0),
+    entity: db.entity || 'CPF',
+    splitPercentageCpf: db.split_percentage_cpf != null ? Number(db.split_percentage_cpf) : undefined,
+    splitPercentageCnpj: db.split_percentage_cnpj != null ? Number(db.split_percentage_cnpj) : undefined,
+    paymentMethod: db.payment_method || undefined,
+    bankAccountId: db.bank_account_id || undefined,
+    documentNumber: db.document_number || undefined,
+    notes: db.notes || undefined,
+    dedutivelLivroCaixaPf: db.dedutivel_livro_caixa_pf || 'SIM',
+    impactaFatorRPj: Boolean(db.impacta_fator_r_pj),
+    despesaOperacionalPj: Boolean(db.despesa_operacional_pj ?? true),
+    isOverridden: Boolean(db.is_overridden),
+    overrideJustification: db.override_justification || undefined,
+    startDate: db.start_date,
+    intervalMonths: Number(db.interval_months || 1),
+    status: db.status || 'ACTIVE',
+    endedAt: db.ended_at || undefined,
+    endedBy: db.ended_by || undefined,
+    endedByName: db.ended_by_name || undefined,
+    lastGeneratedDueDate: db.last_generated_due_date,
+    createdAt: db.created_at,
+    updatedAt: db.updated_at,
+  };
+}
+
+export function mapAppExpenseRecurrenceToDb(app: ExpenseRecurrenceSeries, tenantId: string): any {
+  return {
+    id: app.id,
+    tenant_id: tenantId,
+    description: app.description,
+    supplier_name: app.supplierName || null,
+    supplier_cpf_cnpj: app.supplierCpfCnpj || null,
+    category_id: app.categoryId,
+    category_code: app.categoryCode || null,
+    category_name: app.categoryName || null,
+    group_code: app.groupCode || null,
+    group_name: app.groupName || null,
+    sub_category: app.subCategory || null,
+    value: Number(app.value || 0),
+    entity: app.entity || 'CPF',
+    split_percentage_cpf: app.splitPercentageCpf != null ? Number(app.splitPercentageCpf) : null,
+    split_percentage_cnpj: app.splitPercentageCnpj != null ? Number(app.splitPercentageCnpj) : null,
+    payment_method: app.paymentMethod || null,
+    bank_account_id: app.bankAccountId || null,
+    document_number: app.documentNumber || null,
+    notes: app.notes || null,
+    dedutivel_livro_caixa_pf: app.dedutivelLivroCaixaPf || 'SIM',
+    impacta_fator_r_pj: Boolean(app.impactaFatorRPj),
+    despesa_operacional_pj: Boolean(app.despesaOperacionalPj ?? true),
+    is_overridden: Boolean(app.isOverridden),
+    override_justification: app.overrideJustification || null,
+    start_date: app.startDate,
+    interval_months: Number(app.intervalMonths || 1),
+    status: app.status || 'ACTIVE',
+    ended_at: app.endedAt || null,
+    ended_by: app.endedBy || null,
+    ended_by_name: app.endedByName || null,
+    last_generated_due_date: app.lastGeneratedDueDate,
+    created_at: app.createdAt || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
 }
 
@@ -602,9 +816,15 @@ export function mapDbClinicalInputToApp(db: any): ClinicalInput {
     active: db.active !== false,
     notes: db.notes || '',
     createdAt: db.created_at || new Date().toISOString(),
+    quantityOnHand: Number(db.quantity_on_hand || 0),
+    minimumQuantity: Number(db.minimum_quantity || 0),
+    updatedAt: db.updated_at || undefined,
   };
 }
 
+// NUNCA inclui quantity_on_hand — o saldo só muda via movimentação (df_stock_movements + trigger
+// fn_apply_stock_movement). Incluir aqui permitiria que salvar o cadastro do insumo (nome, preço...)
+// sobrescrevesse o saldo com um valor desatualizado do formulário, sem deixar rastro na auditoria.
 export function mapAppClinicalInputToDb(app: ClinicalInput, tenantId: string): any {
   return {
     id: app.id,
@@ -622,6 +842,7 @@ export function mapAppClinicalInputToDb(app: ClinicalInput, tenantId: string): a
     active: app.active !== false,
     notes: app.notes || '',
     created_at: app.createdAt || new Date().toISOString(),
+    minimum_quantity: Number(app.minimumQuantity || 0),
   };
 }
 
@@ -1335,6 +1556,7 @@ export const SupabaseService = {
     patients: Patient[];
     sales: Sale[];
     expenses: Expense[];
+    expenseRecurrences: ExpenseRecurrenceSeries[];
     procedures: DentalProcedure[];
     clinicalInputs: ClinicalInput[];
     bankAccounts: BankAccount[];
@@ -1350,6 +1572,7 @@ export const SupabaseService = {
       patientsRes,
       salesRes,
       expensesRes,
+      expenseRecurrencesRes,
       proceduresRes,
       inputsRes,
       banksRes,
@@ -1360,9 +1583,12 @@ export const SupabaseService = {
       supabaseFetch<any[]>(`df_tenants?id=eq.${tenantId}&select=*`),
       supabaseFetch<any[]>(`df_professionals?tenant_id=eq.${tenantId}&select=*`),
       supabaseFetch<any[]>(`df_payroll_history?tenant_id=eq.${tenantId}&order=month.asc&select=*`),
-      supabaseFetch<any[]>(`df_patients?tenant_id=eq.${tenantId}&order=created_at.desc&select=*`),
+      // Paginado: um único GET é cortado em 1000 linhas pelo PostgREST (clínicas
+      // migradas de sistema anterior têm milhares de pacientes).
+      fetchAllPages<any>(`df_patients?tenant_id=eq.${tenantId}&order=created_at.desc,id.asc&select=*`),
       supabaseFetch<any[]>(`df_sales?tenant_id=eq.${tenantId}&order=service_date.desc&select=*`),
       supabaseFetch<any[]>(`df_expenses?tenant_id=eq.${tenantId}&order=competence_date.desc&select=*`),
+      supabaseFetch<any[]>(`df_expense_recurrences?tenant_id=eq.${tenantId}&select=*`),
       supabaseFetch<any[]>(`df_procedures?tenant_id=eq.${tenantId}&order=name.asc&select=*`),
       supabaseFetch<any[]>(`df_clinical_inputs?tenant_id=eq.${tenantId}&order=name.asc&select=*`),
       supabaseFetch<any[]>(`df_bank_accounts?tenant_id=eq.${tenantId}&select=*`),
@@ -1409,6 +1635,7 @@ export const SupabaseService = {
       patients: patientsRes.data ? patientsRes.data.map(mapDbPatientToApp) : null,
       sales: salesRes.data ? salesRes.data.map(mapDbSaleToApp) : null,
       expenses: expensesRes.data ? expensesRes.data.map(mapDbExpenseToApp) : null,
+      expenseRecurrences: expenseRecurrencesRes.data ? expenseRecurrencesRes.data.map(mapDbExpenseRecurrenceToApp) : [],
       procedures: proceduresRes.data ? proceduresRes.data.map(mapDbProcedureToApp) : null,
       clinicalInputs: inputsRes.data ? inputsRes.data.map(mapDbClinicalInputToApp) : null,
       bankAccounts: banksRes.data ? banksRes.data.map(mapDbBankAccountToApp) : null,
@@ -1446,9 +1673,13 @@ export const SupabaseService = {
       created_at: fallback?.createdAt || new Date().toISOString(),
     };
 
+    // ignore-duplicates: só garante que a linha existe (FK). Com merge-duplicates cada gravação de
+    // paciente/venda/etc. sobrescrevia nome, CNPJ, e-mail, telefone, cidade, is_active e created_at da
+    // clínica com os valores padrão ("Clínica sem nome"). Quem quer ALTERAR o tenant usa PATCH explícito
+    // (saveProfessional / updateTenantClinicName).
     const { error } = await supabaseFetch('df_tenants?on_conflict=id', {
       method: 'POST',
-      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
       body: payload,
     });
 
@@ -1564,10 +1795,83 @@ export const SupabaseService = {
     return { success: !error, error: error || undefined };
   },
 
-  async deletePatient(patientId: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
-    const { error } = await supabaseFetch(`df_patients?id=eq.${patientId}&tenant_id=eq.${tenantId}`, {
-      method: 'DELETE',
+  // Exclusão de paciente SÓ pelo caminho seguro (RPC no servidor): verifica venda/agenda/
+  // prontuário/documentos (várias referências não têm foreign key), grava auditoria, marca o
+  // mapa legado como DELETED e encerra pendências. Não existe mais DELETE direto de paciente.
+  async checkPatientDeletion(patientId: string): Promise<PatientDeleteCheck> {
+    const { data, error } = await supabaseFetch<any>('rpc/dental_patient_delete_check', {
+      method: 'POST',
+      body: { p_patient_id: patientId },
     });
+    if (error || !data) return { ok: false, message: error || 'Não foi possível verificar as referências do paciente.' };
+    return data as PatientDeleteCheck;
+  },
+
+  async deletePatientSafe(patientId: string, reason?: string): Promise<{
+    ok: boolean;
+    code?: string;
+    message?: string;
+    blocking?: Record<string, number>;
+    detached?: Record<string, number>;
+  }> {
+    const { data, error } = await supabaseFetch<any>('rpc/dental_delete_patient_safe', {
+      method: 'POST',
+      body: { p_patient_id: patientId, p_reason: reason || null },
+    });
+    if (error || !data) return { ok: false, message: error || 'Falha ao excluir o paciente.' };
+    return data;
+  },
+
+  // --- Revisão cadastral (pendências) ---------------------------------------
+  // Fila de pendências do tenant inteira, paginada (um paciente pode ter várias; a clínica tem
+  // milhares de pacientes). Histórico (resolvidas/revisadas) vem junto para o painel da ficha.
+  async getReviewIssuesForTenant(tenantId: string, openOnly = true): Promise<{ data: PatientReviewIssue[]; error?: string }> {
+    const { data, error } = await fetchAllPages<any>(
+      `df_patient_review_issues?tenant_id=eq.${tenantId}${openOnly ? '&status=eq.OPEN' : ''}&order=created_at.asc,id.asc&select=*`
+    );
+    if (error || !data) return { data: [], error: error || undefined };
+    return { data: data.map(mapDbReviewIssueToApp) };
+  },
+
+  // Histórico COMPLETO (abertas + resolvidas + revisadas) de um paciente — painel da ficha.
+  async getReviewIssuesForPatient(tenantId: string, patientId: string): Promise<PatientReviewIssue[]> {
+    const { data, error } = await supabaseFetch<any[]>(
+      `df_patient_review_issues?tenant_id=eq.${tenantId}&patient_id=eq.${encodeURIComponent(patientId)}&order=created_at.asc,id.asc&select=*`
+    );
+    if (error || !data) throw new Error(error || 'Falha ao ler pendências do paciente.');
+    return data.map(mapDbReviewIssueToApp);
+  },
+
+  async getOpenReviewIssuesForPatient(tenantId: string, patientId: string): Promise<PatientReviewIssue[]> {
+    const { data, error } = await supabaseFetch<any[]>(
+      `df_patient_review_issues?tenant_id=eq.${tenantId}&patient_id=eq.${encodeURIComponent(patientId)}&status=eq.OPEN&select=*`
+    );
+    if (error || !data) throw new Error(error || 'Falha ao ler pendências do paciente.');
+    return data.map(mapDbReviewIssueToApp);
+  },
+
+  // Encerra UMA pendência aberta (RESOLVED = objetivamente resolvida; REVIEWED = revisada por
+  // um usuário). A trigger de guarda impede reabrir/alterar identidade; o filtro status=OPEN
+  // garante que só se encerra o que ainda está aberto.
+  async closeReviewIssue(
+    issueId: string,
+    tenantId: string,
+    status: 'RESOLVED' | 'REVIEWED',
+    resolvedBy: string,
+    note?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(
+      `df_patient_review_issues?id=eq.${encodeURIComponent(issueId)}&tenant_id=eq.${tenantId}&status=eq.OPEN`,
+      {
+        method: 'PATCH',
+        body: {
+          status,
+          resolved_at: new Date().toISOString(),
+          resolved_by: resolvedBy,
+          resolution_note: note || null,
+        },
+      }
+    );
     return { success: !error, error: error || undefined };
   },
 
@@ -1696,9 +2000,8 @@ export const SupabaseService = {
     const byPatientId: Record<string, { guardianId: string; guardianName: string; guardianPhone?: string; guardianEmail?: string; relationshipType?: string }> = {};
     const guardianOfPatientId: Record<string, { dependents: Array<{ patientId: string; relationshipType?: string }> }> = {};
 
-    const { data: linkRows } = await supabaseFetch(
-      `df_patient_guardian_links?tenant_id=eq.${tenantId}&is_primary=eq.true&select=patient_id,relationship_type,guardian:df_patient_guardians(id,name,phone,email,linked_patient_id)`,
-      { method: 'GET' }
+    const { data: linkRows } = await fetchAllPages<any>(
+      `df_patient_guardian_links?tenant_id=eq.${tenantId}&is_primary=eq.true&order=patient_id.asc,guardian_id.asc&select=patient_id,relationship_type,guardian:df_patient_guardians(id,name,phone,email,linked_patient_id)`
     );
     if (Array.isArray(linkRows)) {
       for (const row of linkRows as any[]) {
@@ -1779,6 +2082,242 @@ export const SupabaseService = {
     return data.map((r: any) => ({ patientId: r.patient_id, isPrimary: !!r.is_primary, relationshipType: r.relationship_type || undefined }));
   },
 
+  // -------------------------------------------------------------
+  // Profissionais CLÍNICOS (equipe de dentistas — distinto do Professional fiscal único por
+  // tenant). Ver comentário completo em df_clinical_professionals (migration 20260929140000).
+  // -------------------------------------------------------------
+  async getClinicalProfessionals(tenantId: string): Promise<ClinicalProfessional[]> {
+    const { data, error } = await fetchAllPages<any>(
+      `df_clinical_professionals?tenant_id=eq.${tenantId}&order=name.asc`
+    );
+    if (error || !Array.isArray(data)) return [];
+    return data.map(mapDbClinicalProfessionalToApp);
+  },
+
+  async upsertClinicalProfessional(
+    tenantId: string,
+    professional: {
+      id?: string;
+      name: string;
+      cro?: string | null;
+      croUf?: string | null;
+      especialidade?: string | null;
+      color?: string | null;
+      isActive?: boolean;
+      userId?: string | null;
+    }
+  ): Promise<{ success: boolean; id?: string; error?: string }> {
+    const id = professional.id || `clprof_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const payload = {
+      id,
+      tenant_id: tenantId,
+      name: professional.name,
+      cro: professional.cro || null,
+      cro_uf: professional.croUf || null,
+      especialidade: professional.especialidade || null,
+      color: professional.color || null,
+      is_active: professional.isActive ?? true,
+      user_id: professional.userId || null,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabaseFetch('df_clinical_professionals?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, id, error: error || undefined };
+  },
+
+  async setClinicalProfessionalActive(
+    tenantId: string,
+    professionalId: string,
+    isActive: boolean
+  ): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(
+      `df_clinical_professionals?tenant_id=eq.${tenantId}&id=eq.${professionalId}`,
+      { method: 'PATCH', body: { is_active: isActive, updated_at: new Date().toISOString() } }
+    );
+    return { success: !error, error: error || undefined };
+  },
+
+  // Vínculo procedimento <-> profissionais habilitados. Ausência de qualquer linha para o
+  // procedimento = disponível a todos os ativos (ver resolveEligibleProfessionals).
+  async getProcedureProfessionalLinks(tenantId: string): Promise<Record<string, string[]>> {
+    // df_procedure_professionals não tem coluna id (PK composta procedure_id+professional_id) —
+    // fetchAllPages só acrescenta 'order=id.asc' automaticamente quando o endpoint NÃO já traz um
+    // order=; sem este explícito, a paginação quebrava com 42703 "column ...id does not exist"
+    // (bug real encontrado ao testar ao vivo: a restrição de profissionais por procedimento nunca
+    // carregava, sempre retornando vazio/erro em silêncio).
+    const { data, error } = await fetchAllPages<any>(
+      `df_procedure_professionals?tenant_id=eq.${tenantId}&select=procedure_id,professional_id&order=procedure_id.asc,professional_id.asc`
+    );
+    const byProcedure: Record<string, string[]> = {};
+    if (error || !Array.isArray(data)) return byProcedure;
+    for (const row of data as any[]) {
+      if (!byProcedure[row.procedure_id]) byProcedure[row.procedure_id] = [];
+      byProcedure[row.procedure_id].push(row.professional_id);
+    }
+    return byProcedure;
+  },
+
+  // Substitui o conjunto de profissionais habilitados de um procedimento (delete + insert do
+  // lote novo) — lista vazia = "todos os profissionais ativos podem executar" (nunca uma
+  // restrição implícita a zero profissionais).
+  async setProcedureProfessionals(
+    tenantId: string,
+    procedureId: string,
+    professionalIds: string[]
+  ): Promise<{ success: boolean; error?: string }> {
+    const { error: delErr } = await supabaseFetch(
+      `df_procedure_professionals?tenant_id=eq.${tenantId}&procedure_id=eq.${procedureId}`,
+      { method: 'DELETE' }
+    );
+    if (delErr) return { success: false, error: delErr };
+    if (professionalIds.length === 0) return { success: true };
+    const rows = professionalIds.map((professionalId) => ({
+      tenant_id: tenantId,
+      procedure_id: procedureId,
+      professional_id: professionalId,
+    }));
+    const { error } = await supabaseFetch('df_procedure_professionals', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: rows,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  // -------------------------------------------------------------
+  // Estoque real (Fase C) — o saldo (df_clinical_inputs.quantity_on_hand) só muda por movimentação;
+  // ver migration 20260929150000 (trigger fn_apply_stock_movement, AFTER INSERT — nunca BEFORE,
+  // senão um upsert com ignore-duplicates aplicaria o delta mesmo quando a linha é descartada por
+  // conflito, corrompendo o saldo sem histórico correspondente).
+  // -------------------------------------------------------------
+  // Refetch pontual (nunca via getTenantData) para trazer o saldo AUTORITATIVO logo após gravar
+  // movimentações — o trigger no banco é quem calcula quantity_on_hand, o cliente nunca confia no
+  // que tinha antes de recarregar.
+  async getClinicalInputs(tenantId: string): Promise<ClinicalInput[]> {
+    const { data, error } = await fetchAllPages<any>(`df_clinical_inputs?tenant_id=eq.${tenantId}&order=name.asc`);
+    if (error || !Array.isArray(data)) return [];
+    return data.map(mapDbClinicalInputToApp);
+  },
+
+  async getStockMovements(
+    tenantId: string,
+    filters?: { inputId?: string; clinicalRecordId?: string }
+  ): Promise<StockMovement[]> {
+    let filter = '';
+    if (filters?.inputId) filter += `&input_id=eq.${filters.inputId}`;
+    if (filters?.clinicalRecordId) filter += `&clinical_record_id=eq.${filters.clinicalRecordId}`;
+    const { data, error } = await fetchAllPages<any>(
+      `df_stock_movements?tenant_id=eq.${tenantId}${filter}&order=created_at.desc`
+    );
+    if (error || !Array.isArray(data)) return [];
+    return data.map((r: any) => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      inputId: r.input_id,
+      movementType: r.movement_type,
+      quantity: Number(r.quantity),
+      balanceAfter: Number(r.balance_after),
+      clinicalRecordId: r.clinical_record_id || null,
+      reason: r.reason || null,
+      createdBy: r.created_by || null,
+      createdByName: r.created_by_name || null,
+      createdAt: r.created_at,
+    }));
+  },
+
+  // Lote de movimentações com a MESMA origem (ex.: todos os insumos de UM atendimento finalizado).
+  // Idempotente: onConflict casa exatamente o índice único da migration — reentrega (ex.: finalizar
+  // o mesmo atendimento duas vezes) nunca duplica o consumo, porque a linha conflitante é descartada
+  // ANTES de chegar no trigger (AFTER INSERT só dispara para linhas realmente gravadas).
+  async recordStockMovements(
+    tenantId: string,
+    movements: Array<{
+      inputId: string;
+      movementType: StockMovementType;
+      quantity: number;
+      clinicalRecordId?: string | null;
+      reason?: string | null;
+      createdBy?: string | null;
+      createdByName?: string | null;
+    }>
+  ): Promise<{ success: boolean; error?: string }> {
+    if (movements.length === 0) return { success: true };
+    const rows = movements.map((m, idx) => ({
+      id: `stkmv_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+      tenant_id: tenantId,
+      input_id: m.inputId,
+      movement_type: m.movementType,
+      quantity: m.quantity,
+      clinical_record_id: m.clinicalRecordId || null,
+      reason: m.reason || null,
+      created_by: m.createdBy || null,
+      created_by_name: m.createdByName || null,
+    }));
+    const { error } = await supabaseFetch(
+      'df_stock_movements?on_conflict=tenant_id,clinical_record_id,input_id,movement_type',
+      {
+        method: 'POST',
+        headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
+        body: rows,
+      }
+    );
+    return { success: !error, error: error || undefined };
+  },
+
+  // Alerta de estoque mínimo — broadcast (user_id null) para toda a equipe elegível, mesma
+  // semântica de "notificação de fila" já usada no webhook do WhatsApp. Edge-triggered: só é
+  // chamado quando o saldo realmente CRUZOU o mínimo nesta movimentação (ver didCrossLowThreshold,
+  // src/lib/stockMovements.ts) — nunca a cada leitura/render.
+  //
+  // IMPORTANTE: df_notifications não tem policy de INSERT para usuários comuns (só SELECT/UPDATE,
+  // de propósito — ninguém deve conseguir forjar notificação direto do navegador). Por isso esta
+  // gravação passa pela Edge Function dental-create-notification (service_role, allowlist fechado
+  // de "type"), nunca por um INSERT REST direto — um INSERT direto aqui sempre falharia com 403
+  // (bug real encontrado testando ao vivo: o alerta nunca era criado, sempre bloqueado por RLS).
+  async createLowStockNotification(tenantId: string, inputName: string, inputId: string): Promise<void> {
+    try {
+      const { error } = await supabase.functions.invoke('dental-create-notification', {
+        body: {
+          tenant_id: tenantId,
+          type: 'low_stock',
+          title: 'Estoque mínimo atingido',
+          notification_body: `${inputName} atingiu o estoque mínimo configurado.`,
+          entity_id: inputId,
+        },
+      });
+      if (error) console.warn('[Stock] Aviso ao criar notificação de estoque mínimo:', error.message);
+    } catch (err) {
+      console.warn('[Stock] Aviso ao criar notificação de estoque mínimo:', err);
+    }
+  },
+
+  // -------------------------------------------------------------
+  // Orçamentos (Fase D) — CRUD simples, sem nenhum efeito colateral financeiro/fiscal/estoque.
+  // -------------------------------------------------------------
+  async getBudgets(tenantId: string): Promise<Budget[]> {
+    const { data, error } = await fetchAllPages<any>(`df_budgets?tenant_id=eq.${tenantId}&order=created_at.desc`);
+    if (error || !Array.isArray(data)) return [];
+    return data.map(mapDbBudgetToApp);
+  },
+
+  async saveBudget(budget: Budget, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const payload = mapAppBudgetToDb(budget, tenantId);
+    const { error } = await supabaseFetch('df_budgets?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteBudget(id: string, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const { error } = await supabaseFetch(`df_budgets?id=eq.${id}&tenant_id=eq.${tenantId}`, { method: 'DELETE' });
+    return { success: !error, error: error || undefined };
+  },
+
   async saveSale(sale: Sale, tenantId: string): Promise<{ success: boolean; error?: string }> {
     await this.ensureTenantExists(tenantId);
     const payload = mapAppSaleToDb(sale, tenantId);
@@ -1832,6 +2371,32 @@ export const SupabaseService = {
     const { error } = await supabaseFetch(`df_expenses?id=eq.${expenseId}&tenant_id=eq.${tenantId}`, {
       method: 'DELETE',
     });
+    return { success: !error, error: error || undefined };
+  },
+
+  async deleteExpenses(expenseIds: string[], tenantId: string): Promise<{ success: boolean; error?: string }> {
+    if (!expenseIds.length) return { success: true };
+    const { error } = await supabaseFetch(`df_expenses?id=in.(${expenseIds.join(',')})&tenant_id=eq.${tenantId}`, {
+      method: 'DELETE',
+    });
+    return { success: !error, error: error || undefined };
+  },
+
+  async getExpenseRecurrences(tenantId: string): Promise<{ data: ExpenseRecurrenceSeries[] | null; error?: string }> {
+    const { data, error } = await supabaseFetch<any[]>(`df_expense_recurrences?tenant_id=eq.${tenantId}&select=*`);
+    return { data: data ? data.map(mapDbExpenseRecurrenceToApp) : null, error: error || undefined };
+  },
+
+  async saveExpenseRecurrence(series: ExpenseRecurrenceSeries, tenantId: string): Promise<{ success: boolean; error?: string }> {
+    const payload = mapAppExpenseRecurrenceToDb(series, tenantId);
+    const { error } = await supabaseFetch('df_expense_recurrences?on_conflict=id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: payload,
+    });
+    if (error) {
+      console.error('[SupabaseService] Erro ao salvar série de despesa recorrente:', error, 'ID:', payload?.id);
+    }
     return { success: !error, error: error || undefined };
   },
 
@@ -2123,7 +2688,7 @@ export const SupabaseService = {
   // específico, independentemente de qual clínica está ativa na sessão do
   // usuário no momento da leitura.
   async getPatientsForTenant(tenantId: string): Promise<{ data: Patient[]; error?: string }> {
-    const { data, error } = await supabaseFetch<any[]>(`df_patients?tenant_id=eq.${tenantId}&select=*`);
+    const { data, error } = await fetchAllPages<any>(`df_patients?tenant_id=eq.${tenantId}&select=*`);
     if (error || !data) return { data: [], error: error || undefined };
     return { data: data.map(mapDbPatientToApp) };
   },
@@ -2132,7 +2697,7 @@ export const SupabaseService = {
     tenantId: string,
     sourceSystem: string
   ): Promise<{ data: LegacyImportMapEntry[]; error?: string }> {
-    const { data, error } = await supabaseFetch<any[]>(
+    const { data, error } = await fetchAllPages<any>(
       `df_legacy_import_map?tenant_id=eq.${tenantId}&source_system=eq.${encodeURIComponent(sourceSystem)}&select=*`
     );
     if (error || !data) return { data: [], error: error || undefined };
@@ -2140,6 +2705,10 @@ export const SupabaseService = {
       data: data.map((row: any) => ({
         entityType: row.entity_type,
         legacyId: row.legacy_id,
+        legacySecondaryId: row.legacy_secondary_id || undefined,
+        matchKind: row.match_kind || undefined,
+        status: row.status || 'ACTIVE',
+        details: row.details || undefined,
         targetId: row.target_id,
         importSessionId: row.import_session_id || undefined,
         importedAt: row.imported_at,
@@ -2147,10 +2716,80 @@ export const SupabaseService = {
     };
   },
 
+  // Duplicidade de CPF/CNPJ checada NO SERVIDOR (o cache local pode estar defasado ou
+  // incompleto — foi assim que um cadastro manual duplicou um paciente recém-importado).
+  // Devolve ids de outros pacientes do tenant com o mesmo documento (só dígitos).
+  // Em falha de rede devolve null: o chamador decide (o modal segue com a checagem local).
+  async findPatientIdsByCpf(tenantId: string, cpfDigits: string, excludeId?: string): Promise<string[] | null> {
+    const clean = (cpfDigits || '').replace(/\D/g, '');
+    if (!tenantId || !clean) return [];
+    const { data, error } = await supabaseFetch<any[]>(
+      `df_patients?tenant_id=eq.${tenantId}&cpf=eq.${clean}&select=id&limit=5`
+    );
+    if (error || !data) return null;
+    return data.map((r: any) => r.id).filter((id: string) => id !== excludeId);
+  },
+
+  // Busca de pacientes no servidor (nome/CPF/telefone), para seletores que não podem
+  // carregar milhares de registros. Sempre escopada ao tenant e limitada.
+  async searchPatientsForTenant(
+    tenantId: string,
+    term: string,
+    limit = 30
+  ): Promise<Array<{ id: string; name: string; cpf: string; phone: string }>> {
+    const t = (term || '').trim();
+    if (!tenantId) return [];
+    const digits = t.replace(/\D/g, '');
+    // caracteres que quebram a sintaxe do filtro `or=(...)` do PostgREST
+    const safe = t.replace(/[(),*%\\"]/g, ' ').replace(/\s+/g, ' ').trim();
+    const filters: string[] = [];
+    if (safe) {
+      // PostgREST não tem unaccent: busca a grafia digitada E a sem acento (nomes legados vêm sem acento).
+      const stripped = safe.normalize('NFD').replace(/[̀-ͯ]/g, '');
+      new Set([safe, stripped]).forEach((v) =>
+        filters.push(`name.ilike.*${encodeURIComponent(v).replace(/%20/g, '*')}*`)
+      );
+    }
+    if (digits.length >= 3) {
+      filters.push(`cpf.ilike.*${digits}*`);
+      filters.push(`phone.ilike.*${digits}*`);
+    }
+    const orPart = filters.length ? `&or=(${filters.join(',')})` : '';
+    const { data, error } = await supabaseFetch<any[]>(
+      `df_patients?tenant_id=eq.${tenantId}${orPart}&select=id,name,cpf,phone&order=name.asc,id.asc&limit=${limit}`
+    );
+    if (error || !data) return [];
+    return data.map((r: any) => ({ id: r.id, name: r.name, cpf: r.cpf || '', phone: r.phone || '' }));
+  },
+
+  // Leitura dos responsáveis de UM tenant explícito (dry-run da migração legada).
+  async getGuardiansForTenant(
+    tenantId: string
+  ): Promise<{ data: Array<{ id: string; name: string; cpf?: string; phone?: string }>; error?: string }> {
+    const { data, error } = await fetchAllPages<any>(`df_patient_guardians?tenant_id=eq.${tenantId}&select=id,name,cpf,phone`);
+    if (error || !data) return { data: [], error: error || undefined };
+    return { data: data.map((g: any) => ({ id: g.id, name: g.name, cpf: g.cpf || undefined, phone: g.phone || undefined })) };
+  },
+
+  // Profissionais de UM tenant explícito (mapeamento de dentistas da migração legada).
+  async getProfessionalsForTenant(tenantId: string): Promise<Array<{ id: string; name: string }>> {
+    const { data, error } = await supabaseFetch<any[]>(`df_professionals?tenant_id=eq.${tenantId}&select=id,name`);
+    if (error || !data) return [];
+    return data.map((p: any) => ({ id: p.id, name: p.name || '' }));
+  },
+
+  // Nome de exibição da clínica com a mesma precedência de getTenantData
+  // (df_tenants.name costuma ficar genérico — "Clínica sem nome" — e o nome
+  // real está no perfil do profissional/nome fantasia).
   async getTenantInfo(tenantId: string): Promise<{ id: string; name: string } | null> {
-    const { data, error } = await supabaseFetch<any[]>(`df_tenants?id=eq.${tenantId}&select=id,name`);
-    if (error || !data || data.length === 0) return null;
-    return { id: data[0].id, name: data[0].name };
+    const [tenantRes, profRes] = await Promise.all([
+      supabaseFetch<any[]>(`df_tenants?id=eq.${tenantId}&select=id,name,trade_name`),
+      supabaseFetch<any[]>(`df_professionals?tenant_id=eq.${tenantId}&select=name,nome_fantasia,razao_social&limit=1`),
+    ]);
+    if (tenantRes.error || !tenantRes.data || tenantRes.data.length === 0) return null;
+    const t = tenantRes.data[0];
+    const p = profRes.data && profRes.data.length > 0 ? profRes.data[0] : null;
+    return { id: t.id, name: resolveClinicDisplayName(t, p) };
   },
 };
 

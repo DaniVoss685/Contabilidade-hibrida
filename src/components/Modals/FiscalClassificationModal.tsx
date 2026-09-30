@@ -70,9 +70,9 @@ export const FiscalClassificationModal: React.FC<FiscalClassificationModalProps>
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-150">
-        <div className="bg-slate-900 px-5 py-4 flex items-center justify-between text-white">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-150">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden my-auto max-h-[calc(100dvh-2rem)] flex flex-col animate-in zoom-in-95 duration-150">
+        <div className="bg-slate-900 px-5 py-4 flex items-center justify-between text-white flex-shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-indigo-300">
               <Scale className="w-4 h-4" />
@@ -87,7 +87,7 @@ export const FiscalClassificationModal: React.FC<FiscalClassificationModalProps>
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
           <div className="flex items-center justify-between text-xs bg-slate-50 border border-slate-200 rounded-xl p-2.5">
             <span className="text-slate-500">Valor do recebimento</span>
             <span className="font-mono font-bold text-slate-900">{formatCurrency(item.value)}</span>
@@ -171,7 +171,7 @@ export const FiscalClassificationModal: React.FC<FiscalClassificationModalProps>
           )}
         </div>
 
-        <div className="bg-slate-50 px-5 py-3 border-t border-slate-200 flex items-center justify-end gap-2">
+        <div className="bg-slate-50 px-5 py-3 border-t border-slate-200 flex items-center justify-end gap-2 flex-shrink-0">
           <button
             type="button"
             onClick={onClose}

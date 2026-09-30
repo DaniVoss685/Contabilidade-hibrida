@@ -8,6 +8,12 @@
  */
 
 import { supabase } from '../lib/supabaseClient';
+import {
+  computePushCapabilityState,
+  readPushEnvironment,
+  type PushCapabilityState,
+} from '../lib/pushCapability';
+import { registerServiceWorker } from '../lib/pwa';
 
 export interface AppNotification {
   id: string;
@@ -57,28 +63,14 @@ class NotificationService {
   private audioCtx: AudioContext | null = null;
   private lastSoundTime = 0;
   private swRegistration: ServiceWorkerRegistration | null = null;
+  private lastPushError: string | null = null;
+  private subscribing = false;
 
-  constructor() {
-    // Inicialização segura do Service Worker no client-side
-    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-      this.initServiceWorker();
-    }
-  }
-
-  /**
-   * Registra o Service Worker público de push notification
-   */
+  /** Compat: o registro real do Service Worker vive em lib/pwa.ts (chamado no boot). */
   public async initServiceWorker(): Promise<ServiceWorkerRegistration | null> {
-    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return null;
-
-    try {
-      const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
-      this.swRegistration = registration;
-      return registration;
-    } catch (err) {
-      console.warn('[NotificationService] Falha ao registrar Service Worker:', err);
-      return null;
-    }
+    const reg = await registerServiceWorker();
+    this.swRegistration = reg;
+    return reg;
   }
 
   /**
@@ -189,164 +181,186 @@ class NotificationService {
     }
   }
 
-  /**
-   * Verifica permissão nativa de notificação
-   */
+  /** Permissão nativa (NUNCA usar isoladamente para decidir UX — use getPushState). */
   public getPermissionState(): NotificationPermission {
-    if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
+    if (typeof window === 'undefined' || !('Notification' in window)) return 'default';
     return Notification.permission;
   }
 
-  /**
-   * Solicita permissão de notificação nativa ao usuário
-   */
-  public async requestPermission(): Promise<NotificationPermission> {
-    if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
+  private async getExistingSubscription(): Promise<PushSubscription | null> {
     try {
-      const permission = await Notification.requestPermission();
-      return permission;
+      if (!('serviceWorker' in navigator)) return null;
+      const reg = (await navigator.serviceWorker.getRegistration('/')) || this.swRegistration;
+      return reg ? await reg.pushManager.getSubscription() : null;
     } catch {
-      return 'denied';
-    }
-  }
-
-  /**
-   * Obtém a chave pública VAPID do backend
-   */
-  public async getVapidPublicKey(): Promise<string | null> {
-    try {
-      const { data, error } = await supabase.functions.invoke('dental-whatsapp-api', {
-        body: { action: 'get_vapid_public_key' },
-      });
-
-      if (error || !data?.publicKey) {
-        console.warn('[NotificationService] Não foi possível obter VAPID public key:', error || data);
-        return null;
-      }
-      return data.publicKey;
-    } catch (err) {
-      console.warn('[NotificationService] Erro ao buscar VAPID key:', err);
       return null;
     }
   }
 
-  /**
-   * Registra a subscription Web Push no navegador e envia ao backend
-   */
-  public async subscribeToPush(tenantId: string, userId?: string): Promise<boolean> {
-    if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
-      return false;
+  /** Estado canônico do Web Push neste dispositivo (fonte única para a UI). */
+  public async getPushState(): Promise<PushCapabilityState> {
+    const base = readPushEnvironment();
+    let hasSubscription = false;
+    if (base.permission === 'granted' && base.hasPushManager) {
+      hasSubscription = Boolean(await this.getExistingSubscription());
     }
+    return computePushCapabilityState({
+      ...base,
+      hasSubscription,
+      isSubscribing: this.subscribing,
+      lastError: this.lastPushError,
+    });
+  }
 
-    try {
-      const permission = await this.requestPermission();
-      if (permission !== 'granted') return false;
+  public getLastPushError(): string | null {
+    return this.lastPushError;
+  }
 
-      let reg = this.swRegistration;
-      if (!reg) {
-        reg = await this.initServiceWorker();
+  /** Chave pública VAPID (Edge Function dedicada; fallback para a função legada). */
+  public async getVapidPublicKey(): Promise<string | null> {
+    for (const fn of ['dental-web-push-dispatch', 'dental-whatsapp-api']) {
+      try {
+        const { data, error } = await supabase.functions.invoke(fn, {
+          body: { action: fn === 'dental-web-push-dispatch' ? 'public_key' : 'get_vapid_public_key' },
+        });
+        if (!error && data?.publicKey) return data.publicKey;
+      } catch {
+        // tenta o próximo
       }
-      if (!reg) return false;
+    }
+    return null;
+  }
 
-      // Aguardar o Service Worker estar pronto
-      const readyRegistration = await navigator.serviceWorker.ready;
+  private async persistSubscription(tenantId: string, userId: string | undefined, sub: PushSubscription): Promise<boolean> {
+    const subJson = sub.toJSON();
+    const ua = navigator.userAgent;
+    const deviceLabel = /iPhone|iPad/.test(ua) ? 'iPhone/iPad' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'Dispositivo';
+    try {
+      const { data, error } = await supabase.functions.invoke('dental-web-push-dispatch', {
+        body: { action: 'save_subscription', tenant_id: tenantId, subscription: subJson, user_agent: ua, device_label: deviceLabel },
+      });
+      if (!error && data?.success) return true;
+    } catch {
+      // fallback abaixo
+    }
+    // Fallback (função nova ainda não implantada): grava só as colunas legadas, sob RLS do próprio usuário
+    if (!userId) return false;
+    const { error } = await supabase.from('df_push_subscriptions').upsert(
+      {
+        id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        tenant_id: tenantId,
+        user_id: userId,
+        endpoint: sub.endpoint,
+        p256dh: subJson.keys?.p256dh,
+        auth: subJson.keys?.auth,
+        user_agent: ua,
+        device_label: deviceLabel,
+        is_active: true,
+        last_used_at: new Date().toISOString(),
+      },
+      { onConflict: 'tenant_id,endpoint' }
+    );
+    return !error;
+  }
+
+  /**
+   * Ativa o Web Push. DEVE ser chamado diretamente do toque do usuário (permissão pedida primeiro,
+   * antes de qualquer await pesado, para manter o gesto do usuário no iOS/Safari).
+   */
+  public async enablePush(tenantId: string, userId?: string): Promise<PushCapabilityState> {
+    this.lastPushError = null;
+    // Síncrono de propósito: preserva o gesto do usuário (iOS/Safari) até o requestPermission
+    const before = computePushCapabilityState({ ...readPushEnvironment(), hasSubscription: false, lastError: null });
+    if (before !== 'READY_TO_REQUEST' && before !== 'SUBSCRIPTION_ERROR') return before;
+
+    this.subscribing = true;
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') return permission === 'denied' ? 'DENIED' : 'READY_TO_REQUEST'; // 'default' = fechou o prompt: sem erro
+
+      const reg = await registerServiceWorker();
+      if (!reg) throw new Error('service_worker_unavailable');
+      await navigator.serviceWorker.ready;
 
       const publicKey = await this.getVapidPublicKey();
-      if (!publicKey) return false;
+      if (!publicKey) throw new Error('vapid_unavailable');
+      const key = urlBase64ToUint8Array(publicKey);
 
-      const applicationServerKey = urlBase64ToUint8Array(publicKey);
-
-      // Obter ou criar subscription
-      let subscription = await readyRegistration.pushManager.getSubscription();
-      if (!subscription) {
-        subscription = await readyRegistration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey,
-        });
+      let sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        // Inscrição criada com outra chave VAPID (rotação): recria
+        const current = sub.options?.applicationServerKey ? new Uint8Array(sub.options.applicationServerKey as ArrayBuffer) : null;
+        const same = current && current.length === key.length && current.every((b, i) => b === key[i]);
+        if (!same) {
+          await sub.unsubscribe();
+          sub = null;
+        }
       }
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
 
-      if (!subscription) return false;
+      const saved = await this.persistSubscription(tenantId, userId, sub);
+      if (!saved) throw new Error('persist_failed');
+      return 'SUBSCRIBED';
+    } catch (err: any) {
+      this.lastPushError = err?.message || 'erro';
+      console.warn('[NotificationService] Falha ao ativar push:', this.lastPushError);
+      return 'SUBSCRIPTION_ERROR';
+    } finally {
+      this.subscribing = false;
+    }
+  }
 
-      // Enviar subscription para o backend e salvar diretamente no banco de dados
-      const deviceLabel = navigator.userAgent.includes('Mobile')
-        ? 'Dispositivo Móvel'
-        : navigator.userAgent.includes('Mac')
-        ? 'Mac / Safari'
-        : 'Desktop / Navegador';
+  /** Compat com chamadas antigas. */
+  public async subscribeToPush(tenantId: string, userId?: string): Promise<boolean> {
+    return (await this.enablePush(tenantId, userId)) === 'SUBSCRIBED';
+  }
 
-      const subJson = subscription.toJSON();
-      const subId = `sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-
-      // 1. Salvar diretamente na tabela df_push_subscriptions via Supabase Client
-      const { error: dbErr } = await supabase
-        .from('df_push_subscriptions')
-        .upsert(
-          {
-            id: subId,
-            tenant_id: tenantId,
-            user_id: userId || null,
-            endpoint: subscription.endpoint,
-            p256dh: subJson.keys?.p256dh,
-            auth: subJson.keys?.auth,
-            user_agent: navigator.userAgent,
-            device_label: deviceLabel,
-            is_active: true,
-            last_used_at: new Date().toISOString(),
-          },
-          { onConflict: 'tenant_id,endpoint' }
-        );
-
-      if (dbErr) {
-        console.warn('[NotificationService] Aviso ao salvar no banco local, tentando Edge Function:', dbErr.message);
-      }
-
-      // 2. Notificar Edge Function para auditoria e sync
+  /** Desativa o push NESTE dispositivo (backend + navegador). */
+  public async disablePush(tenantId: string): Promise<boolean> {
+    try {
+      const sub = await this.getExistingSubscription();
+      if (!sub) return true;
+      const endpoint = sub.endpoint;
       try {
-        await supabase.functions.invoke('dental-whatsapp-api', {
-          body: {
-            action: 'save_push_subscription',
-            tenant_id: tenantId,
-            user_id: userId,
-            subscription: subJson,
-            user_agent: navigator.userAgent,
-            device_label: deviceLabel,
-          },
-        });
-      } catch (fnErr) {
-        // Ignora se banco direto já salvou
+        await supabase.functions.invoke('dental-web-push-dispatch', { body: { action: 'remove_subscription', tenant_id: tenantId, endpoint } });
+      } catch {
+        await supabase.from('df_push_subscriptions').update({ is_active: false }).eq('tenant_id', tenantId).eq('endpoint', endpoint);
       }
-
-      return true;
+      return await sub.unsubscribe();
     } catch (err) {
-      console.error('[NotificationService] Exceção ao registrar push:', err);
+      console.warn('[NotificationService] Erro ao desativar push:', (err as Error)?.message);
       return false;
     }
   }
 
+  public unsubscribeFromPush(tenantId: string): Promise<boolean> {
+    return this.disablePush(tenantId);
+  }
+
   /**
-   * Desativa subscription de Web Push
+   * Logout: desassocia o dispositivo do usuário que sai (backend + navegador) para que o próximo
+   * usuário do mesmo navegador não herde pushes privados. Chamar ANTES de encerrar a sessão.
    */
-  public async unsubscribeFromPush(tenantId: string): Promise<boolean> {
+  public async detachPushOnLogout(tenantId?: string): Promise<void> {
+    if (!tenantId) return;
     try {
-      if (!('serviceWorker' in navigator)) return false;
-      const reg = await navigator.serviceWorker.ready;
-      const subscription = await reg.pushManager.getSubscription();
-      if (!subscription) return true;
+      await Promise.race([this.disablePush(tenantId), new Promise((r) => setTimeout(r, 2000))]);
+    } catch {
+      // logout nunca deve falhar por causa do push
+    }
+  }
 
-      // Remover no backend
-      await supabase.functions.invoke('dental-whatsapp-api', {
-        body: {
-          action: 'remove_push_subscription',
-          tenant_id: tenantId,
-          endpoint: subscription.endpoint,
-        },
-      });
-
-      // Desinscrever localmente
-      return await subscription.unsubscribe();
-    } catch (err) {
-      console.warn('[NotificationService] Erro ao desinscrever push:', err);
-      return false;
+  /**
+   * Ao entrar no app com permissão já concedida e inscrição existente: revalida o DONO da inscrição
+   * (sem pedir permissão nenhuma). Não faz nada se não houver inscrição.
+   */
+  public async refreshOwnershipIfSubscribed(tenantId: string, userId?: string): Promise<void> {
+    try {
+      if (this.getPermissionState() !== 'granted') return;
+      const sub = await this.getExistingSubscription();
+      if (sub) await this.persistSubscription(tenantId, userId, sub);
+    } catch {
+      // silencioso
     }
   }
 

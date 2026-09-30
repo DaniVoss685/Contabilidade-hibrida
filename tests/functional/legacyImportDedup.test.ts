@@ -58,12 +58,29 @@ function runTests() {
     assert(result.status === 'VINCULAR' && result.matchedPatientId === 'pat_existing_123', 'DEDUP-02: vínculo de importação legado tem prioridade máxima');
   }
 
-  // DEDUP-03: CPF válido e único corresponde a paciente existente -> VINCULAR
+  // DEDUP-03: CPF válido e único + nome compatível -> VINCULAR (CONFIRMED)
   {
-    const c = client({ identificador: 'legacy-3', cpf: '111.444.777-35' });
-    const existing = [fakePatient({ cpf: '11144477735' })];
+    const c = client({ identificador: 'legacy-3', cpf: '111.444.777-35', nome_completo: 'Paciente Teste' });
+    const existing = [fakePatient({ cpf: '11144477735', name: 'PACIENTE TESTE' })];
     const [result] = classifyPatientRows([c], existing, new Map());
-    assert(result.status === 'VINCULAR' && result.matchedPatientId === existing[0].id, 'DEDUP-03: CPF válido único vincula ao paciente existente correto');
+    assert(result.status === 'VINCULAR' && result.matchedPatientId === existing[0].id, 'DEDUP-03: CPF válido único + mesmo nome vincula ao paciente existente correto');
+    assert(result.existingQuality === 'CONFIRMED', 'DEDUP-03b: vínculo por CPF classificado como CONFIRMED');
+  }
+
+  // DEDUP-03c: CPF igual mas nome diferente -> nunca vincula automaticamente (REVISAR)
+  {
+    const c = client({ identificador: 'legacy-3c', cpf: '111.444.777-35', nome_completo: 'Paciente Teste' });
+    const existing = [fakePatient({ cpf: '11144477735', name: 'Outra Pessoa Completamente Diferente' })];
+    const [result] = classifyPatientRows([c], existing, new Map());
+    assert(result.status === 'REVISAR' && result.reviewCategory === 'MATCH_EXISTENTE_REVIEW', 'DEDUP-03c: CPF igual com nome divergente cai em revisão, não em vínculo');
+  }
+
+  // DEDUP-03d: CPF igual, mesmo nome, nascimento diferente -> REVISAR
+  {
+    const c = client({ identificador: 'legacy-3d', cpf: '111.444.777-35', nome_completo: 'Paciente Teste', data_nascimento: '01/01/1990 00:00:00' });
+    const existing = [fakePatient({ cpf: '11144477735', name: 'Paciente Teste', birthDate: '1985-05-05' })];
+    const [result] = classifyPatientRows([c], existing, new Map());
+    assert(result.status === 'REVISAR' && result.existingQuality === 'REVIEW_REQUIRED', 'DEDUP-03d: nascimento divergente impede vínculo automático');
   }
 
   // DEDUP-04: CPF válido duplicado no PRÓPRIO arquivo de origem (2 pares reais no arquivo real) -> CONFLITO, nunca mesclado automaticamente
