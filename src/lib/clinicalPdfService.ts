@@ -1,5 +1,6 @@
 import { Patient, ClinicalRecord, ClinicalAttachment, Organization, Professional } from '../types';
 import { db } from './db';
+import { calculateAge, formatDate } from './masks';
 
 export interface PrintClinicalDossierOptions {
   patient: Patient;
@@ -22,14 +23,8 @@ export function generateClinicalDossierHtml(options: PrintClinicalDossierOptions
   // Formatação de idade se houver data de nascimento
   let ageStr = '';
   if (patient.birthDate) {
-    const birth = new Date(patient.birthDate);
-    const now = new Date();
-    let age = now.getFullYear() - birth.getFullYear();
-    const m = now.getMonth() - birth.getMonth();
-    if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) {
-      age--;
-    }
-    if (!isNaN(age)) {
+    const age = calculateAge(patient.birthDate);
+    if (age !== null) {
       ageStr = ` (${age} anos)`;
     }
   }
@@ -268,7 +263,7 @@ export function generateClinicalDossierHtml(options: PrintClinicalDossierOptions
       </div>
       <div class="grid-item">
         <strong>Nascimento / Idade</strong>
-        ${patient.birthDate ? patient.birthDate.split('-').reverse().join('/') + ageStr : 'Não informado'}
+        ${patient.birthDate ? formatDate(patient.birthDate) + ageStr : 'Não informado'}
       </div>
       <div class="grid-item">
         <strong>Telefone / WhatsApp</strong>

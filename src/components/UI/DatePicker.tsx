@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, ChevronDown, X } from 'lucide-react';
 import { Portal } from './Portal';
 import { useFloatingPosition } from './useFloatingPosition';
+import { formatDate, normalizeCivilDateString } from '../../lib/masks';
 
 interface DatePickerProps {
   value: string; // ISO date format: YYYY-MM-DD
@@ -54,19 +55,20 @@ export const DatePicker: React.FC<DatePickerProps> = ({
   });
 
   // Parse initial date or default to current date
-  const selectedDate = value ? new Date(value + 'T00:00:00') : null;
+  const normalizedValue = normalizeCivilDateString(value);
+  const selectedDate = normalizedValue ? new Date(normalizedValue + 'T00:00:00') : null;
   const [viewDate, setViewDate] = useState<Date>(
     selectedDate && !isNaN(selectedDate.getTime()) ? selectedDate : new Date()
   );
 
   useEffect(() => {
-    if (value) {
-      const parsed = new Date(value + 'T00:00:00');
+    if (normalizedValue) {
+      const parsed = new Date(normalizedValue + 'T00:00:00');
       if (!isNaN(parsed.getTime())) {
         setViewDate(parsed);
       }
     }
-  }, [value]);
+  }, [normalizedValue]);
 
   // Handle outside click & Escape key
   useEffect(() => {
@@ -189,13 +191,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
   };
 
   // Format display date: DD/MM/AAAA
-  const formattedDisplay = value ? (() => {
-    const parts = value.split('-');
-    if (parts.length === 3) {
-      return `${parts[2]}/${parts[1]}/${parts[0]}`;
-    }
-    return value;
-  })() : '';
+  const formattedDisplay = value ? formatDate(value) : '';
 
   const todayStr = (() => {
     const t = new Date();

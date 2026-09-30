@@ -72,6 +72,7 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
         !popoverRef.current.contains(target)
       ) {
         setIsOpen(false);
+        inputRef.current?.blur();
       }
     };
 
@@ -80,6 +81,7 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
 
       if (e.key === 'Escape') {
         setIsOpen(false);
+        inputRef.current?.blur();
         return;
       }
 
@@ -115,6 +117,7 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
     onChange(patient);
     setIsOpen(false);
     setQuery('');
+    inputRef.current?.blur();
   };
 
   const handleClear = (e: React.MouseEvent) => {
@@ -148,10 +151,7 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
       {/* Trigger & Search Input */}
       <div
         onClick={() => {
-          if (!disabled) {
-            setIsOpen(true);
-            inputRef.current?.focus();
-          }
+          if (!disabled) inputRef.current?.focus();
         }}
         className={`w-full flex items-center justify-between px-3.5 py-2.5 bg-white border rounded-xl text-xs font-medium transition-all cursor-text shadow-2xs ${
           error
@@ -161,34 +161,40 @@ export const PatientSearchSelect: React.FC<PatientSearchSelectProps> = ({
             : 'border-slate-200/90 hover:border-slate-300'
         } ${disabled ? 'opacity-50 cursor-not-allowed bg-slate-50' : ''}`}
       >
-        <div className="flex items-center gap-2.5 overflow-hidden flex-1">
+        <div className="relative flex items-center gap-2.5 overflow-hidden flex-1 min-w-0">
           <Search className={`w-4 h-4 flex-shrink-0 ${isOpen ? 'text-emerald-600' : 'text-slate-400'}`} />
 
-          {isOpen ? (
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setHighlightedIndex(0);
-              }}
-              placeholder={selectedPatient ? `${selectedPatient.name} — digite para buscar...` : placeholder}
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck="false"
-              className="w-full bg-transparent text-slate-900 placeholder:text-slate-400 focus:outline-none text-xs font-medium"
-            />
-          ) : selectedPatient ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onFocus={() => {
+              if (!disabled) setIsOpen(true);
+            }}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setHighlightedIndex(0);
+            }}
+            placeholder={selectedPatient ? `${selectedPatient.name} — digite para buscar...` : placeholder}
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck="false"
+            disabled={disabled}
+            className={`w-full bg-transparent text-slate-900 placeholder:text-slate-400 focus:outline-none text-xs font-medium ${
+              isOpen ? 'relative' : 'absolute inset-0 h-full opacity-0 cursor-text'
+            }`}
+          />
+
+          {!isOpen && selectedPatient ? (
             <div className="flex items-center gap-2 truncate">
               <span className="font-semibold text-slate-900 truncate">{selectedPatient.name}</span>
               <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md flex-shrink-0">
                 {selectedPatient.cpf ? `CPF: ${formatCpf(selectedPatient.cpf, false)}` : 'CPF não informado'}
               </span>
             </div>
-          ) : (
+          ) : !isOpen ? (
             <span className="text-slate-400 font-normal truncate">{placeholder}</span>
-          )}
+          ) : null}
         </div>
 
         <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">

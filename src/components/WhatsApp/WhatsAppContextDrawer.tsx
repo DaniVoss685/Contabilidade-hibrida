@@ -621,6 +621,7 @@ export const WhatsAppContextDrawer: React.FC<WhatsAppContextDrawerProps> = ({
                           <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
                           <input
                             type="text"
+                            autoFocus
                             placeholder="Nome, CPF ou telefone..."
                             value={patientSearchTerm}
                             onChange={(e) => setPatientSearchTerm(e.target.value)}

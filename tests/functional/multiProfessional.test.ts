@@ -128,12 +128,16 @@ console.log('\n=== AGENDA FILTRA: AppointmentsView.tsx tem filtro por profission
     'filtro aplica sobre TODAS as visões (Dia/Semana/Mês compartilham o mesmo filteredAppointments)'
   );
   assert(
-    /useEffect\(\(\) => \{\s*const currentUser = db\.getUser\(\);[\s\S]*?setProfessionalFilter\(defaultId \|\| 'ALL'\);\s*\}, \[activeTenantId\]\);/.test(code),
-    'troca de tenant (ou carregamento inicial) recalcula o filtro — nunca herda a seleção da clínica anterior'
+    /useEffect\(\(\) => \{\s*professionalFilterChosenManually\.current = false;\s*setProfessionalFilter\('ALL'\);\s*\}, \[activeTenantId\]\);/.test(code),
+    'troca de tenant limpa a escolha manual e não herda a seleção da clínica anterior'
   );
   assert(
-    code.includes('defaultProfessionalId(activeProfessionals, currentUser?.id)'),
-    'PROF-09: recalculo usa a mesma regra de pré-seleção do Agendamento (defaultProfessionalId) — vínculo userId > único ativo > nenhum'
+    code.includes('defaultProfessionalId(activeProfessionals, db.getUser()?.id)') && code.includes('db.subscribe(load)'),
+    'PROF-09: load recalcula o padrão conforme o roster chega pelo subscribe, usando o vínculo userId'
+  );
+  assert(
+    code.includes('if (!professionalFilterChosenManually.current)') && code.includes('professionalFilterChosenManually.current = true;'),
+    'recalcula enquanto os dados chegam até o usuário escolher manualmente um filtro'
   );
   assert(
     !code.includes("setStatusFilter('ALL')\n  }, [activeTenantId]") ,

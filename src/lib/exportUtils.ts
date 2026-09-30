@@ -1,6 +1,7 @@
 // Export utilities for CSV / spreadsheets
 import * as XLSX from 'xlsx';
 import { Patient } from '../types';
+import { formatDate } from './masks';
 
 export function exportToCsv(filename: string, rows: (string | number)[][]): void {
   const processRow = (row: (string | number)[]) => {
@@ -61,7 +62,7 @@ export function formatPatientsForExport(patients: Patient[]): (string | number)[
     p.cpf || '',
     p.phone || '',
     p.email || '',
-    p.birthDate || '',
+    p.birthDate ? formatDate(p.birthDate) : '',
     p.city || '',
     p.state || '',
     (p.allergies || []).join(', '),

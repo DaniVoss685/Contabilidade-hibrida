@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import { Patient, ClinicalRecord, ImportPreviewRow, ImportReportSummary, ColumnMapping } from '../types';
 import { db } from './db';
+import { parseLegacyDateTime } from './legacyImportMatching';
 
 export interface RawParsedTable {
   headers: string[];
@@ -246,18 +247,7 @@ export function generateImportPreview(
           mappedPatient.email = rawVal;
           break;
         case 'birthDate':
-          // Formata datas comuns DD/MM/YYYY para YYYY-MM-DD se necessário
-          if (rawVal.includes('/')) {
-            const parts = rawVal.split('/');
-            if (parts.length === 3) {
-              const [d, m, y] = parts;
-              mappedPatient.birthDate = `${y.padStart(4, '20')}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-            } else {
-              mappedPatient.birthDate = rawVal;
-            }
-          } else {
-            mappedPatient.birthDate = rawVal;
-          }
+          mappedPatient.birthDate = parseLegacyDateTime(rawVal).value || '';
           break;
         case 'city':
           mappedPatient.city = rawVal;

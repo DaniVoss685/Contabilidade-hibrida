@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -186,19 +186,16 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<'ALL' | AppointmentStatus>('ALL');
   const [professionals, setProfessionals] = useState<ClinicalProfessional[]>([]);
   const [professionalFilter, setProfessionalFilter] = useState<string>('ALL');
+  const professionalFilterChosenManually = useRef(false);
 
   // Ao trocar de clínica (ou no carregamento inicial): nunca herda o filtro de uma clínica
   // anterior (Modo Consultoria) — e, quando o usuário logado está vinculado a um profissional
-  // clínico (Configurações > Profissionais > "Vincular a um usuário do sistema"), a Agenda já
-  // abre filtrada nas consultas DELE por padrão, em vez de mostrar a agenda inteira da clínica.
-  // Continua sendo possível trocar para "Todos os profissionais" a qualquer momento — isto só
-  // define o ponto de partida (mesmo padrão síncrono já usado em AppointmentModal.tsx para a
-  // pré-seleção de profissional: lê db.getClinicalProfessionals()/getUser() direto, uma vez).
+  // clínico (Configurações > Profissionais > "Vincular a um usuário do sistema"), a Agenda abre
+  // filtrada nas consultas DELE. O roster pode chegar assincronamente, então load() recalcula o
+  // padrão em cada atualização até o usuário escolher um filtro manualmente.
   useEffect(() => {
-    const currentUser = db.getUser();
-    const activeProfessionals = db.getClinicalProfessionals().filter((p) => p.isActive);
-    const defaultId = defaultProfessionalId(activeProfessionals, currentUser?.id);
-    setProfessionalFilter(defaultId || 'ALL');
+    professionalFilterChosenManually.current = false;
+    setProfessionalFilter('ALL');
   }, [activeTenantId]);
 
   // Modals state
@@ -222,7 +219,12 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     const load = () => {
       setAppointments(db.getAppointments());
       setPreferences(db.getPreferences());
-      setProfessionals(db.getClinicalProfessionals().filter((p) => p.isActive));
+      const activeProfessionals = db.getClinicalProfessionals().filter((p) => p.isActive);
+      setProfessionals(activeProfessionals);
+      if (!professionalFilterChosenManually.current) {
+        const defaultId = defaultProfessionalId(activeProfessionals, db.getUser()?.id);
+        setProfessionalFilter(defaultId || 'ALL');
+      }
     };
     load();
     const unsub = db.subscribe(load);
@@ -667,7 +669,10 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           <div className="w-full sm:w-64 shrink-0">
             <CustomSelect
               value={professionalFilter}
-              onChange={setProfessionalFilter}
+              onChange={(value) => {
+                professionalFilterChosenManually.current = true;
+                setProfessionalFilter(value);
+              }}
               options={professionalFilterOptions}
               searchable={false}
             />

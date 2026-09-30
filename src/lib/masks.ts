@@ -56,13 +56,39 @@ export function cleanCpfCnpj(value: string = ''): string {
 
 export function formatDateBr(dateStr: string | undefined | null): string {
   if (!dateStr) return '—';
-  // Handles YYYY-MM-DD or ISO string
-  const clean = dateStr.split('T')[0];
-  const parts = clean.split('-');
-  if (parts.length === 3) {
-    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  const civilDate = normalizeCivilDateString(dateStr);
+  if (civilDate) {
+    const [year, month, day] = civilDate.split('-');
+    return `${day}/${month}/${year}`;
   }
   return dateStr;
+}
+
+/** Normaliza formatos civis conhecidos sem converter a data por timezone. */
+export function normalizeCivilDateString(value: string | undefined | null): string | null {
+  if (!value) return null;
+  const clean = value.trim();
+  let parts: [string, string, string] | null = null;
+
+  // Corrupção histórica gerada ao incluir o horário no segmento do ano:
+  // "1958 00:00:00-10-06" representa 06/10/1958.
+  const corrupted = clean.match(/^(\d{4})\s+\d{2}:\d{2}:\d{2}-(\d{1,2})-(\d{1,2})$/);
+  if (corrupted) parts = [corrupted[1], corrupted[2], corrupted[3]];
+
+  if (!parts) {
+    const iso = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|[T\s])/);
+    if (iso) parts = [iso[1], iso[2], iso[3]];
+  }
+
+  if (!parts) {
+    const br = clean.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:$|\s)/);
+    if (br) parts = [br[3], br[2], br[1]];
+  }
+
+  if (!parts) return null;
+  const [year, month, day] = parts;
+  const normalized = `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  return isValidCivilDate(normalized) ? normalized : null;
 }
 
 /**
@@ -71,14 +97,6 @@ export function formatDateBr(dateStr: string | undefined | null): string {
  */
 export function formatDate(dateStr: string | undefined | null): string {
   if (!dateStr) return '—';
-  const clean = dateStr.split('T')[0].trim();
-  const parts = clean.split('-');
-  if (parts.length === 3) {
-    const [year, month, day] = parts;
-    if (year.length === 4) {
-      return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`;
-    }
-  }
   return formatDateBr(dateStr);
 }
 
@@ -340,8 +358,9 @@ export function isFutureCivilDate(dateStr: string | undefined | null): boolean {
  * Nunca sofre deslocamento de timezone e calcula de forma puramente dinâmica
  */
 export function calculateAge(birthDateStr: string | undefined | null): number | null {
-  if (!birthDateStr || !isValidCivilDate(birthDateStr)) return null;
-  const parts = birthDateStr.split('-');
+  const civilDate = normalizeCivilDateString(birthDateStr);
+  if (!civilDate) return null;
+  const parts = civilDate.split('-');
   const birthYear = parseInt(parts[0], 10);
   const birthMonth = parseInt(parts[1], 10);
   const birthDay = parseInt(parts[2], 10);
@@ -366,8 +385,9 @@ export function calculateNextBirthday(birthDateStr: string | undefined | null): 
   daysUntil: number;
   isUpcoming: boolean;
 } | null {
-  if (!birthDateStr || !isValidCivilDate(birthDateStr)) return null;
-  const parts = birthDateStr.split('-');
+  const civilDate = normalizeCivilDateString(birthDateStr);
+  if (!civilDate) return null;
+  const parts = civilDate.split('-');
   const birthMonth = parseInt(parts[1], 10);
   const birthDay = parseInt(parts[2], 10);
 
@@ -411,6 +431,4 @@ export function calculateCivilDaysDiff(dateAStr: string, dateBStr: string): numb
   const diffTime = dtA.getTime() - dtB.getTime();
   return Math.round(diffTime / (1000 * 60 * 60 * 24));
 }
-
-
 
