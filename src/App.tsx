@@ -464,6 +464,23 @@ function AppContent() {
     return `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
   }, [selectedYear, selectedMonth]);
 
+  // Último dia do período selecionado (mês específico, ou 31/12 quando "ALL" = ano inteiro).
+  const periodEndDateISO = useMemo(() => {
+    if (selectedMonth === 'ALL') return `${selectedYear}-12-31`;
+    const lastDay = new Date(selectedYear, selectedMonth, 0).getDate();
+    return `${selectedYear}-${String(selectedMonth).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  }, [selectedYear, selectedMonth]);
+
+  // Recorrência "série aberta": ao navegar para qualquer período (inclusive muito no futuro, ex.:
+  // julho/2027), garante que as ocorrências até o fim daquele período já existam — sem isso, a
+  // recorrência "parava de aparecer" após poucos meses porque só era gerada uma vez por sessão.
+  useEffect(() => {
+    if (!activeTenantId) return;
+    db.ensureRecurringExpensesGeneratedThroughAsync(activeTenantId, periodEndDateISO).catch((genErr) =>
+      console.warn('[ExpenseRecurrence] Falha ao garantir geração para o período selecionado:', genErr)
+    );
+  }, [activeTenantId, periodEndDateISO]);
+
   // Filtered sales based on global period (strictly by sale date / serviceDate)
   const filteredSales = useMemo(() => {
     return sales.filter((sale) => {

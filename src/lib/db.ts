@@ -551,7 +551,10 @@ export class DentalFinanceDB {
   private sales!: Sale[];
   private expenses!: Expense[];
   private expenseRecurrences: ExpenseRecurrenceSeries[] = [];
-  private recurrenceGenerationDoneForTenant: Set<string> = new Set();
+  /** due_date (inclusive) até onde já garantimos materialização por tenant — substitui a antiga
+   * trava booleana "uma vez por sessão", que impedia o horizonte de avançar ao navegar para um
+   * período futuro sem novo login (causa raiz de recorrências que "paravam" após poucos meses). */
+  private recurrenceHorizonEnsuredForTenant: Map<string, string> = new Map();
   private categories!: ExpenseCategory[];
   private bankAccounts!: BankAccount[];
   private payrollHistory!: PayrollHistoryEntry[];
@@ -4866,43 +4869,73 @@ export class DentalFinanceDB {
     );
     this.notify();
 
-    // Gera de imediato as ocorrências futuras dentro do horizonte, sem esperar a próxima sessão
-    // (a trava "uma vez por sessão" de ensureRecurringExpensesGeneratedAsync já foi consumida no
-    // login/carregamento do tenant, então sem isto a série só apareceria nos próximos meses após
-    // um novo login).
-    this.generateMissingOccurrencesForSeries([series], this.activeTenantId).catch((genErr) =>
-      console.warn('[ExpenseRecurrence] Falha ao gerar ocorrências futuras logo após a criação (será tentado no próximo login):', genErr)
-    );
+    // Gera de imediato as ocorrências futuras dentro do horizonte padrão, sem esperar a próxima
+    // sessão. O watermark do tenant avança para cobrir pelo menos este horizonte.
+    const nowIsoDate = new Date().toISOString().split('T')[0];
+    const initialHorizon = computeGenerationHorizon(nowIsoDate);
+    this.generateMissingOccurrencesForSeries([series], this.activeTenantId, initialHorizon)
+      .then((ok) => {
+        if (ok) this.advanceRecurrenceHorizonWatermark(this.activeTenantId, initialHorizon);
+      })
+      .catch((genErr) =>
+        console.warn('[ExpenseRecurrence] Falha ao gerar ocorrências futuras logo após a criação (será tentado na próxima navegação):', genErr)
+      );
 
     return { success: true, series, occurrence: firstOccurrence };
   }
 
-  /**
-   * Materialização sob demanda (idempotente): para cada série ACTIVE do tenant, gera as ocorrências
-   * que faltam entre a última já criada e "hoje + horizonte", sem depender de um cron server-side.
-   * Roda uma vez por tenant por sessão (evita refazer o trabalho a cada re-render); chamada de novo
-   * ao trocar de clínica. Nunca mexe em séries ENDED.
-   */
-  public async ensureRecurringExpensesGeneratedAsync(tenantId: string): Promise<void> {
-    if (this.isDemoMode || tenantId === 'tenant_demo') return;
-    if (this.recurrenceGenerationDoneForTenant.has(tenantId)) return;
-    this.recurrenceGenerationDoneForTenant.add(tenantId);
-
-    const activeSeries = this.expenseRecurrences.filter((s) => s.tenantId === tenantId && s.status === 'ACTIVE');
-    if (!activeSeries.length) return;
-    await this.generateMissingOccurrencesForSeries(activeSeries, tenantId);
+  private advanceRecurrenceHorizonWatermark(tenantId: string, throughISO: string): void {
+    const current = this.recurrenceHorizonEnsuredForTenant.get(tenantId);
+    if (!current || throughISO > current) {
+      this.recurrenceHorizonEnsuredForTenant.set(tenantId, throughISO);
+    }
   }
 
   /**
-   * Núcleo da materialização sob demanda, sem a trava "uma vez por sessão" — reaproveitado tanto
-   * pela varredura de sessão (ensureRecurringExpensesGeneratedAsync) quanto para gerar de imediato
-   * o horizonte de UMA série recém-criada (createRecurringExpenseAsync), sem esperar o próximo login.
+   * Materialização sob demanda (idempotente) até "hoje + horizonte padrão" — chamada no carregamento
+   * inicial do tenant/troca de clínica. Nunca mexe em séries ENDED.
    */
-  private async generateMissingOccurrencesForSeries(activeSeries: ExpenseRecurrenceSeries[], tenantId: string): Promise<void> {
-    if (!activeSeries.length) return;
-
+  public async ensureRecurringExpensesGeneratedAsync(tenantId: string): Promise<void> {
     const todayIso = new Date().toISOString().split('T')[0];
-    const horizon = computeGenerationHorizon(todayIso);
+    await this.ensureRecurringExpensesGeneratedThroughAsync(tenantId, computeGenerationHorizon(todayIso));
+  }
+
+  /**
+   * Materialização sob demanda (idempotente) até uma data-alvo explícita — chamada sempre que o
+   * usuário navega para um período (mês/ano) na tela de Despesas, mesmo muito no futuro (ex.:
+   * julho/2027), para que a série "apareça" sem precisar de F5 nem de um novo login. Um watermark
+   * por tenant evita reprocessar o mesmo horizonte repetidamente ao navegar de volta para um período
+   * já garantido, mas SEMPRE avança quando o alvo pedido é mais distante do que o já garantido —
+   * é exatamente essa parte que faltava e fazia a recorrência "parar" após poucos meses.
+   */
+  public async ensureRecurringExpensesGeneratedThroughAsync(tenantId: string, targetHorizonISO: string): Promise<void> {
+    if (this.isDemoMode || tenantId === 'tenant_demo') return;
+    const alreadyEnsured = this.recurrenceHorizonEnsuredForTenant.get(tenantId);
+    if (alreadyEnsured && alreadyEnsured >= targetHorizonISO) return;
+
+    const activeSeries = this.expenseRecurrences.filter((s) => s.tenantId === tenantId && s.status === 'ACTIVE');
+    if (!activeSeries.length) {
+      this.advanceRecurrenceHorizonWatermark(tenantId, targetHorizonISO);
+      return;
+    }
+    const ok = await this.generateMissingOccurrencesForSeries(activeSeries, tenantId, targetHorizonISO);
+    if (ok) this.advanceRecurrenceHorizonWatermark(tenantId, targetHorizonISO);
+  }
+
+  /**
+   * Núcleo da materialização sob demanda — reaproveitado pela varredura de sessão/navegação
+   * (ensureRecurringExpensesGeneratedThroughAsync) e pela geração imediata de UMA série recém-criada
+   * (createRecurringExpenseAsync). Recebe o horizonte explicitamente (nunca recalcula "hoje + fixo"
+   * sozinho) para poder ser chamado com qualquer data-alvo, inclusive muito distante no futuro.
+   * Retorna `true` quando o horizonte pedido ficou garantido (nada faltava, ou persistiu com sucesso).
+   */
+  private async generateMissingOccurrencesForSeries(
+    activeSeries: ExpenseRecurrenceSeries[],
+    tenantId: string,
+    horizon: string
+  ): Promise<boolean> {
+    if (!activeSeries.length) return true;
+
     const existingByRecurrence = new Map<string, Set<string>>();
     this.expenses.forEach((e) => {
       if (!e.recurrenceId) return;
@@ -4966,13 +4999,12 @@ export class DentalFinanceDB {
       updatedSeriesList.push({ ...series, lastGeneratedDueDate: missing[missing.length - 1], updatedAt: new Date().toISOString() });
     });
 
-    if (!newOccurrences.length) return;
+    if (!newOccurrences.length) return true;
 
     const bulkRes = await SupabaseService.saveExpensesBulk(newOccurrences, tenantId);
     if (!bulkRes.success) {
-      console.warn('[ExpenseRecurrence] Falha ao persistir novas ocorrências (tenta de novo na próxima carga):', bulkRes.error);
-      this.recurrenceGenerationDoneForTenant.delete(tenantId);
-      return;
+      console.warn('[ExpenseRecurrence] Falha ao persistir novas ocorrências (tenta de novo na próxima navegação):', bulkRes.error);
+      return false;
     }
     await Promise.all(updatedSeriesList.map((s) => SupabaseService.saveExpenseRecurrence(s, tenantId)));
 
@@ -4991,6 +5023,7 @@ export class DentalFinanceDB {
       );
       this.notify();
     }
+    return true;
   }
 
   /**

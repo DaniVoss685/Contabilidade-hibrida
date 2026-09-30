@@ -498,7 +498,7 @@ export const NAV_TAB_OPTIONS: NavTabOptionDef[] = [
 export function getPermissionsFromTabs(
   tabs: NavTab[],
   role?: string,
-  options?: { pricingFinancialAccess?: boolean }
+  options?: { pricingFinancialAccess?: boolean; professionalsManage?: boolean }
 ): AppPermission[] {
   const set = new Set<AppPermission>();
   const upperRole = role?.toUpperCase() || 'RECEPTION';
@@ -511,6 +511,14 @@ export function getPermissionsFromTabs(
   // Acesso financeiro à precificação é uma escolha explícita (nunca vem "de brinde" com a aba de procedimentos)
   if (options?.pricingFinancialAccess) {
     PRICING_FINANCIAL_PERMISSIONS.forEach((p) => set.add(p));
+  }
+
+  // Gerenciar Profissionais Clínicos (cadastrar/vincular dentistas, esteticistas etc. da equipe) —
+  // por padrão só ADMIN/OWNER/SUPER_ADMIN/FINANCE têm; qualquer outra função (ex.: um DENTIST que
+  // também administra a agenda de uma clínica multi-profissional) pode ganhar explicitamente aqui,
+  // válido para qualquer clínica, não só a que tiver "role" fixo pré-configurado.
+  if (options?.professionalsManage) {
+    set.add('professionals:manage');
   }
 
   // Se for ADMIN, OWNER ou SUPER_ADMIN com a aba settings ativa, garante permissões de gestão

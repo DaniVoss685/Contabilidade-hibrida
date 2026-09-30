@@ -141,6 +141,10 @@ export const TeamManagementTab: React.FC<TeamManagementTabProps> = ({
   // Acesso financeiro à precificação (ver custos/margens, editar preço final e parâmetros da clínica).
   // Só CONCEDE: papéis que já têm por padrão (admin, financeiro, dentista) continuam tendo.
   const [editPricingAccess, setEditPricingAccess] = useState(false);
+  // Gerenciar Profissionais Clínicos (Configurações → Profissionais): cadastrar/ativar/desativar e
+  // vincular membros da equipe ao roster clínico — vale para qualquer clínica com mais de um
+  // profissional, não só quem já é ADMIN/OWNER/FINANCE por padrão. Só CONCEDE.
+  const [editProfessionalsManage, setEditProfessionalsManage] = useState(false);
   const [submittingEdit, setSubmittingEdit] = useState(false);
 
   // Diálogo de confirmação
@@ -240,6 +244,11 @@ export const TeamManagementTab: React.FC<TeamManagementTabProps> = ({
         ? PRICING_FINANCIAL_PERMISSIONS.every((p) => explicit.includes(p))
         : Boolean(explicit && typeof explicit === 'object' && PRICING_FINANCIAL_PERMISSIONS.every((p) => (explicit as Record<string, boolean>)[p]))
     );
+    setEditProfessionalsManage(
+      Array.isArray(explicit)
+        ? explicit.includes('professionals:manage')
+        : Boolean(explicit && typeof explicit === 'object' && (explicit as Record<string, boolean>)['professionals:manage'])
+    );
     setIsEditModalOpen(true);
   };
 
@@ -305,7 +314,10 @@ export const TeamManagementTab: React.FC<TeamManagementTabProps> = ({
 
     const activePerms = isOwnerOrSuperAdmin
       ? null
-      : getPermissionsFromTabs(editTabs, editRole, { pricingFinancialAccess: editPricingAccess });
+      : getPermissionsFromTabs(editTabs, editRole, {
+          pricingFinancialAccess: editPricingAccess,
+          professionalsManage: editProfessionalsManage,
+        });
 
     setSubmittingEdit(true);
     try {
@@ -880,6 +892,38 @@ export const TeamManagementTab: React.FC<TeamManagementTabProps> = ({
                                   {roleHasByDefault
                                     ? `Já incluído na função ${getRoleLabel(editRole)}.`
                                     : 'Permite ver custos, hora clínica e margens, editar o preço final e os parâmetros de precificação da clínica. Sem isto, o usuário vê só nome, duração, insumos e preço.'}
+                                </span>
+                              </span>
+                            </label>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    {/* Gerenciar Profissionais Clínicos: relevante para qualquer clínica com mais de
+                        um profissional (dentista, esteticista etc.) — não fica restrito a ADMIN/OWNER. */}
+                    {(editTabs.includes('procedures') || editTabs.includes('agenda') || editTabs.includes('settings')) && (
+                      <div className="mt-3 p-3 rounded-xl border border-slate-200 bg-slate-50/70">
+                        {(() => {
+                          const roleHasByDefault = getRoleDefaultPermissions(editRole).includes('professionals:manage');
+                          return (
+                            <label className="flex items-start gap-2.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                data-testid="team-professionals-manage"
+                                checked={roleHasByDefault || editProfessionalsManage}
+                                disabled={roleHasByDefault}
+                                onChange={(e) => setEditProfessionalsManage(e.target.checked)}
+                                className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 border-slate-300"
+                              />
+                              <span className="text-xs leading-snug">
+                                <span className="font-semibold text-slate-900 block">
+                                  Gerenciar Profissionais Clínicos
+                                </span>
+                                <span className="text-slate-500">
+                                  {roleHasByDefault
+                                    ? `Já incluído na função ${getRoleLabel(editRole)}.`
+                                    : 'Permite cadastrar, editar e ativar/desativar profissionais clínicos em Configurações → Profissionais, e vincular este ou outros membros da equipe ao roster usado em Procedimentos, Agenda e Nova Consulta.'}
                                 </span>
                               </span>
                             </label>

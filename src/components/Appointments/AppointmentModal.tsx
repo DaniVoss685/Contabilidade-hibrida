@@ -8,7 +8,7 @@ import { DatePicker, TimePicker, CustomSelect, ConfirmDialog, useToast, Currency
 import { formatDateBr } from '../../lib/masks';
 import { isValidBrazilianPhone, formatPhoneDisplay } from '../../lib/phoneUtils';
 import { DentalWhatsAppService } from '../../services/dentalWhatsAppService';
-import { findSchedulingConflict } from '../../lib/professionalScheduling';
+import { findSchedulingConflict, resolveEligibleProfessionals } from '../../lib/professionalScheduling';
 
 interface AppointmentModalProps {
   isOpen: boolean;
@@ -146,6 +146,16 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
       setErrors((prev) => ({ ...prev, professional: '' }));
     }
   };
+
+  // Profissionais habilitados a executar o procedimento selecionado (df_procedure_professionals) —
+  // sem vínculo configurado, todos os ativos continuam disponíveis. Aplica a restrição já existente
+  // em Procedimentos aqui, no momento de escolher o profissional responsável (antes, o select
+  // sempre mostrava todos os ativos da clínica, ignorando essa restrição).
+  const eligibleProfessionals = useMemo(() => {
+    if (!selectedProcedureId) return professionals;
+    const links = db.getProcedureProfessionalLinks()[selectedProcedureId] || [];
+    return resolveEligibleProfessionals(professionals, links);
+  }, [professionals, selectedProcedureId]);
 
   // Recalculate end time whenever startTime or duration changes
   useEffect(() => {
@@ -353,6 +363,27 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
     if (errors.procedure) {
       setErrors((prev) => ({ ...prev, procedure: '' }));
     }
+
+    // Reavalia o profissional responsável contra quem está habilitado a executar ESTE procedimento
+    // (df_procedure_professionals). Nunca mantém selecionado um profissional que não pode mais
+    // executar o procedimento recém-escolhido — ver PROF-06/gap de integração do relatório.
+    if (professionals.length > 0) {
+      const links = pId ? db.getProcedureProfessionalLinks()[pId] || [] : [];
+      const eligible = resolveEligibleProfessionals<ClinicalProfessional>(professionals, links);
+      const stillValid = eligible.some((p) => p.id === selectedProfessionalId);
+      if (!stillValid) {
+        if (eligible.length === 1) {
+          setSelectedProfessionalId(eligible[0].id);
+          setDentistName(eligible[0].name);
+        } else {
+          setSelectedProfessionalId('');
+          setDentistName('');
+        }
+        if (errors.professional) {
+          setErrors((prev) => ({ ...prev, professional: '' }));
+        }
+      }
+    }
   };
 
   const validate = (): boolean => {
@@ -369,7 +400,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
     if (!procedureName.trim()) {
       newErrors.procedure = 'Informe ou selecione o procedimento clínico.';
     }
-    if (professionals.length > 0 && !selectedProfessionalId) {
+    if (eligibleProfessionals.length > 0 && !selectedProfessionalId) {
       newErrors.professional = 'Selecione o profissional responsável pelo atendimento.';
     }
     if (conflictAppointment) {
@@ -569,8 +600,9 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
         { value: '', label: 'Nenhum procedimento cadastrado' },
       ];
 
-  // Professional options for CustomSelect (roster clínico real — value é o id, não o nome)
-  const professionalOptions = professionals.map((p) => ({
+  // Professional options for CustomSelect (roster clínico real — value é o id, não o nome).
+  // Restrito aos profissionais habilitados para o procedimento selecionado (eligibleProfessionals).
+  const professionalOptions = eligibleProfessionals.map((p) => ({
     value: p.id,
     label: p.cro ? `${p.name} (CRO-${p.croUf || 'SP'} ${p.cro})` : p.name,
     description: p.especialidade || 'Cirurgião-Dentista',
@@ -859,7 +891,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
             {/* Professional (Controlled Selection) & WhatsApp Reminder */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
               <div>
-                {professionals.length > 1 ? (
+                {eligibleProfessionals.length > 1 ? (
                   <>
                     <CustomSelect
                       label="Profissional Responsável"
@@ -873,7 +905,7 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                     />
                     {errors.professional && <p className="mt-1 text-xs text-rose-500">{errors.professional}</p>}
                   </>
-                ) : professionals.length === 1 ? (
+                ) : eligibleProfessionals.length === 1 ? (
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                       Profissional Responsável
@@ -882,15 +914,20 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                       <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs">
                         Dr
                       </div>
-                      <span className="font-semibold">{professionals[0].name}</span>
-                      {professionals[0]?.cro && (
+                      <span className="font-semibold">{eligibleProfessionals[0].name}</span>
+                      {eligibleProfessionals[0]?.cro && (
                         <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-600 ml-auto">
-                          CRO-{professionals[0].croUf} {professionals[0].cro}
+                          CRO-{eligibleProfessionals[0].croUf} {eligibleProfessionals[0].cro}
                         </span>
                       )}
                     </div>
+                    {professionals.length > 1 && (
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        Única profissional habilitada para este procedimento.
+                      </p>
+                    )}
                   </div>
-                ) : (
+                ) : professionals.length === 0 ? (
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                       Profissional Responsável
@@ -900,6 +937,18 @@ export const AppointmentModal: React.FC<AppointmentModalProps> = ({
                     </div>
                     <p className="mt-1 text-[11px] text-slate-400">
                       Cadastre a equipe clínica em Configurações para atribuir consultas por profissional.
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Profissional Responsável
+                    </label>
+                    <div className="flex items-center gap-2.5 px-3 py-2 text-sm border border-rose-200 rounded-xl bg-rose-50/60 text-rose-700 select-none">
+                      <span className="font-semibold">Nenhuma profissional habilitada</span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-rose-500">
+                      Nenhum profissional ativo está habilitado a executar este procedimento. Ajuste em Procedimentos → Profissionais habilitados a executar.
                     </p>
                   </div>
                 )}

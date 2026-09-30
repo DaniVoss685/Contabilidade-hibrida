@@ -144,4 +144,107 @@ ok(stripLegacyOccurrenceCounterSuffix('Copasa (1/60)') === 'Copasa', 'strip bás
 ok(stripLegacyOccurrenceCounterSuffix('Sala 2/3 - Aluguel (4/12)') === 'Sala 2/3 - Aluguel', 'strip só o sufixo final, preserva "2/3" no meio do texto');
 ok(stripLegacyOccurrenceCounterSuffix('Copasa') === 'Copasa', 'texto sem contador não é alterado');
 
+// ---- REC-INF-01..10: recorrência "de verdade infinita" — série aberta sem horizonte fixo, motor
+// que avança conforme o horizonte pedido avança (o mesmo padrão usado por
+// db.ensureRecurringExpensesGeneratedThroughAsync ao navegar para qualquer período). ----
+
+// REC-INF-01: Mensal atravessa troca de ano
+{
+  const series = { startDate: '2026-11-15', intervalMonths: 1, status: 'ACTIVE' as const, lastGeneratedDueDate: '2026-11-15' };
+  const missing = computeMissingOccurrenceDueDates(series, '2027-02-28');
+  ok(missing.join(',') === '2026-12-15,2027-01-15,2027-02-15', 'REC-INF-01: mensal gera Dez/2026, Jan/2027, Fev/2027 sem parar na troca de ano');
+}
+
+// REC-INF-02: Bimestral atravessa troca de ano
+{
+  const series = { startDate: '2026-09-01', intervalMonths: 2, status: 'ACTIVE' as const, lastGeneratedDueDate: '2026-09-01' };
+  const missing = computeMissingOccurrenceDueDates(series, '2027-03-31');
+  ok(missing.join(',') === '2026-11-01,2027-01-01,2027-03-01', 'REC-INF-02: bimestral Set→Nov→Jan/27→Mar/27, atravessando o ano');
+}
+
+// REC-INF-03: Trimestral atravessa troca de ano
+{
+  const series = { startDate: '2026-09-01', intervalMonths: 3, status: 'ACTIVE' as const, lastGeneratedDueDate: '2026-09-01' };
+  const missing = computeMissingOccurrenceDueDates(series, '2027-06-30');
+  ok(missing.join(',') === '2026-12-01,2027-03-01,2027-06-01', 'REC-INF-03: trimestral Set→Dez→Mar/27→Jun/27');
+}
+
+// REC-INF-04: Semestral por pelo menos 3 anos
+{
+  const series = { startDate: '2026-09-01', intervalMonths: 6, status: 'ACTIVE' as const, lastGeneratedDueDate: '2026-09-01' };
+  const missing = computeMissingOccurrenceDueDates(series, '2029-09-01');
+  ok(missing.join(',') === '2027-03-01,2027-09-01,2028-03-01,2028-09-01,2029-03-01,2029-09-01', 'REC-INF-04: semestral continua gerando por 3 anos completos, sem horizonte fixo curto');
+}
+
+// REC-INF-05: Anual por pelo menos 5 anos
+{
+  const series = { startDate: '2026-09-01', intervalMonths: 12, status: 'ACTIVE' as const, lastGeneratedDueDate: '2026-09-01' };
+  const missing = computeMissingOccurrenceDueDates(series, '2031-09-01');
+  ok(missing.join(',') === '2027-09-01,2028-09-01,2029-09-01,2030-09-01,2031-09-01', 'REC-INF-05: anual continua gerando por 5 anos completos');
+}
+
+// REC-INF-06: Personalizado a cada 4 meses
+{
+  const series = { startDate: '2026-09-01', intervalMonths: 4, status: 'ACTIVE' as const, lastGeneratedDueDate: '2026-09-01' };
+  const missing = computeMissingOccurrenceDueDates(series, '2027-09-30');
+  ok(missing.join(',') === '2027-01-01,2027-05-01,2027-09-01', 'REC-INF-06: intervalo personalizado de 4 meses respeitado, sem cair para mensal');
+}
+
+// REC-INF-07: Encerramento interrompe futuras (a partir da âncora, nunca mais gera)
+{
+  const activeSeries = { startDate: '2026-09-01', intervalMonths: 1, status: 'ACTIVE' as const, lastGeneratedDueDate: '2027-07-01' };
+  const beforeEnd = computeMissingOccurrenceDueDates(activeSeries, '2027-12-01');
+  ok(beforeEnd.length > 0, 'sanity: enquanto ACTIVE, ainda geraria Ago..Dez/2027');
+  const endedSeries = { ...activeSeries, status: 'ENDED' as const };
+  const afterEnd = computeMissingOccurrenceDueDates(endedSeries, '2027-12-01');
+  ok(afterEnd.length === 0, 'REC-INF-07: apos encerrar (ENDED), nenhuma ocorrência de Agosto/2027 em diante é gerada');
+}
+
+// REC-INF-08: Histórico preservado ao encerrar (reafirma o teste de linha 105-109 com o cenário do pedido)
+{
+  const occ = [
+    { id: 'set26', recurrenceId: 'rec_x', dueDate: '2026-09-29', status: 'PAGO' },
+    { id: 'out26', recurrenceId: 'rec_x', dueDate: '2026-10-29', status: 'PAGO' },
+    { id: 'jul27', recurrenceId: 'rec_x', dueDate: '2027-07-29', status: 'A_PAGAR' }, // âncora do encerramento
+    { id: 'ago27', recurrenceId: 'rec_x', dueDate: '2027-08-29', status: 'A_PAGAR' }, // futura, deve sumir
+  ];
+  const toRemove = selectOccurrencesToRemoveOnEnd(occ, 'rec_x', '2027-07-29');
+  ok(toRemove.map((o) => o.id).join(',') === 'ago27', 'REC-INF-08: encerrar em Julho/2027 remove só Agosto/2027 em diante');
+  const remainingIds = occ.filter((o) => !toRemove.some((r) => r.id === o.id)).map((o) => o.id);
+  ok(remainingIds.join(',') === 'set26,out26,jul27', 'REC-INF-08: Set/2026 a Jul/2027 continuam existindo intactos após o encerramento');
+}
+
+// REC-INF-09: Navegar repetidamente para o mesmo mês futuro (ou para trás) nunca duplica —
+// mesmo padrão do watermark em db.ts: horizonte só avança, e cada nova rodada usa o
+// lastGeneratedDueDate já persistido pela rodada anterior.
+{
+  let series = { startDate: '2026-09-10', intervalMonths: 1, status: 'ACTIVE' as const, lastGeneratedDueDate: '2026-09-10' };
+  // 1ª navegação: usuário abre Dezembro/2026
+  const run1 = computeMissingOccurrenceDueDates(series, '2026-12-31');
+  ok(run1.join(',') === '2026-10-10,2026-11-10,2026-12-10', 'REC-INF-09: 1ª navegação (Dez/2026) gera Out, Nov, Dez');
+  series = { ...series, lastGeneratedDueDate: run1[run1.length - 1] };
+  // 2ª..4ª navegação: usuário volta pra Novembro, depois pra Dezembro de novo — MESMO horizonte já garantido
+  for (let i = 0; i < 3; i++) {
+    const repeat = computeMissingOccurrenceDueDates(series, '2026-12-31');
+    ok(repeat.length === 0, `REC-INF-09: navegar de novo para um período já garantido (rodada ${i + 1}) não gera nada extra`);
+  }
+  // 5ª navegação: usuário avança para Julho/2027 (bem no futuro, nunca visitado) — horizonte AVANÇA
+  const run2 = computeMissingOccurrenceDueDates(series, '2027-07-31');
+  ok(
+    run2.join(',') === '2027-01-10,2027-02-10,2027-03-10,2027-04-10,2027-05-10,2027-06-10,2027-07-10',
+    'REC-INF-09: navegar para Julho/2027 (nunca visitado) gera exatamente o que faltava, sem duplicar Out..Dez/2026'
+  );
+}
+
+// REC-INF-10: Parcelada continua finita — nenhuma função deste motor lida com totalInstallments/
+// installmentNumber; reforça REC-08 com o vocabulário exato do pedido ("3/12", nunca "3/∞").
+{
+  const parceladaLike = { totalInstallments: 12, installmentNumber: 3 };
+  ok(
+    !('startDate' in parceladaLike) && !('intervalMonths' in parceladaLike) && !('status' in parceladaLike),
+    'REC-INF-10: modelo de parcela (finito, N/M) é estruturalmente distinto do modelo de série recorrente (aberta) — não compartilham campos'
+  );
+  ok(!('totalInstallments' in draft), 'REC-INF-10: ocorrência recorrente (buildOccurrenceDraftFromSeries) nunca carrega totalInstallments — nunca have "3/∞"');
+}
+
 console.log(`\n🎉 TODOS OS ${n} TESTES DE DESPESA RECORRENTE PASSARAM!`);

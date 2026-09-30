@@ -4,6 +4,7 @@ import { db } from '../../lib/db';
 import { hasPermission } from '../../lib/permissions';
 import { ClinicalProfessional } from '../../types';
 import { useToast } from '../UI';
+import { DentalTeamService, TeamMember } from '../../services/dentalTeamService';
 
 /**
  * Equipe de profissionais CLÍNICOS (dentistas/atendentes) — distinto do cadastro fiscal único da
@@ -25,9 +26,20 @@ export const ProfessionalsRosterCard: React.FC<{ onSaved?: () => void }> = ({ on
   const [croUf, setCroUf] = useState('');
   const [especialidade, setEspecialidade] = useState('');
   const [color, setColor] = useState('#0d9488');
+  const [linkedUserId, setLinkedUserId] = useState<string>('');
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [saving, setSaving] = useState(false);
 
   React.useEffect(() => db.subscribe(() => setProfessionals(db.getClinicalProfessionals())), []);
+
+  // Membros da equipe (df_users) disponíveis para vincular a um profissional clínico — vale para
+  // qualquer clínica: quem vai aparecer aqui depende só de quem está cadastrado em Equipe & Acessos,
+  // nunca de um nome/função fixo (dentista, esteticista, harmonizador etc. todos servem).
+  React.useEffect(() => {
+    const tenantId = db.getActiveTenantId();
+    if (!tenantId) return;
+    DentalTeamService.listMembers(tenantId).then(setTeamMembers).catch(() => setTeamMembers([]));
+  }, []);
 
   if (!canManage) return null;
 
@@ -38,6 +50,7 @@ export const ProfessionalsRosterCard: React.FC<{ onSaved?: () => void }> = ({ on
     setCroUf('');
     setEspecialidade('');
     setColor('#0d9488');
+    setLinkedUserId('');
     setIsCreating(true);
   };
 
@@ -48,8 +61,15 @@ export const ProfessionalsRosterCard: React.FC<{ onSaved?: () => void }> = ({ on
     setCroUf(p.croUf || '');
     setEspecialidade(p.especialidade || '');
     setColor(p.color || '#0d9488');
+    setLinkedUserId(p.userId || '');
     setIsCreating(true);
   };
+
+  // Um usuário (df_user) só pode estar vinculado a UM profissional clínico por vez — some da lista
+  // de opções para quem já está vinculado a OUTRO profissional, mas mantém a opção atual ao editar.
+  const availableTeamMembers = teamMembers.filter(
+    (m) => m.is_active && (!professionals.some((p) => p.userId === m.id && p.id !== editing?.id))
+  );
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -66,6 +86,7 @@ export const ProfessionalsRosterCard: React.FC<{ onSaved?: () => void }> = ({ on
         especialidade: especialidade.trim() || null,
         color: color || null,
         isActive: editing?.isActive ?? true,
+        userId: linkedUserId || null,
       });
       if (!saved) {
         toast.error('Não foi possível salvar a profissional.');
@@ -130,6 +151,15 @@ export const ProfessionalsRosterCard: React.FC<{ onSaved?: () => void }> = ({ on
                   </p>
                   <p className="text-[11px] text-slate-400 truncate">
                     {[p.cro ? `CRO-${p.croUf || 'SP'} ${p.cro}` : null, p.especialidade].filter(Boolean).join(' • ') || 'Sem CRO/especialidade informados'}
+                  </p>
+                  <p className="text-[11px] truncate mt-0.5">
+                    {p.userId ? (
+                      <span className="text-teal-600 font-medium">
+                        Login vinculado: {teamMembers.find((m) => m.id === p.userId)?.name || 'usuário da equipe'}
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">Sem login próprio vinculado</span>
+                    )}
                   </p>
                 </div>
               </div>
@@ -215,6 +245,27 @@ export const ProfessionalsRosterCard: React.FC<{ onSaved?: () => void }> = ({ on
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Cor na agenda</label>
                 <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="w-14 h-9 rounded-lg border border-slate-200 cursor-pointer" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Vincular a um usuário do sistema (opcional)</label>
+                <select
+                  value={linkedUserId}
+                  onChange={(e) => setLinkedUserId(e.target.value)}
+                  className="w-full text-sm rounded-xl border border-slate-200 px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 bg-white"
+                >
+                  <option value="">— Nenhum (profissional sem login próprio) —</option>
+                  {availableTeamMembers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.email})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  Quando este membro da equipe fizer login, o sistema vai reconhecê-lo como esta
+                  profissional (pré-seleção automática em Nova Consulta/Prontuário, saudação
+                  personalizada e "Minhas consultas" na Agenda). Deixe em branco se ela não tiver
+                  login próprio.
+                </p>
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-slate-100 flex-shrink-0 bg-white">
