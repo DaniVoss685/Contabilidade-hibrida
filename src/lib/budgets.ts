@@ -2,7 +2,7 @@
 // fiscal ou de estoque; só decide valores/status do próprio documento. A conversão em venda é uma
 // ação SEPARADA e explícita do usuário (abre Nova Receita pré-preenchida) — nunca automática.
 
-import { BudgetItem, BudgetStatus } from '../types';
+import { BudgetItem, BudgetStatus, DentalProcedure } from '../types';
 
 export interface BudgetTotals {
   subtotal: number;
@@ -90,6 +90,34 @@ export function summarizeBudgetItemNames(items: Pick<BudgetItem, 'procedureName'
     : names.length <= 3
     ? names.join(' + ')
     : `${names.slice(0, 2).join(' + ')} + ${names.length - 2} outro(s)`;
+}
+
+/**
+ * Resolve o procedimento de catálogo representado pelo orçamento quando todos os itens apontam
+ * para o mesmo procedimento. Primeiro usa o ID persistido; em orçamentos legados sem ID, tenta
+ * uma correspondência exata e sem distinção entre maiúsculas/minúsculas pelo nome.
+ * Orçamentos com procedimentos distintos não podem ser vinculados a um único Sale.procedureId.
+ */
+export function resolveBudgetCatalogProcedure(
+  items: Pick<BudgetItem, 'procedureId' | 'procedureName'>[],
+  procedures: DentalProcedure[]
+): DentalProcedure | undefined {
+  if (items.length === 0) return undefined;
+
+  const matches = items.map((item) => {
+    const byId = item.procedureId
+      ? procedures.find((procedure) => procedure.id === item.procedureId)
+      : undefined;
+    if (byId) return byId;
+
+    const normalizedName = item.procedureName.trim().toLocaleLowerCase();
+    return normalizedName
+      ? procedures.find((procedure) => procedure.name.trim().toLocaleLowerCase() === normalizedName)
+      : undefined;
+  });
+
+  const first = matches[0];
+  return first && matches.every((procedure) => procedure?.id === first.id) ? first : undefined;
 }
 
 export function buildSaleDraftFromBudget(budget: {

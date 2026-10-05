@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { resolveBudgetCatalogProcedure } from '../../lib/budgets';
 import {
   X,
   User,
@@ -346,9 +347,10 @@ export const NewSaleModal: React.FC<NewSaleModalProps> = ({
       resetForm();
       if (initialBudget && initialBudget.items.length > 0) {
         const draft = buildSaleDraftFromBudget(initialBudget);
-        setSelectedProcedureId('CUSTOM');
-        setIsCustomProcedure(true);
-        setProcedureName(draft.procedureName);
+        const catalogProcedure = resolveBudgetCatalogProcedure(initialBudget.items, procedures);
+        setSelectedProcedureId(catalogProcedure?.id || 'CUSTOM');
+        setIsCustomProcedure(!catalogProcedure);
+        setProcedureName(catalogProcedure?.name || draft.procedureName);
         setDescription(draft.notes);
         setTotalValue(draft.totalValue);
       }

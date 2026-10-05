@@ -11,6 +11,7 @@ import {
   isPastValidity,
   buildSaleDraftFromBudget,
   summarizeBudgetItemNames,
+  resolveBudgetCatalogProcedure,
 } from '../../src/lib/budgets';
 import { getBudgetDisplayCode } from '../../src/lib/budgetPdf';
 
@@ -105,6 +106,33 @@ console.log('\n=== buildSaleDraftFromBudget: 1 item só vira frase curta, muitos
   });
   assert(manyItems.notes.length < 200, 'com muitos itens de nomes longos, a descrição resume (não vira um bloco de texto gigante)');
   assert(manyItems.notes.includes('8'), 'resumo cita a quantidade de procedimentos quando não cabe listar todos');
+}
+
+console.log('\n=== conversão de orçamento: mantém o procedimento do catálogo ===');
+{
+  const procedure = { id: 'proc-restauracao', name: 'Restauração', active: true } as any;
+  const otherProcedure = { id: 'proc-limpeza', name: 'Limpeza', active: true } as any;
+  assert(
+    resolveBudgetCatalogProcedure(
+      [{ procedureId: 'proc-restauracao', procedureName: 'Restauração' }],
+      [procedure]
+    )?.id === 'proc-restauracao',
+    'item com procedureId seleciona o registro existente no catálogo'
+  );
+  assert(
+    resolveBudgetCatalogProcedure([{ procedureName: 'restauração' }], [procedure])?.id === 'proc-restauracao',
+    'orçamento legado sem ID encontra correspondência exata pelo nome'
+  );
+  assert(
+    resolveBudgetCatalogProcedure(
+      [
+        { procedureId: 'proc-restauracao', procedureName: 'Restauração' },
+        { procedureId: 'proc-limpeza', procedureName: 'Limpeza' },
+      ],
+      [procedure, otherProcedure]
+    ) === undefined,
+    'itens de procedimentos distintos não são forçados para um procedimento único'
+  );
 }
 
 console.log('\n=== CRIAÇÃO: orçamento NUNCA gera efeito financeiro/fiscal/estoque ===');
