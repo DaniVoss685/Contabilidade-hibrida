@@ -128,6 +128,7 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
   const [selectedRecordForDetails, setSelectedRecordForDetails] = useState<ClinicalRecord | null>(null);
   const [recordForAmendment, setRecordForAmendment] = useState<ClinicalRecord | null>(null);
   const [recordForVoid, setRecordForVoid] = useState<ClinicalRecord | null>(null);
+  const [clinicalVoidInitialReason, setClinicalVoidInitialReason] = useState('');
   const [recordForDeleteDraft, setRecordForDeleteDraft] = useState<ClinicalRecord | null>(null);
 
   // Modais de Importação e Exportação
@@ -1016,7 +1017,11 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
                   onFinalizeRecord={handleFinalizeRecord}
                   onDeleteDraftRecord={(rec) => setRecordForDeleteDraft(rec)}
                   onOpenAmendmentModal={(rec) => setRecordForAmendment(rec)}
-                  onOpenVoidModal={(rec) => setRecordForVoid(rec)}
+                  onOpenVoidModal={(rec, reason) => {
+                    setClinicalVoidInitialReason(reason || '');
+                    setRecordForVoid(rec);
+                  }}
+                  onDuplicateReviewSaved={() => setRefreshKey((k) => k + 1)}
                   onFollowUpRecord={(rec) => {
                     setEditingClinicalRecord(null);
                     setContinuationClinicalRecord(rec);
@@ -1536,11 +1541,16 @@ export const PatientsView: React.FC<PatientsViewProps> = ({
       {/* Modal para Invalidação Segura de Registro Clínico */}
       <ClinicalVoidModal
         isOpen={Boolean(recordForVoid)}
-        onClose={() => setRecordForVoid(null)}
+        onClose={() => {
+          setRecordForVoid(null);
+          setClinicalVoidInitialReason('');
+        }}
         record={recordForVoid}
+        initialReason={clinicalVoidInitialReason}
         onVoided={() => {
           setRefreshKey((k) => k + 1);
           setRecordForVoid(null);
+          setClinicalVoidInitialReason('');
           toast.success('Registro clínico invalidado.');
         }}
       />

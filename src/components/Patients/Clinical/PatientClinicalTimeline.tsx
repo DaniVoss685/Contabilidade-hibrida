@@ -29,13 +29,18 @@ import {
   Sparkles,
   MoreHorizontal,
   AlertOctagon,
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   Loader2,
   Archive,
+  Check,
 } from 'lucide-react';
 import { printClinicalDossier } from '../../../lib/clinicalPdfService';
 import { db } from '../../../lib/db';
 import { CustomSelect, SelectOption } from '../../UI/CustomSelect';
 import { useResolvedFileUrl, isImageFile, resolvePrivateFileUrl } from '../../../lib/storageService';
+import { findPossibleClinicalDuplicates } from '../../../lib/clinicalRecordDuplicates';
 
 interface PatientClinicalTimelineProps {
   patient: Patient;
@@ -46,7 +51,8 @@ interface PatientClinicalTimelineProps {
   onFinalizeRecord: (recordId: string) => void;
   onDeleteDraftRecord: (record: ClinicalRecord) => void;
   onOpenAmendmentModal: (record: ClinicalRecord) => void;
-  onOpenVoidModal?: (record: ClinicalRecord) => void;
+  onOpenVoidModal?: (record: ClinicalRecord, initialReason?: string) => void;
+  onDuplicateReviewSaved?: () => void;
   onFollowUpRecord?: (record: ClinicalRecord) => void;
   onSelectRecordDetails?: (record: ClinicalRecord) => void;
 }
@@ -77,6 +83,11 @@ const SORT_OPTIONS: SelectOption[] = [
   { value: 'asc', label: 'Mais Antigos' },
 ];
 
+const formatLegacySourceDate = (value?: string) => {
+  if (!value) return '';
+  return value.replace(/^(\d{2}\/\d{2}\/\d{4}) 00:00:00$/, '$1');
+};
+
 export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = ({
   patient,
   records,
@@ -87,6 +98,7 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
   onDeleteDraftRecord,
   onOpenAmendmentModal,
   onOpenVoidModal,
+  onDuplicateReviewSaved,
   onFollowUpRecord,
   onSelectRecordDetails,
 }) => {
@@ -96,6 +108,27 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [expandedRecordIds, setExpandedRecordIds] = useState<Record<string, boolean>>({});
   const [openMenuRecordId, setOpenMenuRecordId] = useState<string | null>(null);
+  const [reviewingDuplicateGroupId, setReviewingDuplicateGroupId] = useState<string | null>(null);
+  const [duplicateReviewError, setDuplicateReviewError] = useState<string | null>(null);
+  const possibleDuplicates = useMemo(() => findPossibleClinicalDuplicates(records), [records]);
+  const duplicateGroupCount = new Set([...possibleDuplicates.values()]
+    .filter((duplicate) => !duplicate.reviewStatus)
+    .map((duplicate) => duplicate.groupId)).size;
+
+  const handleDuplicateReview = async (groupId: string, status: 'CONFIRMED_DUPLICATE' | 'DISTINCT_RECORDS') => {
+    const groupRecordIds = records
+      .filter((record) => possibleDuplicates.get(record.id)?.groupId === groupId)
+      .map((record) => record.id);
+    setReviewingDuplicateGroupId(groupId);
+    setDuplicateReviewError(null);
+    const result = await db.reviewImportedClinicalDuplicateGroup(groupRecordIds, groupId, status);
+    setReviewingDuplicateGroupId(null);
+    if (!result.success) {
+      setDuplicateReviewError(result.error || 'Não foi possível salvar a revisão.');
+      return;
+    }
+    onDuplicateReviewSaved?.();
+  };
 
   const toggleExpand = (id: string) => {
     setExpandedRecordIds((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -145,11 +178,19 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
     list.sort((a, b) => {
       const dateA = a.recordDate + (a.recordTime || '00:00');
       const dateB = b.recordDate + (b.recordTime || '00:00');
-      return sortOrder === 'desc' ? dateB.localeCompare(dateA) : dateA.localeCompare(dateB);
+      const dateOrder = sortOrder === 'desc' ? dateB.localeCompare(dateA) : dateA.localeCompare(dateB);
+      if (dateOrder) return dateOrder;
+
+      const duplicateA = possibleDuplicates.get(a.id);
+      const duplicateB = possibleDuplicates.get(b.id);
+      const groupA = duplicateA?.groupId || `record:${a.id}`;
+      const groupB = duplicateB?.groupId || `record:${b.id}`;
+      const groupOrder = groupA.localeCompare(groupB);
+      return groupOrder || (duplicateA?.position || 0) - (duplicateB?.position || 0);
     });
 
     return list;
-  }, [records, searchTerm, selectedType, selectedPeriod, sortOrder]);
+  }, [records, searchTerm, selectedType, selectedPeriod, sortOrder, possibleDuplicates]);
 
   const handlePrint = () => {
     printClinicalDossier({
@@ -253,6 +294,16 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
         </div>
       </div>
 
+      {duplicateGroupCount > 0 && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-amber-950" role="status" data-testid="clinical-duplicate-review-banner">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-700" />
+          <div className="text-xs leading-relaxed">
+            <p className="font-bold">{duplicateGroupCount} grupo(s) com possíveis procedimentos duplicados</p>
+            <p className="text-amber-800">Os procedimentos com os mesmos dados estão conectados para conferência. A especialidade e os dados clínicos da planilha foram preservados; nenhum registro foi excluído ou mesclado.</p>
+          </div>
+        </div>
+      )}
+
       {/* Lista da Linha do Tempo */}
       {filteredRecords.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-16 text-center shadow-2xs">
@@ -276,7 +327,7 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
         </div>
       ) : (
         <div className="relative pl-7 space-y-6 before:absolute before:left-3 before:top-4 before:bottom-4 before:w-0.5 before:bg-slate-200">
-          {filteredRecords.map((record) => {
+          {filteredRecords.map((record, recordIndex) => {
             const isDraft = record.status === 'DRAFT';
             const isAmended = record.status === 'AMENDED';
             const isVoided = record.status === 'VOIDED';
@@ -292,9 +343,20 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
 
             // Anexos vinculados a este registro específico
             const recordAttachments = attachments.filter((a) => a.clinicalRecordId === record.id);
+            const duplicateInfo = possibleDuplicates.get(record.id);
+            const nextDuplicateInfo = filteredRecords[recordIndex + 1]
+              ? possibleDuplicates.get(filteredRecords[recordIndex + 1].id)
+              : undefined;
+            const connectsToNextDuplicate = Boolean(
+              duplicateInfo && duplicateInfo.reviewStatus !== 'DISTINCT_RECORDS' &&
+              nextDuplicateInfo?.groupId === duplicateInfo.groupId && nextDuplicateInfo.reviewStatus !== 'DISTINCT_RECORDS'
+            );
 
             return (
               <div key={record.id} className="relative group">
+                {connectsToNextDuplicate && (
+                  <span aria-hidden="true" className="absolute -left-[20px] top-10 bottom-[-3.375rem] z-0 border-l-2 border-dashed border-amber-400" data-testid="clinical-duplicate-connector" />
+                )}
                 {/* Marcador na Linha do Tempo */}
                 <div
                   className={`absolute -left-[29px] top-5 w-5 h-5 rounded-full border-2 bg-white flex items-center justify-center shadow-2xs ${
@@ -304,20 +366,22 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
                       ? 'border-amber-500 text-amber-500'
                       : isAmended
                       ? 'border-indigo-500 text-indigo-500'
+                      : duplicateInfo
+                      ? 'border-amber-500 text-amber-600'
                       : 'border-teal-600 text-teal-600'
                   }`}
                 >
-                  <div
-                    className={`w-2 h-2 rounded-full ${
-                      isVoided
-                        ? 'bg-rose-500'
-                        : isDraft
-                        ? 'bg-amber-500'
-                        : isAmended
-                        ? 'bg-indigo-500'
-                        : 'bg-teal-600'
-                    }`}
-                  />
+                  <div className="flex items-center justify-center">
+                    {duplicateInfo && duplicateInfo.reviewStatus !== 'DISTINCT_RECORDS' ? (
+                      duplicateInfo.position === duplicateInfo.count
+                        ? <ArrowUp className="w-3 h-3 text-amber-600" aria-hidden="true" />
+                        : <ArrowDown className="w-3 h-3 text-amber-600" aria-hidden="true" />
+                    ) : (
+                      <div className={`w-2 h-2 rounded-full ${
+                        isVoided ? 'bg-rose-500' : isDraft ? 'bg-amber-500' : isAmended ? 'bg-indigo-500' : 'bg-teal-600'
+                      }`} />
+                    )}
+                  </div>
                 </div>
 
                 {/* Card de Evolução Refinado */}
@@ -383,6 +447,27 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
                         </span>
                       )}
 
+                      {record.origin === 'IMPORT' && record.importMetadata?.specialty && (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg border border-indigo-100 bg-indigo-50 text-indigo-800 text-[10px] font-semibold">
+                          Especialidade: {record.importMetadata.specialty}
+                        </span>
+                      )}
+
+                      {duplicateInfo && (
+                        <span
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold border ${duplicateInfo.reviewStatus === 'CONFIRMED_DUPLICATE' ? 'bg-rose-50 text-rose-800 border-rose-200' : duplicateInfo.reviewStatus === 'DISTINCT_RECORDS' ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}
+                          title="Conectado aos demais registros deste grupo para conferência. Nenhum registro foi mesclado ou excluído."
+                          data-testid="possible-clinical-duplicate"
+                        >
+                          {duplicateInfo.reviewStatus === 'CONFIRMED_DUPLICATE' ? <Check className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                          {duplicateInfo.reviewStatus === 'CONFIRMED_DUPLICATE'
+                            ? `Duplicidade confirmada (${duplicateInfo.position}/${duplicateInfo.count})`
+                            : duplicateInfo.reviewStatus === 'DISTINCT_RECORDS'
+                              ? `Revisado: registros distintos (${duplicateInfo.position}/${duplicateInfo.count})`
+                              : `Possível duplicidade (${duplicateInfo.position}/${duplicateInfo.count})`}
+                        </span>
+                      )}
+
                       {record.continuationOfRecordId && (
                         <span
                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-teal-50 text-teal-800 border border-teal-200"
@@ -401,7 +486,9 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
                     <div className="flex items-center gap-3.5 text-xs text-slate-500">
                       <div className="flex items-center gap-1.5 font-semibold text-slate-700">
                         <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                        {record.recordDate.split('-').reverse().join('/')}
+                        {record.origin === 'IMPORT' && record.importMetadata?.dateSource === 'data_emissao'
+                          ? `Guia emitida ${record.recordDate.split('-').reverse().join('/')}`
+                          : record.recordDate.split('-').reverse().join('/')}
                       </div>
 
                       {record.recordTime && (
@@ -421,6 +508,26 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
                       </button>
                     </div>
                   </div>
+
+                  {duplicateInfo?.position === 1 && (
+                    <div className={`px-5 py-3 border-b ${duplicateInfo.reviewStatus === 'CONFIRMED_DUPLICATE' ? 'bg-rose-50/70 border-rose-100' : duplicateInfo.reviewStatus === 'DISTINCT_RECORDS' ? 'bg-slate-50 border-slate-100' : 'bg-amber-50/60 border-amber-100'}`} data-testid="clinical-duplicate-review-actions">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="text-xs text-slate-700">
+                          <strong>{duplicateInfo.reviewStatus === 'CONFIRMED_DUPLICATE' ? 'Grupo confirmado como duplicado.' : duplicateInfo.reviewStatus === 'DISTINCT_RECORDS' ? 'Grupo revisado: os registros são distintos.' : 'Confira os dados antes de classificar este grupo.'}</strong>
+                          <span className="ml-1">A classificação fica salva no prontuário; nada é removido automaticamente.</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" disabled={reviewingDuplicateGroupId === duplicateInfo.groupId} onClick={() => void handleDuplicateReview(duplicateInfo.groupId, 'CONFIRMED_DUPLICATE')} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50">
+                            <Check className="h-3.5 w-3.5" /> Confirmar duplicidade
+                          </button>
+                          <button type="button" disabled={reviewingDuplicateGroupId === duplicateInfo.groupId} onClick={() => void handleDuplicateReview(duplicateInfo.groupId, 'DISTINCT_RECORDS')} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50">
+                            <CheckCircle2 className="h-3.5 w-3.5" /> São registros distintos
+                          </button>
+                        </div>
+                      </div>
+                      {duplicateReviewError && <p role="alert" className="mt-2 text-[11px] font-medium text-rose-700">{duplicateReviewError}</p>}
+                    </div>
+                  )}
 
                   {/* Corpo do Registro com Espaçamento Amplo */}
                   <div className="p-5 sm:p-6 space-y-4">
@@ -472,6 +579,25 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
                         {record.evolution}
                       </div>
                     </div>
+
+                    {record.origin === 'IMPORT' && (
+                      <div className="flex flex-wrap gap-x-5 gap-y-2 rounded-xl border border-slate-100 bg-white px-4 py-3 text-[11px] text-slate-600" data-testid="legacy-record-source-details">
+                        {record.importMetadata?.specialty && <span><strong className="text-slate-700">Especialidade:</strong> {record.importMetadata.specialty}</span>}
+                        {record.legacyTussCode && <span><strong className="text-slate-700">TUSS:</strong> {record.legacyTussCode}</span>}
+                        {record.toothNumber && <span><strong className="text-slate-700">Dente/região:</strong> {record.toothNumber}</span>}
+                        {record.toothFace && <span><strong className="text-slate-700">Face:</strong> {record.toothFace}</span>}
+                        {record.importMetadata?.emittedAt && <span><strong className="text-slate-700">Emissão:</strong> {formatLegacySourceDate(record.importMetadata.emittedAt)}</span>}
+                        {record.importMetadata?.performedAt && <span><strong className="text-slate-700">Realização:</strong> {formatLegacySourceDate(record.importMetadata.performedAt)}</span>}
+                        {record.importMetadata?.realizationLaunchedAt && <span><strong className="text-slate-700">Lançamento:</strong> {record.importMetadata.realizationLaunchedAt}</span>}
+                        {record.importMetadata?.finalizedByName && <span><strong className="text-slate-700">Finalizado por:</strong> {record.importMetadata.finalizedByName}</span>}
+                        {record.importMetadata?.guideDescription && record.importMetadata.guideDescription !== record.procedureName && (
+                          <span><strong className="text-slate-700">Descrição da guia:</strong> {record.importMetadata.guideDescription}</span>
+                        )}
+                        {record.importMetadata?.proceduresText && record.importMetadata.proceduresText !== record.evolution && (
+                          <span className="basis-full"><strong className="text-slate-700">Procedimentos informados:</strong> {record.importMetadata.proceduresText}</span>
+                        )}
+                      </div>
+                    )}
 
                     {isExpanded && (
                       <>
@@ -655,6 +781,12 @@ export const PatientClinicalTimeline: React.FC<PatientClinicalTimelineProps> = (
                             </button>
                           )}
 
+                          {duplicateInfo?.reviewStatus === 'CONFIRMED_DUPLICATE' && onOpenVoidModal && (
+                            <button type="button" onClick={() => onOpenVoidModal(record, 'Duplicado confirmado após revisão do prontuário legado.')} className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100" title="Invalidar este registro preservando o motivo na auditoria">
+                              <AlertOctagon className="h-3.5 w-3.5" /> Invalidar como duplicado
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             onClick={() => onOpenAmendmentModal(record)}
@@ -766,4 +898,3 @@ const TimelineAttachmentChip: React.FC<{ att: ClinicalAttachment }> = ({ att }) 
     </a>
   );
 };
-

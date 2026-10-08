@@ -3189,6 +3189,63 @@ export class DentalFinanceDB {
       .sort((a, b) => b.recordDate.localeCompare(a.recordDate));
   }
 
+  public async reloadClinicalRecordsAsync(): Promise<{ success: boolean; error?: string }> {
+    const tenantId = this.activeTenantId;
+    if (!tenantId || this.isDemoMode || tenantId === 'tenant_demo') return { success: true };
+
+    const result = await SupabaseService.getClinicalRecords(tenantId);
+    if (result.error) return { success: false, error: result.error };
+    if (this.activeTenantId !== tenantId) return { success: false, error: 'A clínica ativa foi alterada.' };
+
+    this.clinicalRecords = result.data;
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, tenantId);
+    this.notify();
+    return { success: true };
+  }
+
+  public async reviewImportedClinicalDuplicateGroup(
+    recordIds: string[],
+    groupId: string,
+    status: 'CONFIRMED_DUPLICATE' | 'DISTINCT_RECORDS'
+  ): Promise<{ success: boolean; error?: string }> {
+    const uniqueIds = [...new Set(recordIds)];
+    const group = uniqueIds.map((id) => (this.clinicalRecords || []).find((record) => record.id === id));
+    if (group.length < 2 || group.some((record) => !record || record.origin !== 'IMPORT' || record.status === 'VOIDED')) {
+      return { success: false, error: 'O grupo de procedimentos mudou. Atualize o prontuário e tente novamente.' };
+    }
+
+    const now = new Date().toISOString();
+    const review = {
+      groupId,
+      status,
+      reviewedAt: now,
+      reviewedBy: this.currentSession?.user?.name || this.professional?.name || 'Profissional',
+    };
+    const updates = group.map((record) => ({
+      id: record!.id,
+      importMetadata: { ...(record!.importMetadata || {}), duplicateReview: review },
+    }));
+
+    if (!this.isDemoMode && this.activeTenantId !== 'tenant_demo') {
+      const result = await SupabaseService.updateClinicalRecordImportMetadata(updates, this.activeTenantId);
+      if (!result.success) return { success: false, error: result.error || 'Não foi possível salvar a revisão do grupo.' };
+    }
+
+    const updateById = new Map(updates.map((update) => [update.id, update.importMetadata]));
+    this.clinicalRecords = (this.clinicalRecords || []).map((record) => updateById.has(record.id)
+      ? { ...record, importMetadata: updateById.get(record.id), updatedAt: now }
+      : record);
+    saveItem(STORAGE_KEYS.CLINICAL_RECORDS, this.clinicalRecords, this.activeTenantId);
+    this.log(
+      'CLINICAL_DUPLICATE_REVIEWED',
+      'CLINICAL_RECORD',
+      group[0]!.id,
+      `Grupo de ${group.length} procedimentos legado revisado como ${status === 'CONFIRMED_DUPLICATE' ? 'duplicidade confirmada' : 'registros distintos'}.`
+    );
+    this.notify();
+    return { success: true };
+  }
+
   public getClinicalRecordById(id: string): ClinicalRecord | undefined {
     return (this.clinicalRecords || []).find((r) => r.id === id);
   }

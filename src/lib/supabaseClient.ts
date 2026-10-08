@@ -2553,6 +2553,21 @@ export const SupabaseService = {
     return { success: !error, error: error || undefined };
   },
 
+  async updateClinicalRecordImportMetadata(
+    updates: Array<{ id: string; importMetadata: ClinicalRecord['importMetadata'] }>,
+    tenantId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    await this.ensureTenantExists(tenantId);
+    for (const update of updates) {
+      const { error } = await supabaseFetch(
+        `df_clinical_records?id=eq.${encodeURIComponent(update.id)}&tenant_id=eq.${encodeURIComponent(tenantId)}`,
+        { method: 'PATCH', body: { import_metadata: update.importMetadata || null, updated_at: new Date().toISOString() } }
+      );
+      if (error) return { success: false, error };
+    }
+    return { success: true };
+  },
+
   async finalizeClinicalRecord(
     recordId: string,
     finalizedBy: string,

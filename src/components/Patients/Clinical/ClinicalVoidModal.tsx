@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ClinicalRecord } from '../../../types';
 import { db } from '../../../lib/db';
 import { X, AlertOctagon, Ban } from 'lucide-react';
@@ -8,6 +8,7 @@ interface ClinicalVoidModalProps {
   onClose: () => void;
   record: ClinicalRecord | null;
   onVoided: () => void;
+  initialReason?: string;
 }
 
 export const ClinicalVoidModal: React.FC<ClinicalVoidModalProps> = ({
@@ -15,10 +16,18 @@ export const ClinicalVoidModal: React.FC<ClinicalVoidModalProps> = ({
   onClose,
   record,
   onVoided,
+  initialReason = '',
 }) => {
-  const [reason, setReason] = useState('');
+  const [reason, setReason] = useState(initialReason);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setReason(initialReason);
+      setErrorMessage(null);
+    }
+  }, [isOpen, initialReason, record?.id]);
 
   if (!isOpen || !record) return null;
 
