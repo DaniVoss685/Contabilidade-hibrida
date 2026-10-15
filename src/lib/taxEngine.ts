@@ -27,6 +27,8 @@ import {
 
 import { isTaxableForCarneLeao } from './fiscalClassification';
 import { getInstallmentGrossReceived } from './cardFees';
+import { calculateCarneLeaoMensal } from './carneLeaoCalculation';
+import { CARNE_LEAO_RULES_2026 } from './carneLeaoRules';
 
 export {
   getMinimumWageParameter,
@@ -131,19 +133,13 @@ export const DEFAULT_TAX_RULES_PF: Record<number, TaxRulesPf> = {
     ],
   },
   2026: {
-    year: 2026,
-    effectiveDate: '2026-01-01',
-    dependentDeductionMonthly: 189.59,
-    simplifiedDiscountLimitMonthly: 607.20,
-    descontoSimplificadoMensal: 607.20,
-    deducaoDependenteMensal: 189.59,
-    brackets: [
-      { min: 0, max: 2428.80, rate: 0.0, deduction: 0 },
-      { min: 2428.81, max: 2826.65, rate: 0.075, deduction: 182.16 },
-      { min: 2826.66, max: 3751.05, rate: 0.15, deduction: 394.16 },
-      { min: 3751.06, max: 4664.68, rate: 0.225, deduction: 675.49 },
-      { min: 4664.69, max: Infinity, rate: 0.275, deduction: 908.73 },
-    ],
+    year: CARNE_LEAO_RULES_2026.year,
+    effectiveDate: CARNE_LEAO_RULES_2026.effectiveDate,
+    dependentDeductionMonthly: CARNE_LEAO_RULES_2026.dependentDeductionMonthly,
+    simplifiedDiscountLimitMonthly: CARNE_LEAO_RULES_2026.simplifiedDiscountMonthly,
+    descontoSimplificadoMensal: CARNE_LEAO_RULES_2026.simplifiedDiscountMonthly,
+    deducaoDependenteMensal: CARNE_LEAO_RULES_2026.dependentDeductionMonthly,
+    brackets: CARNE_LEAO_RULES_2026.brackets.map((bracket) => ({ ...bracket })),
   },
   2027: {
     year: 2027,
@@ -214,225 +210,179 @@ export const DEFAULT_TAX_RULES_SIMPLES: Record<number, TaxRulesSimples> = {
 // 2. CPF TAX CALCULATION (CARNÊ-LEÃO / LIVRO CAIXA)
 // ==========================================
 
+interface CpfMonthlyCashData {
+  receivedGrossCpf: number;
+  projectedGrossCpf: number;
+  deductibleLivroCaixaPaid: number;
+  nonDeductiblePaid: number;
+  conditionalPaid: number;
+  deductibleLivroCaixaToPay: number;
+}
+
+function collectCpfMonthlyCashData(yearMonth: string, sales: Sale[], expenses: Expense[]): CpfMonthlyCashData {
+  const data: CpfMonthlyCashData = {
+    receivedGrossCpf: 0,
+    projectedGrossCpf: 0,
+    deductibleLivroCaixaPaid: 0,
+    nonDeductiblePaid: 0,
+    conditionalPaid: 0,
+    deductibleLivroCaixaToPay: 0,
+  };
+  for (const sale of sales) {
+    if (sale.taxOrigin !== 'CPF') continue;
+    for (const installment of sale.installments) {
+      if (!isTaxableForCarneLeao(installment.fiscalClassification, installment.documentRequested)) continue;
+      if (installment.status === 'RECEBIDO') {
+        if (installment.paymentDate?.startsWith(yearMonth)) {
+          const received = getInstallmentGrossReceived(installment);
+          data.receivedGrossCpf += received;
+          data.projectedGrossCpf += received;
+        }
+        continue;
+      }
+      if (installment.dueDate?.startsWith(yearMonth) && installment.status !== 'CANCELADO') {
+        data.projectedGrossCpf += installment.value;
+      }
+    }
+  }
+  for (const expense of expenses) {
+    if (expense.entity !== 'CPF' || expense.value <= 0) continue;
+    const isBookCashEligible =
+      expense.dedutivelLivroCaixaPf === 'SIM' || expense.dedutivelLivroCaixaPf === 'CONDICIONAL';
+    if (expense.status === 'PAGO' && expense.paymentDate?.startsWith(yearMonth)) {
+      if (expense.dedutivelLivroCaixaPf === 'SIM') data.deductibleLivroCaixaPaid += expense.value;
+      else if (expense.dedutivelLivroCaixaPf === 'CONDICIONAL') {
+        data.conditionalPaid += expense.value;
+        data.deductibleLivroCaixaPaid += expense.value;
+      } else data.nonDeductiblePaid += expense.value;
+    } else if (
+      expense.status !== 'PAGO' &&
+      expense.status !== 'CANCELADO' &&
+      expense.dueDate?.startsWith(yearMonth) &&
+      isBookCashEligible
+    ) {
+      data.deductibleLivroCaixaToPay += expense.value;
+    }
+  }
+  return data;
+}
+
+function getPfTaxRules(year: number, customRules?: TaxRulesPf): TaxRulesPf {
+  if (year === CARNE_LEAO_RULES_2026.year) return DEFAULT_TAX_RULES_PF[2026];
+  if (customRules && Array.isArray(customRules.brackets) && customRules.brackets.length > 0) return customRules;
+  return DEFAULT_TAX_RULES_PF[year] || DEFAULT_TAX_RULES_PF[2025];
+}
+
+function calculateCpfYearToMonth(
+  sales: Sale[],
+  expenses: Expense[],
+  yearMonth: string,
+  year: number,
+  customRules: TaxRulesPf | undefined,
+  dependentCount: number,
+  inssProprio: number
+) {
+  const targetMonth = Number(yearMonth.slice(5, 7));
+  const rules = getPfTaxRules(year, customRules);
+  const dependentDeduction = Math.max(0, dependentCount || 0) * rules.dependentDeductionMonthly;
+  let previousExcess = 0;
+  let realized;
+  let targetData = collectCpfMonthlyCashData(yearMonth, sales, expenses);
+  for (let month = 1; month <= targetMonth; month += 1) {
+    const monthKey = year + '-' + String(month).padStart(2, '0');
+    const data = collectCpfMonthlyCashData(monthKey, sales, expenses);
+    const monthResult = calculateCarneLeaoMensal({
+      year,
+      month,
+      taxableIncome: data.receivedGrossCpf,
+      livroCaixaExpensesPaid: data.deductibleLivroCaixaPaid,
+      previousLivroCaixaExcess: previousExcess,
+      deductibleInss: inssProprio,
+      deductibleDependents: dependentDeduction,
+      taxRules: rules,
+    });
+    if (month === targetMonth) {
+      realized = monthResult;
+      targetData = data;
+    } else {
+      previousExcess = month < 12 ? monthResult.excessoLivroCaixaProximoMes : 0;
+    }
+  }
+  const projected = calculateCarneLeaoMensal({
+    year,
+    month: targetMonth,
+    taxableIncome: targetData.projectedGrossCpf,
+    livroCaixaExpensesPaid: targetData.deductibleLivroCaixaPaid + targetData.deductibleLivroCaixaToPay,
+    previousLivroCaixaExcess: previousExcess,
+    deductibleInss: inssProprio,
+    deductibleDependents: dependentDeduction,
+    taxRules: rules,
+  });
+  return { rules, targetData, previousExcess, realized: realized!, projected };
+}
+
+/** Compatibility wrapper; both public PF APIs share the same calculation path. */
 export function calculateMonthlyPfTax(
-  yearMonth: string, // "YYYY-MM"
+  yearMonth: string,
   sales: Sale[],
   expenses: Expense[],
   professional: Professional,
   customRules?: TaxRulesPf
 ): MonthlyPfTaxSummary {
-  const [yearStr] = yearMonth.split('-');
-  const year = parseInt(yearStr, 10);
-  const rules =
-    (customRules && Array.isArray(customRules.brackets) && customRules.brackets.length > 0 ? customRules : null) ||
-    DEFAULT_TAX_RULES_PF[year] ||
-    DEFAULT_TAX_RULES_PF[2025];
-
-  // 1. Receitas PF:
-  // IMPORTANTE:
-  // Regime de Caixa no Carnê-Leão!
-  // Realizado: parcelas de origem CPF efetivamente RECEBIDAS no mês (paymentDate inicia com YYYY-MM)
-  // Projetado: parcelas vencendo no mês que ainda estão a receber + parcelas já recebidas no mês
-  let receivedGrossCpf = 0;
-  let projectedGrossCpf = 0;
-
-  for (const sale of sales) {
-    if (sale.taxOrigin !== 'CPF') continue;
-    for (const inst of sale.installments) {
-      // Classificação fiscal explícita (default TRIBUTAVEL quando ausente —
-      // comportamento idêntico a antes deste campo existir). Só
-      // NAO_TRIBUTAVEL/EXCLUIDO_DA_BASE, sempre com motivo+fundamento
-      // obrigatórios (ver db.updateFiscalClassification), saem da base do
-      // Carnê-Leão — documentRequested NUNCA influencia esta decisão.
-      if (!isTaxableForCarneLeao(inst.fiscalClassification, inst.documentRequested)) continue;
-
-      // Realized: received in this month
-      if (inst.status === 'RECEBIDO' && inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
-        receivedGrossCpf += getInstallmentGrossReceived(inst);
-      }
-      // Projected: due in this month (or already received in this month)
-      if (inst.dueDate.startsWith(yearMonth) && inst.status !== 'CANCELADO') {
-        if (inst.status === 'RECEBIDO') {
-          projectedGrossCpf += getInstallmentGrossReceived(inst);
-        } else {
-          projectedGrossCpf += inst.value;
-        }
-      }
-    }
-  }
-
-  // 2. Despesas Livro Caixa:
-  // - Realizado (Pagas): paymentDate inicia com YYYY-MM
-  // - Previsto (A Pagar): dueDate inicia com YYYY-MM e status não cancelado e não pago
-  let deductibleLivroCaixaPaid = 0;
-  let nonDeductiblePaid = 0;
-  let conditionalPaid = 0;
-  let deductibleLivroCaixaToPay = 0;
-
-  for (const exp of expenses) {
-    // Determine value allocated to CPF
-    let cpfPortion = 0;
-    if (exp.entity === 'CPF') {
-      cpfPortion = exp.value;
-    }
-
-    if (cpfPortion <= 0) continue;
-
-    const isDeductible = exp.dedutivelLivroCaixaPf === 'SIM' || exp.dedutivelLivroCaixaPf === 'CONDICIONAL';
-
-    // Despesas pagas no mês
-    if (exp.status === 'PAGO' && exp.paymentDate && exp.paymentDate.startsWith(yearMonth)) {
-      if (exp.dedutivelLivroCaixaPf === 'SIM') {
-        deductibleLivroCaixaPaid += cpfPortion;
-      } else if (exp.dedutivelLivroCaixaPf === 'CONDICIONAL') {
-        conditionalPaid += cpfPortion;
-        deductibleLivroCaixaPaid += cpfPortion;
-      } else {
-        nonDeductiblePaid += cpfPortion;
-      }
-    } else if (exp.status !== 'PAGO' && exp.status !== 'CANCELADO' && exp.dueDate && exp.dueDate.startsWith(yearMonth)) {
-      // Despesas a pagar no mês (com vencimento no mês)
-      if (isDeductible) {
-        deductibleLivroCaixaToPay += cpfPortion;
-      }
-    }
-  }
-
-  // 3. Deduções Legais Oficiais do Carnê-Leão:
-  // - INSS próprio pago no mês (previdência oficial obrigatória do profissional autônomo)
-  // - Dependentes cadastrados
-  const inssProprioDeduction = professional.inssProprioMensal || 0;
-  const dependentDeduction = (professional.numDependentes || 0) * rules.dependentDeductionMonthly;
-  const totalLegalDeductions = inssProprioDeduction + dependentDeduction + deductibleLivroCaixaPaid;
-  const legalDeductionsAfterLivroCaixa = inssProprioDeduction + dependentDeduction;
-
-  // Desconto simplificado mensal alternativo:
-  // Se as deduções legais forem menores que o desconto simplificado, pode ser vantajoso usar o desconto simplificado
-  const simplifiedDiscount = rules.simplifiedDiscountLimitMonthly || (rules.year >= 2026 ? 607.20 : 564.80);
-  const useSimplified = simplifiedDiscount > legalDeductionsAfterLivroCaixa;
-  const selectedDeductionType: 'SIMPLIFICADO' | 'LEGAL' = useSimplified ? 'SIMPLIFICADO' : 'LEGAL';
-  
-  // No Carnê-Leão tradicional, Livro Caixa abate diretamente da receita.
-  // Depois, sobre a receita líquida abatida de livro caixa, abate-se dependentes e previdência, ou desconto simplificado.
-  const netAfterLivroCaixaRealized = Math.max(0, receivedGrossCpf - deductibleLivroCaixaPaid);
-  const netAfterLivroCaixaProjected = Math.max(0, projectedGrossCpf - deductibleLivroCaixaPaid);
-
-  const effectiveSubtractions = Math.max(legalDeductionsAfterLivroCaixa, useSimplified ? simplifiedDiscount : 0);
-
-  const taxableBaseRealized = Math.max(0, netAfterLivroCaixaRealized - effectiveSubtractions);
-  const taxableBaseProjected = Math.max(0, netAfterLivroCaixaProjected - effectiveSubtractions);
-
-  // 4. Calcular IRPF Progressivo
-  function computeIrpf(base: number): number {
-    if (base <= 0) return 0;
-    const brackets =
-      rules && Array.isArray(rules.brackets) && rules.brackets.length > 0
-        ? rules.brackets
-        : DEFAULT_TAX_RULES_PF[year]?.brackets || DEFAULT_TAX_RULES_PF[2026].brackets;
-    for (const b of brackets) {
-      if (base >= b.min && base <= b.max) {
-        const tax = base * b.rate - b.deduction;
-        return Math.max(0, tax);
-      }
-    }
-    const last = brackets[brackets.length - 1];
-    return Math.max(0, base * last.rate - last.deduction);
-  }
-
-  const irpfBeforeReductionRealized = computeIrpf(taxableBaseRealized);
-  const irpfBeforeReductionProjected = computeIrpf(taxableBaseProjected);
-
-  // 5. Redução Adicional 2026 (Lei nº 15.191/2025 e Lei nº 15.270/2025)
-  // Aplica-se a partir de 2026 com base no rendimento bruto tributável
-  let additionalReductionRealized = 0;
-  let reductionFormulaDesc = '';
-
-  if (year >= 2026 && receivedGrossCpf > 0) {
-    if (receivedGrossCpf <= 5000) {
-      additionalReductionRealized = irpfBeforeReductionRealized;
-      reductionFormulaDesc = 'Isenção total até R$ 5.000,00 (Lei nº 15.191/2025): redução zera o imposto apurado.';
-    } else if (receivedGrossCpf <= 7350) {
-      additionalReductionRealized = Math.max(0, 978.62 - (0.133145 * receivedGrossCpf));
-      reductionFormulaDesc = `Redução decrescente (Lei nº 15.191/2025): 978,62 - (0,133145 × ${receivedGrossCpf.toFixed(2)}) = R$ ${additionalReductionRealized.toFixed(2)}`;
-    } else {
-      additionalReductionRealized = 0;
-      reductionFormulaDesc = 'Rendimento superior a R$ 7.350,00: sem redução adicional aplicável (Lei nº 15.191/2025).';
-    }
-  }
-
-  let additionalReductionProjected = 0;
-  if (year >= 2026 && projectedGrossCpf > 0) {
-    if (projectedGrossCpf <= 5000) {
-      additionalReductionProjected = irpfBeforeReductionProjected;
-    } else if (projectedGrossCpf <= 7350) {
-      additionalReductionProjected = Math.max(0, 978.62 - (0.133145 * projectedGrossCpf));
-    } else {
-      additionalReductionProjected = 0;
-    }
-  }
-
-  const irpfRealized = Math.max(0, irpfBeforeReductionRealized - additionalReductionRealized);
-  const irpfProjected = Math.max(0, irpfBeforeReductionProjected - additionalReductionProjected);
-  const effectiveRate = receivedGrossCpf > 0 ? (irpfRealized / receivedGrossCpf) : 0;
-
-  // Limite de Isenção Mensal de Faturamento (PF / Carnê-Leão)
-  // A partir de 2026 (Lei nº 15.191/2025), a base isenta integral no CPF é de R$ 5.000,00.
-  // Despesas dedutíveis no Livro-Caixa somam-se a esse piso, elevando a capacidade de faturar sem IRPF.
-  const bracket0Max = rules.brackets?.[0]?.max || (year >= 2026 ? 2428.80 : 2259.20);
-  const baseExemptionFloor = year >= 2026 ? 5000 : (bracket0Max + effectiveSubtractions);
-
-  // 1. Limite Atual (Regime de Caixa / Realizado)
-  const exemptionLimitCurrent = baseExemptionFloor + deductibleLivroCaixaPaid;
-  const remainingExemptionBalance = Math.max(0, exemptionLimitCurrent - receivedGrossCpf);
-  const isExemptionLimitReached = receivedGrossCpf >= exemptionLimitCurrent;
-  const exemptionUsagePercent = exemptionLimitCurrent > 0 ? Math.min(100, (receivedGrossCpf / exemptionLimitCurrent) * 100) : 100;
-
-  // 2. Limite Previsto (Projetado / Competência do Mês)
-  const deductibleExpensesProjected = deductibleLivroCaixaPaid + deductibleLivroCaixaToPay;
-  const exemptionLimitProjected = baseExemptionFloor + deductibleExpensesProjected;
-  const remainingExemptionProjected = Math.max(0, exemptionLimitProjected - projectedGrossCpf);
-  const isExemptionLimitReachedProjected = projectedGrossCpf >= exemptionLimitProjected;
-  const exemptionUsagePercentProjected = exemptionLimitProjected > 0 ? Math.min(100, (projectedGrossCpf / exemptionLimitProjected) * 100) : 100;
-  const grossRevenueToReceive = Math.max(0, projectedGrossCpf - receivedGrossCpf);
-
+  const calculation = calculateCpfMonthlyTax(
+    sales,
+    expenses,
+    yearMonth,
+    Number(yearMonth.slice(0, 4)),
+    customRules,
+    professional.numDependentes || 0,
+    professional.inssProprioMensal || 0
+  );
   return {
     month: yearMonth,
-    year,
-    receivedGrossCpf,
-    projectedGrossCpf,
-    deductibleLivroCaixaPaid,
-    nonDeductiblePaid,
-    conditionalPaid,
-    inssProprioDeduction,
-    dependentDeduction,
-    simplifiedDiscountUsed: useSimplified,
-    simplifiedDiscountValue: simplifiedDiscount,
-    legalDeductionsValue: legalDeductionsAfterLivroCaixa,
-    selectedDeductionType,
-    additionalReduction2026: additionalReductionRealized,
-    irpfBeforeReduction: irpfBeforeReductionRealized,
-    reductionFormulaDescription: reductionFormulaDesc,
-    effectiveDeductions: totalLegalDeductions,
-    taxableBaseRealized,
-    taxableBaseProjected,
-    irpfRealized,
-    irpfProjected,
-    effectiveRate,
-    exemptionLimitMonthly: exemptionLimitCurrent,
-    remainingExemptionBalance,
-    isExemptionLimitReached,
-    exemptionUsagePercent,
-
-    // Limite Atual vs. Previsto e Despesas a Pagar
-    baseExemptionFloor,
-    exemptionLimitCurrent,
-    deductibleExpensesToPay: deductibleLivroCaixaToPay,
-    deductibleExpensesProjected,
-    grossRevenueToReceive,
-    exemptionLimitProjected,
-    remainingExemptionProjected,
-    isExemptionLimitReachedProjected,
-    exemptionUsagePercentProjected,
+    year: Number(yearMonth.slice(0, 4)),
+    receivedGrossCpf: calculation.grossRevenueReceived,
+    projectedGrossCpf: calculation.grossRevenueProjected,
+    deductibleLivroCaixaPaid: calculation.deductibleExpensesLivroCaixa,
+    nonDeductiblePaid: calculation.nonDeductibleExpenses,
+    conditionalPaid: calculation.conditionalExpenses,
+    inssProprioDeduction: calculation.inssDeductionTotal,
+    dependentDeduction: calculation.dependentDeductionTotal,
+    simplifiedDiscountUsed: calculation.deductionOptionUsed === 'SIMPLIFICADO',
+    simplifiedDiscountValue: calculation.simplifiedDiscountAmount,
+    legalDeductionsValue: calculation.legalDeductionsTotal,
+    selectedDeductionType: calculation.deductionOptionUsed === 'SIMPLIFICADO' ? 'SIMPLIFICADO' : 'LEGAL',
+    additionalReduction2026: calculation.additionalReduction,
+    irpfBeforeReduction: calculation.taxBeforeReduction,
+    reductionFormulaDescription: calculation.reductionFormulaDescription,
+    effectiveDeductions: calculation.legalDeductionsTotal,
+    taxableBaseRealized: calculation.taxBase,
+    taxableBaseProjected: calculation.taxableBaseProjected,
+    irpfRealized: calculation.carneLeaoEstimated,
+    irpfProjected: calculation.irpfProjected,
+    effectiveRate: calculation.grossRevenueReceived > 0
+      ? calculation.carneLeaoEstimated / calculation.grossRevenueReceived
+      : 0,
+    exemptionLimitMonthly: calculation.exemptionLimitMonthly,
+    remainingExemptionBalance: calculation.remainingExemptionBalance,
+    isExemptionLimitReached: calculation.isExemptionLimitReached,
+    exemptionUsagePercent: calculation.exemptionUsagePercent,
+    baseExemptionFloor: calculation.baseExemptionFloor,
+    exemptionLimitCurrent: calculation.exemptionLimitCurrent,
+    deductibleExpensesToPay: calculation.deductibleExpensesToPay,
+    deductibleExpensesProjected: calculation.deductibleExpensesProjected,
+    grossRevenueToReceive: calculation.grossRevenueToReceive,
+    exemptionLimitProjected: calculation.exemptionLimitProjected,
+    remainingExemptionProjected: calculation.remainingExemptionProjected,
+    isExemptionLimitReachedProjected: calculation.isExemptionLimitReachedProjected,
+    exemptionUsagePercentProjected: calculation.exemptionUsagePercentProjected,
+    excessLivroCaixaPrevious: calculation.excessLivroCaixaPrevious,
+    livroCaixaAvailable: calculation.livroCaixaAvailable,
+    livroCaixaUsed: calculation.livroCaixaUsed,
+    excessLivroCaixaNext: calculation.excessLivroCaixaNext,
+    legalDeductionsTotal: calculation.legalDeductionsTotal,
+    appliedDeduction: calculation.appliedDeduction,
+    reductionBand2026: calculation.reductionBand2026,
   };
 }
 
@@ -539,180 +489,209 @@ export function calculateMonthlyPjTax(
 // 4. EXTENDED TAX & CASHFLOW UTILITIES FOR UI
 // ==========================================
 
+function makeCpfMonthSummary(
+  yearMonth: string,
+  year: number,
+  dependentCount: number,
+  context: ReturnType<typeof calculateCpfYearToMonth>
+) {
+  const { rules, targetData, previousExcess, realized, projected } = context;
+  const deductionOptionUsed = realized.tipoDeducaoEscolhida === 'DESCONTO_SIMPLIFICADO'
+    ? 'SIMPLIFICADO'
+    : 'LEGAL';
+  const reductionRules = CARNE_LEAO_RULES_2026.specialReduction;
+  const reductionFormulaDescription =
+    realized.faixaReducao2026 === 'INTEGRAL'
+      ? 'Redução integral do imposto, limitada ao teto legal e ao imposto calculado (' + reductionRules.law + ').'
+      : realized.faixaReducao2026 === 'PARCIAL'
+      ? 'Redução parcial calculada sobre os rendimentos tributáveis do mês (' + reductionRules.law + ').'
+      : realized.faixaReducao2026 === 'SEM_REDUCAO'
+      ? 'Sem redução especial para rendimentos acima da faixa prevista em lei (' + reductionRules.law + ').'
+      : 'Sem redução especial para este ano-calendário.';
+  const exemptionThreshold = year === 2026 ? reductionRules.fullReductionIncomeLimit : 0;
+  const remaining = (income: number) => Math.max(0, exemptionThreshold - income);
+  const usage = (income: number) => exemptionThreshold > 0
+    ? Math.min(100, (income / exemptionThreshold) * 100)
+    : 0;
+
+  return {
+    month: yearMonth,
+    year,
+    isAnnualSummary: false,
+    annualSummary: null,
+    monthlyResults: undefined,
+    monthlyCalculations: [realized],
+    grossRevenueReceived: realized.rendimentosTributaveis,
+    grossRevenueProjected: projected.rendimentosTributaveis,
+    grossRevenueToReceive: Math.max(0, projected.rendimentosTributaveis - realized.rendimentosTributaveis),
+    deductibleExpensesLivroCaixa: realized.despesasLivroCaixaMes,
+    nonDeductibleExpenses: targetData.nonDeductiblePaid,
+    conditionalExpenses: targetData.conditionalPaid,
+    deductibleExpensesToPay: targetData.deductibleLivroCaixaToPay,
+    deductibleExpensesProjected: targetData.deductibleLivroCaixaPaid + targetData.deductibleLivroCaixaToPay,
+    dependentCount: Math.max(0, dependentCount || 0),
+    dependentDeductionTotal: realized.dependentesDedutiveis,
+    inssDeductionTotal: realized.inssDedutivel,
+    deductionOptionUsed,
+    deductionType: realized.tipoDeducaoEscolhida,
+    simplifiedDiscountAmount: realized.descontoSimplificado,
+    legalDeductionsTotal: realized.deducoesLegais,
+    effectivePersonalDeduction:
+      realized.inssDedutivel + realized.dependentesDedutiveis +
+      realized.pensaoDedutivel + realized.outrasDeducoesLegais,
+    appliedDeduction: realized.deducaoAplicada,
+    taxBase: realized.baseCalculo,
+    taxableBaseProjected: projected.baseCalculo,
+    bracketNumber: realized.faixaTabela,
+    nominalRate: realized.aliquota,
+    deductionAmount: realized.parcelaDeduzir,
+    taxBeforeReduction: realized.impostoTabela,
+    additionalReduction: realized.reducaoEspecial,
+    reductionBand2026: realized.faixaReducao2026,
+    reductionFormulaDescription,
+    carneLeaoEstimated: realized.impostoFinal,
+    irpfProjected: projected.impostoFinal,
+    effectiveTaxRate: realized.rendimentosTributaveis > 0
+      ? (realized.impostoFinal / realized.rendimentosTributaveis) * 100
+      : 0,
+    excessLivroCaixaPrevious: realized.excessoLivroCaixaAnterior,
+    livroCaixaAvailable: realized.livroCaixaDisponivel,
+    livroCaixaUsed: realized.livroCaixaUtilizado,
+    excessLivroCaixaNext: realized.excessoLivroCaixaProximoMes,
+    excessLivroCaixaClosedAtYearEnd: realized.excessoLivroCaixaEncerradoNoAno,
+    legalDeductionsBreakdown: {
+      inss: realized.inssDedutivel,
+      dependents: realized.dependentesDedutiveis,
+      alimony: realized.pensaoDedutivel,
+      other: realized.outrasDeducoesLegais,
+      livroCaixaUsed: realized.livroCaixaUtilizado,
+    },
+    monthlyCalculation: realized,
+    projectedCalculation: projected,
+    exemptionLimitMonthly: exemptionThreshold,
+    remainingExemptionBalance: remaining(realized.rendimentosTributaveis),
+    isExemptionLimitReached:
+      exemptionThreshold > 0 && realized.rendimentosTributaveis >= exemptionThreshold,
+    exemptionUsagePercent: usage(realized.rendimentosTributaveis),
+    baseExemptionFloor: exemptionThreshold,
+    exemptionLimitCurrent: exemptionThreshold,
+    exemptionLimitProjected: exemptionThreshold,
+    remainingExemptionProjected: remaining(projected.rendimentosTributaveis),
+    isExemptionLimitReachedProjected:
+      exemptionThreshold > 0 && projected.rendimentosTributaveis >= exemptionThreshold,
+    exemptionUsagePercentProjected: usage(projected.rendimentosTributaveis),
+    previousExcess,
+    rules,
+  };
+}
+
+function roundTaxSum(values: number[]): number {
+  return Math.round((values.reduce((total, value) => total + value, 0) + Number.EPSILON) * 100) / 100;
+}
+
 export function calculateCpfMonthlyTax(
   sales: Sale[],
   expenses: Expense[],
   yearMonth: string,
   year: number,
   customRules?: TaxRulesPf,
-  dependentCount = 1,
-  inssProprio = 750
+  dependentCount = 0,
+  inssProprio = 0
 ) {
-  const rules =
-    (customRules && Array.isArray(customRules.brackets) && customRules.brackets.length > 0 ? customRules : null) ||
-    DEFAULT_TAX_RULES_PF[year] ||
-    DEFAULT_TAX_RULES_PF[2025];
+  if (yearMonth === String(year)) {
+    const monthlyResults = Array.from({ length: 12 }, (_, index) => {
+      const month = index + 1;
+      const monthKey = year + '-' + String(month).padStart(2, '0');
+      const context = calculateCpfYearToMonth(
+        sales, expenses, monthKey, year, customRules, dependentCount, inssProprio
+      );
+      return makeCpfMonthSummary(monthKey, year, dependentCount, context);
+    });
+    const monthlyCalculations = monthlyResults.map((result) => result.monthlyCalculation);
+    const lastMonth = monthlyResults[11];
+    const sum = (getValue: (result: (typeof monthlyResults)[number]) => number) =>
+      roundTaxSum(monthlyResults.map(getValue));
+    const annualSummary = {
+      grossRevenueReceived: sum((result) => result.grossRevenueReceived),
+      projectedGrossRevenue: sum((result) => result.grossRevenueProjected),
+      deductibleExpensesPaid: sum((result) => result.deductibleExpensesLivroCaixa),
+      livroCaixaUsed: sum((result) => result.livroCaixaUsed),
+      projectedLivroCaixaUsed: sum((result) => result.projectedCalculation.livroCaixaUtilizado),
+      legalDeductions: sum((result) => result.legalDeductionsTotal),
+      projectedLegalDeductions: sum((result) => result.projectedCalculation.deducoesLegais),
+      simplifiedDiscountsAvailable: sum((result) => result.simplifiedDiscountAmount),
+      projectedSimplifiedDiscountsAvailable: sum((result) => result.projectedCalculation.descontoSimplificado),
+      appliedDeductions: sum((result) => result.appliedDeduction),
+      projectedAppliedDeductions: sum((result) => result.projectedCalculation.deducaoAplicada),
+      taxableBase: sum((result) => result.taxBase),
+      projectedTaxableBase: sum((result) => result.taxableBaseProjected),
+      tableTax: sum((result) => result.taxBeforeReduction),
+      projectedTableTax: sum((result) => result.projectedCalculation.impostoTabela),
+      specialReduction: sum((result) => result.additionalReduction),
+      projectedSpecialReduction: sum((result) => result.projectedCalculation.reducaoEspecial),
+      finalTax: sum((result) => result.carneLeaoEstimated),
+      projectedFinalTax: sum((result) => result.irpfProjected),
+      excessClosedAtYearEnd: lastMonth.monthlyCalculation.excessoLivroCaixaEncerradoNoAno,
+    };
 
-  // 1. Gross received in CPF for this month (Cash basis / Regime de Caixa)
-  let grossRevenueReceived = 0;
-  let grossRevenueProjected = 0;
-
-  for (const sale of sales) {
-    if (sale.taxOrigin !== 'CPF') continue;
-    for (const inst of sale.installments) {
-      // Ver calculateMonthlyPfTax acima — mesma regra, duplicada aqui
-      // porque as duas funções mantêm loops de agregação independentes.
-      if (!isTaxableForCarneLeao(inst.fiscalClassification, inst.documentRequested)) continue;
-
-      if (inst.status === 'RECEBIDO' && inst.paymentDate && inst.paymentDate.startsWith(yearMonth)) {
-        grossRevenueReceived += getInstallmentGrossReceived(inst);
-      }
-      if (inst.dueDate.startsWith(yearMonth) && inst.status !== 'CANCELADO') {
-        if (inst.status === 'RECEBIDO') {
-          grossRevenueProjected += getInstallmentGrossReceived(inst);
-        } else {
-          grossRevenueProjected += inst.value;
-        }
-      }
-    }
+    return {
+      ...lastMonth,
+      month: yearMonth,
+      isAnnualSummary: true,
+      annualSummary,
+      monthlyResults,
+      monthlyCalculations,
+      grossRevenueReceived: annualSummary.grossRevenueReceived,
+      grossRevenueProjected: sum((result) => result.grossRevenueProjected),
+      grossRevenueToReceive: sum((result) => result.grossRevenueToReceive),
+      deductibleExpensesLivroCaixa: annualSummary.deductibleExpensesPaid,
+      nonDeductibleExpenses: sum((result) => result.nonDeductibleExpenses),
+      conditionalExpenses: sum((result) => result.conditionalExpenses),
+      deductibleExpensesToPay: sum((result) => result.deductibleExpensesToPay),
+      deductibleExpensesProjected: sum((result) => result.deductibleExpensesProjected),
+      dependentDeductionTotal: sum((result) => result.dependentDeductionTotal),
+      inssDeductionTotal: sum((result) => result.inssDeductionTotal),
+      deductionOptionUsed: 'POR_COMPETENCIA',
+      deductionType: 'POR_COMPETENCIA',
+      simplifiedDiscountAmount: sum((result) => result.simplifiedDiscountAmount),
+      legalDeductionsTotal: annualSummary.legalDeductions,
+      effectivePersonalDeduction: sum((result) => result.effectivePersonalDeduction),
+      appliedDeduction: annualSummary.appliedDeductions,
+      taxBase: annualSummary.taxableBase,
+      taxableBaseProjected: sum((result) => result.taxableBaseProjected),
+      bracketNumber: 0,
+      nominalRate: 0,
+      deductionAmount: 0,
+      taxBeforeReduction: annualSummary.tableTax,
+      additionalReduction: annualSummary.specialReduction,
+      reductionBand2026: 'POR_COMPETENCIA',
+      carneLeaoEstimated: annualSummary.finalTax,
+      irpfProjected: sum((result) => result.irpfProjected),
+      effectiveTaxRate: annualSummary.grossRevenueReceived > 0
+        ? (annualSummary.finalTax / annualSummary.grossRevenueReceived) * 100
+        : 0,
+      excessLivroCaixaPrevious: 0,
+      livroCaixaAvailable: sum((result) => result.livroCaixaAvailable),
+      livroCaixaUsed: annualSummary.livroCaixaUsed,
+      excessLivroCaixaNext: annualSummary.excessClosedAtYearEnd,
+      excessLivroCaixaClosedAtYearEnd: annualSummary.excessClosedAtYearEnd,
+      exemptionLimitMonthly: 0,
+      remainingExemptionBalance: 0,
+      isExemptionLimitReached: false,
+      exemptionUsagePercent: 0,
+      baseExemptionFloor: 0,
+      exemptionLimitCurrent: 0,
+      exemptionLimitProjected: 0,
+      remainingExemptionProjected: 0,
+      isExemptionLimitReachedProjected: false,
+      exemptionUsagePercentProjected: 0,
+    };
   }
 
-  // 2. Deductible Expenses Livro Caixa
-  let deductibleExpensesLivroCaixa = 0;
-  let nonDeductibleExpenses = 0;
-  let conditionalExpenses = 0;
-  let deductibleExpensesToPay = 0;
-
-  for (const exp of expenses) {
-    let cpfPortion = 0;
-    if (exp.entity === 'CPF') {
-      cpfPortion = exp.value;
-    }
-
-    if (cpfPortion <= 0) continue;
-
-    const isDeductible = exp.dedutivelLivroCaixaPf === 'SIM' || exp.dedutivelLivroCaixaPf === 'CONDICIONAL';
-
-    if (exp.status === 'PAGO' && exp.paymentDate && exp.paymentDate.startsWith(yearMonth)) {
-      if (exp.dedutivelLivroCaixaPf === 'SIM') {
-        deductibleExpensesLivroCaixa += cpfPortion;
-      } else if (exp.dedutivelLivroCaixaPf === 'CONDICIONAL') {
-        conditionalExpenses += cpfPortion;
-        deductibleExpensesLivroCaixa += cpfPortion; // Allowed with audit trail
-      } else {
-        nonDeductibleExpenses += cpfPortion;
-      }
-    } else if (exp.status !== 'PAGO' && exp.status !== 'CANCELADO' && exp.dueDate && exp.dueDate.startsWith(yearMonth)) {
-      if (isDeductible) {
-        deductibleExpensesToPay += cpfPortion;
-      }
-    }
-  }
-
-  // 3. Official Legal Deductions
-  const dependentDeductionTotal = (dependentCount || 0) * rules.dependentDeductionMonthly;
-  const inssDeductionTotal = inssProprio || 0;
-  const totalLegalPersonalDeductions = dependentDeductionTotal + inssDeductionTotal;
-
-  // Compare with Simplified Monthly Discount
-  const simplifiedDiscount = rules.simplifiedDiscountLimitMonthly;
-  const deductionOptionUsed = simplifiedDiscount > totalLegalPersonalDeductions ? 'SIMPLIFICADO' : 'LEGAL';
-  const effectivePersonalDeduction = Math.max(totalLegalPersonalDeductions, simplifiedDiscount);
-
-  // Net Base after Livro Caixa
-  const netAfterLivroCaixa = Math.max(0, grossRevenueReceived - deductibleExpensesLivroCaixa);
-  const taxBase = Math.max(0, netAfterLivroCaixa - effectivePersonalDeduction);
-
-  // Apply Progressive Table
-  let bracketNumber = 1;
-  let nominalRate = 0;
-  let deductionAmount = 0;
-  const brackets =
-    rules && Array.isArray(rules.brackets) && rules.brackets.length > 0
-      ? rules.brackets
-      : DEFAULT_TAX_RULES_PF[year]?.brackets || DEFAULT_TAX_RULES_PF[2025].brackets;
-
-  for (let i = 0; i < brackets.length; i++) {
-    const b = brackets[i];
-    if (taxBase >= b.min && taxBase <= b.max) {
-      bracketNumber = i + 1;
-      nominalRate = b.rate;
-      deductionAmount = b.deduction;
-      break;
-    }
-  }
-
-  const taxBeforeReduction = Math.max(0, taxBase * nominalRate - deductionAmount);
-  let additionalReduction = 0;
-  if (year >= 2026 && grossRevenueReceived > 0) {
-    if (grossRevenueReceived <= 5000) {
-      additionalReduction = taxBeforeReduction;
-    } else if (grossRevenueReceived <= 7350) {
-      additionalReduction = Math.max(0, 978.62 - (0.133145 * grossRevenueReceived));
-    } else {
-      additionalReduction = 0;
-    }
-  }
-  const carneLeaoEstimated = Math.max(0, taxBeforeReduction - additionalReduction);
-  const effectiveTaxRate = grossRevenueReceived > 0 ? (carneLeaoEstimated / grossRevenueReceived) * 100 : 0;
-
-  // Limite de Isenção Mensal de Faturamento (PF / Carnê-Leão)
-  // A partir de 2026 (Lei nº 15.191/2025), o faturamento bruto/líquido de até R$ 5.000,00 possui isenção de 100%.
-  // Despesas dedutíveis homologadas no Livro-Caixa abatem a base de cálculo, elevando a capacidade de faturar sem IRPF.
-  const bracket0Max = brackets[0]?.max || (year >= 2026 ? 2428.80 : 2259.20);
-  const baseExemptionFloor = year >= 2026 ? 5000 : (bracket0Max + effectivePersonalDeduction);
-
-  // 1. Limite Atual (Regime de Caixa / Realizado)
-  const exemptionLimitCurrent = baseExemptionFloor + deductibleExpensesLivroCaixa;
-  const remainingExemptionBalance = Math.max(0, exemptionLimitCurrent - grossRevenueReceived);
-  const isExemptionLimitReached = grossRevenueReceived >= exemptionLimitCurrent;
-  const exemptionUsagePercent = exemptionLimitCurrent > 0 ? Math.min(100, (grossRevenueReceived / exemptionLimitCurrent) * 100) : 100;
-
-  // 2. Limite Previsto (Projetado / Competência do Mês)
-  const deductibleExpensesProjected = deductibleExpensesLivroCaixa + deductibleExpensesToPay;
-  const exemptionLimitProjected = baseExemptionFloor + deductibleExpensesProjected;
-  const remainingExemptionProjected = Math.max(0, exemptionLimitProjected - grossRevenueProjected);
-  const isExemptionLimitReachedProjected = grossRevenueProjected >= exemptionLimitProjected;
-  const exemptionUsagePercentProjected = exemptionLimitProjected > 0 ? Math.min(100, (grossRevenueProjected / exemptionLimitProjected) * 100) : 100;
-  const grossRevenueToReceive = Math.max(0, grossRevenueProjected - grossRevenueReceived);
-
-  return {
-    grossRevenueReceived,
-    grossRevenueProjected,
-    grossRevenueToReceive,
-    deductibleExpensesLivroCaixa,
-    nonDeductibleExpenses,
-    conditionalExpenses,
-    dependentCount,
-    dependentDeductionTotal,
-    inssDeductionTotal,
-    deductionOptionUsed,
-    simplifiedDiscountAmount: simplifiedDiscount,
-    legalDeductionsTotal: effectivePersonalDeduction + deductibleExpensesLivroCaixa,
-    effectivePersonalDeduction,
-    taxBase,
-    bracketNumber,
-    nominalRate,
-    deductionAmount,
-    taxBeforeReduction,
-    additionalReduction,
-    carneLeaoEstimated,
-    effectiveTaxRate,
-    exemptionLimitMonthly: exemptionLimitCurrent,
-    remainingExemptionBalance,
-    isExemptionLimitReached,
-    exemptionUsagePercent,
-
-    // Limite Atual vs. Previsto e Despesas a Pagar
-    baseExemptionFloor,
-    exemptionLimitCurrent,
-    deductibleExpensesToPay,
-    deductibleExpensesProjected,
-    exemptionLimitProjected,
-    remainingExemptionProjected,
-    isExemptionLimitReachedProjected,
-    exemptionUsagePercentProjected,
-  };
+  const context = calculateCpfYearToMonth(
+    sales, expenses, yearMonth, year, customRules, dependentCount, inssProprio
+  );
+  return makeCpfMonthSummary(yearMonth, year, dependentCount, context);
 }
 
 export const DEFAULT_FATOR_R_THRESHOLD = 0.28;

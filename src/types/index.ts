@@ -951,6 +951,14 @@ export interface MonthlyPfTaxSummary {
   remainingExemptionProjected?: number;
   isExemptionLimitReachedProjected?: boolean;
   exemptionUsagePercentProjected?: number;
+  // Livro Caixa e deduções da apuração centralizada do Carnê-Leão.
+  excessLivroCaixaPrevious?: number;
+  livroCaixaAvailable?: number;
+  livroCaixaUsed?: number;
+  excessLivroCaixaNext?: number;
+  legalDeductionsTotal?: number;
+  appliedDeduction?: number;
+  reductionBand2026?: 'INTEGRAL' | 'PARCIAL' | 'SEM_REDUCAO' | 'NAO_APLICAVEL';
 }
 
 export interface MonthlyPjTaxSummary {
