@@ -578,6 +578,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span>{isProjected ? 'Livro Caixa projetado/utilizado:' : 'Livro Caixa utilizado — realizado:'}</span>
                     <span className="font-bold text-rose-700 font-mono tabular-nums">− {formatCurrency(calculation.livroCaixaUtilizado)}</span>
                   </div>
+                  {(calculation.despesasLivroCaixaMes > 0 || calculation.excessoLivroCaixaAnterior > 0) && (
+                    <div className="rounded-lg bg-slate-50 border border-slate-200/70 px-3 py-2 space-y-1 text-[11px] text-slate-500" data-testid="livro-caixa-breakdown">
+                      <div className="flex justify-between">
+                        <span>Despesas do Livro Caixa lançadas no mês:</span>
+                        <span className="font-mono tabular-nums text-slate-700">{formatCurrency(calculation.despesasLivroCaixaMes)}</span>
+                      </div>
+                      {calculation.excessoLivroCaixaAnterior > 0 && (
+                        <div className="flex justify-between">
+                          <span>+ Excesso trazido de meses anteriores:</span>
+                          <span className="font-mono tabular-nums text-slate-700">{formatCurrency(calculation.excessoLivroCaixaAnterior)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between font-semibold text-slate-600">
+                        <span>= Disponível para deduzir:</span>
+                        <span className="font-mono tabular-nums">{formatCurrency(calculation.livroCaixaDisponivel)}</span>
+                      </div>
+                      {calculation.excessoLivroCaixaProximoMes > 0 && (
+                        <div className="flex justify-between text-amber-700">
+                          <span>Passa para o mês seguinte (a dedução não pode passar dos rendimentos):</span>
+                          <span className="font-mono tabular-nums font-semibold">{formatCurrency(calculation.excessoLivroCaixaProximoMes)}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {isProjected && <>
                     <div className="flex justify-between items-center py-1 pl-3 text-slate-500">
                       <span>Despesas já pagas:</span>

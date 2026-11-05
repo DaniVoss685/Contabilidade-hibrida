@@ -23,6 +23,7 @@ import {
   MessageSquareText,
 } from 'lucide-react';
 import { Sale, TaxOrigin, ReceitaSaudeStatus, NfseStatus } from '../../types';
+import { summarizeFilteredMoney } from '../../lib/financialFilters';
 import { formatCurrency, formatCpf, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
 import { db, getSalePaymentSummary } from '../../lib/db';
 import { NewSaleModal } from '../Modals/NewSaleModal';
@@ -229,6 +230,11 @@ export const SalesView: React.FC<SalesViewProps> = ({
       return matchesSearch && matchesOrigin && matchesProcedure && matchesPaymentMethod && matchesDoc;
     });
   }, [sales, searchTerm, taxOriginFilter, procedureFilter, paymentMethodFilter, docFilter]);
+
+  const filteredSalesSummary = useMemo(
+    () => summarizeFilteredMoney<Sale>(filteredSales, (sale) => sale.totalValue),
+    [filteredSales]
+  );
 
   const {
     sortedItems: displaySales,
@@ -516,6 +522,15 @@ export const SalesView: React.FC<SalesViewProps> = ({
           />
         </div>
         </MobileFilters>
+      </div>
+
+      <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1 text-xs text-slate-600">
+        <span>Resultado do filtro:</span>
+        <strong className="font-semibold text-slate-800">
+          {filteredSalesSummary.count} {filteredSalesSummary.count === 1 ? 'receita' : 'receitas'}
+        </strong>
+        <span aria-hidden="true">•</span>
+        <span>Total: <strong className="font-semibold text-slate-800">{formatCurrency(filteredSalesSummary.total)}</strong></span>
       </div>
 
       {/* Floating Bulk Action Bar */}

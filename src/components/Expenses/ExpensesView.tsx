@@ -23,11 +23,12 @@ import {
   Eye,
 } from 'lucide-react';
 import { Expense, ExpenseCategory, ExpenseEntity } from '../../types';
-import { formatCurrency, formatDateBr, normalizeSearchText, matchDocumentSearch } from '../../lib/masks';
+import { formatCurrency, formatDateBr } from '../../lib/masks';
 import { formatPaymentMethodName, formatPaymentMethodWithInstallments } from '../../lib/paymentMethodFormat';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { getEffectivePayableStatus } from '../../lib/statusHelper';
+import { filterExpenses, summarizeFilteredMoney } from '../../lib/financialFilters';
 import { getRecurrenceIntervalLabel } from '../../lib/expenseRecurrence';
 import { BatchEditExpensesModal } from '../Modals/BatchEditExpensesModal';
 import { NewExpenseModal } from '../Modals/NewExpenseModal';
@@ -183,56 +184,21 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
   }, [expenses]);
 
   const filteredExpenses = useMemo(() => {
-    const trimmed = searchTerm.trim();
-    const normQuery = normalizeSearchText(trimmed);
-
-    return expenses.filter((exp) => {
-      let matchesSearch = true;
-      if (trimmed) {
-        matchesSearch =
-          normalizeSearchText(exp.supplierName).includes(normQuery) ||
-          normalizeSearchText(exp.description).includes(normQuery) ||
-          normalizeSearchText(exp.categoryName).includes(normQuery) ||
-          matchDocumentSearch(exp.supplierCpfCnpj, trimmed);
-      }
-
-      const matchesEntity =
-        entityFilter === 'ALL' || exp.entity === entityFilter;
-
-      const effectiveStatus = getEffectivePayableStatus(exp);
-      let matchesStatus = true;
-      if (statusFilter === 'ALL') {
-        matchesStatus = true;
-      } else if (statusFilter === 'EM_ATRASO' || statusFilter === 'VENCIDO') {
-        matchesStatus = effectiveStatus === 'EM_ATRASO';
-      } else if (statusFilter === 'A_PAGAR') {
-        matchesStatus = effectiveStatus === 'A_PAGAR';
-      } else if (statusFilter === 'PAGO') {
-        matchesStatus = effectiveStatus === 'PAGO';
-      }
-
-      const matchesCat =
-        categoryFilter === 'ALL' || exp.categoryId === categoryFilter;
-
-      const isRecurrent = exp.expenseType === 'RECORRENTE' || Boolean(exp.recurrenceId);
-      const isInstallment = exp.expenseType === 'PARCELADA' || Boolean(exp.installmentGroupId);
-      const isSingle = !isRecurrent && !isInstallment;
-
-      let matchesType = true;
-      if (viewMode === 'recurrent' || typeFilter === 'RECORRENTE') {
-        matchesType = isRecurrent;
-      } else if (typeFilter === 'PARCELADA') {
-        matchesType = isInstallment;
-      } else if (typeFilter === 'UNICA') {
-        matchesType = isSingle;
-      }
-
-      const matchesPaymentMethod =
-        paymentMethodFilter === 'ALL' || exp.paymentMethod === paymentMethodFilter;
-
-      return matchesSearch && matchesEntity && matchesStatus && matchesCat && matchesType && matchesPaymentMethod;
+    return filterExpenses(expenses, {
+      searchTerm,
+      entityFilter,
+      statusFilter,
+      categoryFilter,
+      typeFilter,
+      paymentMethodFilter,
+      viewMode,
     });
   }, [expenses, searchTerm, entityFilter, statusFilter, categoryFilter, typeFilter, paymentMethodFilter, viewMode]);
+
+  const filteredExpenseSummary = useMemo(
+    () => summarizeFilteredMoney<Expense>(filteredExpenses, (expense) => expense.value),
+    [filteredExpenses]
+  );
 
   const {
     sortedItems: displayExpenses,
@@ -676,9 +642,6 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                   : `${MONTH_NAMES[selectedMonth || 1]} de ${selectedYear}`}
               </strong>
             </span>
-            <span className="bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-md text-[11px]">
-              {filteredExpenses.length} {filteredExpenses.length === 1 ? 'despesa' : 'despesas'}
-            </span>
           </div>
 
           {selectedMonth !== 'ALL' && onResetPeriod && (
@@ -799,6 +762,15 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
           />
         </div>
         </MobileFilters>
+      </div>
+
+      <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1 text-xs text-slate-600">
+        <span>Resultado do filtro:</span>
+        <strong className="font-semibold text-slate-800">
+          {filteredExpenseSummary.count} {filteredExpenseSummary.count === 1 ? 'despesa' : 'despesas'}
+        </strong>
+        <span aria-hidden="true">•</span>
+        <span>Total: <strong className="font-semibold text-slate-800">{formatCurrency(filteredExpenseSummary.total)}</strong></span>
       </div>
 
       {/* Lista em cards (mobile/tablet). A tabela completa continua no desktop (lg+). */}

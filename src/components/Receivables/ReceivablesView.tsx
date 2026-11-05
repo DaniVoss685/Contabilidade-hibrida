@@ -24,13 +24,14 @@ import {
   FileX2,
 } from 'lucide-react';
 import { AccountReceivableItem, TaxOrigin, PaymentMethod, InstallmentStatus, Sale } from '../../types';
-import { formatCurrency, formatDateBr, normalizeSearchText } from '../../lib/masks';
+import { formatCurrency, formatDateBr } from '../../lib/masks';
 import { formatPaymentMethodName, formatPaymentMethodWithInstallments } from '../../lib/paymentMethodFormat';
 import { summarizeReceipts, settlementProfileLabel, receivingModeLabel } from '../../lib/cardFees';
 import { getSaleAllocations, isSplitSale, isCardMethod, buildSplitGroups, orderSplitGroups, getFiscalCoverage } from '../../lib/salePayments';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
 import { getEffectiveReceivableStatus } from '../../lib/statusHelper';
+import { filterReceivables, summarizeFilteredMoney } from '../../lib/financialFilters';
 import { EditReceivableModal } from '../Modals/EditReceivableModal';
 import { NewSaleModal } from '../Modals/NewSaleModal';
 import { CustomSelect, DatePicker, ConfirmDialog, useToast, SortableHeader, MobileFilters } from '../UI';
@@ -134,55 +135,19 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
   }, [items]);
 
   const filteredItems = useMemo(() => {
-    const trimmed = searchTerm.trim();
-    const normQuery = normalizeSearchText(trimmed);
-
-    return items.filter((item) => {
-      let matchesSearch = true;
-      if (trimmed) {
-        matchesSearch =
-          normalizeSearchText(item.patientName).includes(normQuery) ||
-          normalizeSearchText(item.documentSummary).includes(normQuery);
-      }
-
-      const matchesOrigin =
-        taxOriginFilter === 'ALL' || item.taxOrigin === taxOriginFilter;
-
-      const effectiveStatus = getEffectiveReceivableStatus(item);
-      let matchesStatus = true;
-      if (statusFilter === 'ALL') {
-        matchesStatus = true;
-      } else if (statusFilter === 'EM_ATRASO' || statusFilter === 'VENCIDO') {
-        matchesStatus = effectiveStatus === 'EM_ATRASO' || item.status === 'EM_ATRASO' || item.status === 'VENCIDO';
-      } else if (statusFilter === 'A_VENCER') {
-        matchesStatus = effectiveStatus === 'A_VENCER' || item.status === 'A_VENCER';
-      } else if (statusFilter === 'RECEBIDO') {
-        matchesStatus = effectiveStatus === 'RECEBIDO' || item.status === 'RECEBIDO';
-      } else if (statusFilter === 'PARCIALMENTE_RECEBIDO') {
-        matchesStatus = effectiveStatus === 'PARCIALMENTE_RECEBIDO' || item.status === 'PARCIALMENTE_RECEBIDO';
-      } else {
-        matchesStatus = item.status === statusFilter;
-      }
-
-      const matchesProcedure =
-        procedureFilter === 'ALL' || item.procedureName === procedureFilter;
-
-      let matchesPaymentMethod = true;
-      if (paymentMethodFilter === 'CARD_WITH_FEE') {
-        matchesPaymentMethod = Boolean(item.cardFeeAmount && item.cardFeeAmount > 0);
-      } else if (paymentMethodFilter !== 'ALL') {
-        matchesPaymentMethod = item.paymentMethod === paymentMethodFilter;
-      }
-
-      return (
-        matchesSearch &&
-        matchesOrigin &&
-        matchesStatus &&
-        matchesProcedure &&
-        matchesPaymentMethod
-      );
+    return filterReceivables(items, {
+      searchTerm,
+      taxOriginFilter,
+      statusFilter,
+      procedureFilter,
+      paymentMethodFilter,
     });
   }, [items, searchTerm, taxOriginFilter, statusFilter, procedureFilter, paymentMethodFilter]);
+
+  const filteredReceivablesSummary = useMemo(
+    () => summarizeFilteredMoney<AccountReceivableItem>(filteredItems, (item) => item.value),
+    [filteredItems]
+  );
 
   const {
     sortedItems: displayItems,
@@ -502,9 +467,6 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
                   : `${MONTH_NAMES[selectedMonth || 1]} de ${selectedYear}`}
               </strong>
             </span>
-            <span className="bg-teal-100 text-teal-800 font-bold px-2 py-0.5 rounded-md text-[11px]">
-              {filteredItems.length} {filteredItems.length === 1 ? 'parcela' : 'parcelas'}
-            </span>
           </div>
 
           {selectedMonth !== 'ALL' && onResetPeriod && (
@@ -612,6 +574,15 @@ export const ReceivablesView: React.FC<ReceivablesViewProps> = ({
           />
         </div>
         </MobileFilters>
+      </div>
+
+      <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-x-1.5 gap-y-1 px-1 text-xs text-slate-600">
+        <span>Resultado do filtro:</span>
+        <strong className="font-semibold text-slate-800">
+          {filteredReceivablesSummary.count} {filteredReceivablesSummary.count === 1 ? 'recebível' : 'recebíveis'}
+        </strong>
+        <span aria-hidden="true">•</span>
+        <span>Total: <strong className="font-semibold text-slate-800">{formatCurrency(filteredReceivablesSummary.total)}</strong></span>
       </div>
 
       {/* Floating Bulk Action Bar */}
