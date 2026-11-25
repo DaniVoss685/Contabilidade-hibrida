@@ -167,3 +167,47 @@ export function calculateCarneLeaoMensal(input: CarneLeaoMonthlyInput): CarneLea
     impostoFinal: fromCents(Math.max(0, tableTaxCents - specialReductionCents)),
   };
 }
+
+export interface ZeroTaxIncomeLimit {
+  /** Maior receita tributável do mês que ainda resulta em Carnê-Leão (IRPF) = R$ 0,00. */
+  limiteReceita: number;
+  /** Receita tributável já considerada no mês. */
+  receitaAtual: number;
+  /** limite − receita atual: positivo = ainda cabe em recibos sem imposto; negativo = já passou do limite. */
+  folga: number;
+  /** IRPF do mês com a receita atual (o que seria o DARF). */
+  impostoNaReceitaAtual: number;
+}
+
+/**
+ * Quanto de receita (recibos) o mês comporta SEM gerar imposto, dadas as despesas do Livro Caixa, o excesso
+ * trazido e as demais deduções. Usa a MESMA apuração mensal (calculateCarneLeaoMensal), variando só a receita:
+ * o imposto nunca diminui quando a receita sobe, então o limite é o maior valor (em centavos) com imposto zero.
+ */
+export function calculateZeroTaxIncomeLimit(input: CarneLeaoMonthlyInput): ZeroTaxIncomeLimit {
+  const taxAt = (cents: number): number =>
+    calculateCarneLeaoMensal({ ...input, taxableIncome: cents / 100 }).impostoFinal;
+
+  const current = calculateCarneLeaoMensal(input);
+  const currentCents = toCents(input.taxableIncome);
+
+  // Teto de busca: 10 milhões por mês é muito além de qualquer consultório.
+  let low = 0; // sempre com imposto zero (receita zero nunca gera imposto)
+  let high = 1_000_000_000; // 10.000.000,00
+  if (taxAt(high) <= 0) {
+    low = high;
+  } else {
+    while (high - low > 1) {
+      const mid = Math.floor((low + high) / 2);
+      if (taxAt(mid) <= 0) low = mid;
+      else high = mid;
+    }
+  }
+
+  return {
+    limiteReceita: fromCents(low),
+    receitaAtual: fromCents(currentCents),
+    folga: fromCents(low - currentCents),
+    impostoNaReceitaAtual: current.impostoFinal,
+  };
+}

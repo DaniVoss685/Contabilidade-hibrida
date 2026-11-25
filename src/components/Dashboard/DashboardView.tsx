@@ -13,6 +13,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Info,
+  ChevronDown,
 } from 'lucide-react';
 import {
   Sale,
@@ -30,7 +31,7 @@ import {
   calculateDashboardProjection,
 } from '../../lib/taxEngine';
 import { CARNE_LEAO_RULES_2026 } from '../../lib/carneLeaoRules';
-import { selectCarneLeaoScenario } from '../../lib/carneLeaoCalculation';
+import { selectCarneLeaoScenario, calculateZeroTaxIncomeLimit } from '../../lib/carneLeaoCalculation';
 import { formatCurrency, formatPercent } from '../../lib/masks';
 import { db } from '../../lib/db';
 import { addMonthsToCompetency, estimateSimplesFromBase, fiscalBaseStatusLabel, formatCompetencyShortName } from '../../lib/fiscalBase';
@@ -157,6 +158,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [sales, expenses, competenceStr, dueCompetenceStr, dueCompetenceYear, isAnnualPeriod, effectiveYear, taxRulesPf, professional, ignoredExcessKey]);
   // Histórico mês a mês do Livro Caixa (para explicar o excesso trazido). Só faz sentido em mês único.
   const [isExcessModalOpen, setIsExcessModalOpen] = useState(false);
+  // "Mais informações" do card de recibos (Livro Caixa usado, DARF, alíquota): recolhido por padrão.
+  const [showCpfMoreInfo, setShowCpfMoreInfo] = useState(false);
   const livroCaixaHistory = useMemo(
     () =>
       isAnnualPeriod
@@ -180,6 +183,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     cpfTax.projectedCalculation,
     viewMode
   );
+  // Pergunta principal do Carnê-Leão: quanto ainda cabe em recibos SEM pagar imposto neste mês?
+  const zeroTaxLimit = useMemo(() => {
+    if (cpfTax.isAnnualSummary) return null;
+    const c = cpfCalculationDisplayed;
+    return calculateZeroTaxIncomeLimit({
+      year: c.year,
+      month: c.month,
+      taxableIncome: c.rendimentosTributaveis,
+      livroCaixaExpensesPaid: c.despesasLivroCaixaMes,
+      previousLivroCaixaExcess: c.excessoLivroCaixaAnterior,
+      deductibleInss: c.inssDedutivel,
+      deductibleDependents: c.dependentesDedutiveis,
+      deductibleAlimony: c.pensaoDedutivel,
+      otherLegalDeductions: c.outrasDeducoesLegais,
+      taxRules: taxRulesPf,
+    });
+  }, [cpfTax.isAnnualSummary, cpfCalculationDisplayed, taxRulesPf]);
   const cpfTaxAmountDisplayed = cpfTax.isAnnualSummary
     ? (isCpfProjected ? cpfTax.annualSummary.projectedFinalTax : cpfTax.annualSummary.finalTax)
     : cpfCalculationDisplayed.impostoFinal;
@@ -464,7 +484,107 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </span>
             </div>
 
-            {/* Indicador principal e detalhes sempre pertencem ao mesmo cenário selecionado. */}
+            {/* Indicador principal: no mês, a pergunta é "quanto ainda posso emitir de recibo sem pagar imposto?".
+                No resumo anual continua o IRPF a recolher. */}
+            {zeroTaxLimit ? (() => {
+              const over = zeroTaxLimit.folga < 0;
+              const limite = zeroTaxLimit.limiteReceita;
+              const atual = zeroTaxLimit.receitaAtual;
+              // Escala da barra: sempre mostra o limite (marca) e a receita atual; passou do limite => trecho vermelho.
+              const scale = Math.max(limite, atual, 0.01);
+              const okPct = Math.min(100, (Math.min(atual, limite) / scale) * 100);
+              const overPct = over ? ((atual - limite) / scale) * 100 : 0;
+              const limitMarkPct = (limite / scale) * 100;
+              // O que passa do limite do Carnê-Leão vai para nota fiscal (PJ), que gera DAS.
+              const paraNota = over ? Math.abs(zeroTaxLimit.folga) : 0;
+              const dasSobreNota =
+                over && cnpjTax.available ? Math.round(paraNota * (cnpjTax.effectiveTaxRate / 100) * 100) / 100 : null;
+              return (
+                <div data-testid="cpf-zero-tax-room" className="@container my-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+                  <div className="grid grid-cols-1 gap-3 @[460px]:grid-cols-2">
+                    <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-3.5">
+                      <span className="block text-[11px] font-bold uppercase tracking-wider text-teal-800">
+                        Pode fazer de recibo no mês, sem imposto
+                      </span>
+                      <span data-testid="cpf-zero-tax-limit" className="mt-1 block whitespace-nowrap text-2xl sm:text-[26px] font-black text-teal-950 font-mono tabular-nums tracking-tight">
+                        {formatCurrency(limite)}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] text-teal-800/80">Limite do Carnê-Leão em {dueCompetenceLabel} (de acordo com as despesas)</span>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5">
+                      <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                        {isCpfProjected ? 'Receita prevista no mês' : 'Receita atual do mês'}
+                      </span>
+                      <span data-testid="cpf-zero-tax-current" className="mt-1 block whitespace-nowrap text-2xl sm:text-[26px] font-black text-slate-900 font-mono tabular-nums tracking-tight">
+                        {formatCurrency(atual)}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] text-slate-500">Total recebido como pessoa física</span>
+                    </div>
+                  </div>
+
+                  {/* Barra: limite × receita atual */}
+                  <div className="mt-4" data-testid="cpf-zero-tax-bar">
+                    <div className="relative h-3 w-full overflow-hidden rounded-full bg-slate-100" role="img"
+                      aria-label={over ? `${formatCurrency(paraNota)} da receita vai para nota fiscal` : `Ainda cabem ${formatCurrency(zeroTaxLimit.folga)} em recibos`}>
+                      <div className="absolute inset-y-0 left-0 bg-teal-500" style={{ width: `${okPct}%` }} />
+                      {over && (
+                        <div className="absolute inset-y-0 bg-blue-500" style={{ left: `${limitMarkPct}%`, width: `${overPct}%` }} />
+                      )}
+                      {over && <div className="absolute inset-y-0 w-0.5 bg-white" style={{ left: `${limitMarkPct}%` }} />}
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
+                      {over ? (
+                        <span className="font-bold text-blue-700" data-testid="cpf-zero-tax-gap">
+                          {formatCurrency(paraNota)} vão para nota fiscal
+                        </span>
+                      ) : (
+                        <span className="font-bold text-teal-700" data-testid="cpf-zero-tax-gap">
+                          Ainda cabem {formatCurrency(zeroTaxLimit.folga)} em recibos
+                        </span>
+                      )}
+                      <span className="text-slate-500">
+                        {over
+                          ? `${formatCurrency(limite)} em recibo (sem imposto) • a diferença sai em nota fiscal e gera DAS.`
+                          : 'Acima disso, o restante da receita sai em nota fiscal.'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowCpfMoreInfo((v) => !v)}
+                    aria-expanded={showCpfMoreInfo}
+                    data-testid="cpf-zero-tax-more"
+                    className="mt-3 inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
+                  >
+                    {showCpfMoreInfo ? 'Menos informações' : 'Mais informações (DARF, Livro Caixa)'}
+                    <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showCpfMoreInfo ? 'rotate-180' : ''}`} />
+                  </button>
+                  {showCpfMoreInfo && (
+                    <dl className="mt-2 space-y-1.5 rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-600" data-testid="cpf-zero-tax-more-panel">
+                      <div className="flex justify-between gap-3">
+                        <dt>Livro Caixa disponível para deduzir</dt>
+                        <dd className="font-mono font-bold tabular-nums text-slate-900">{formatCurrency(cpfCalculationDisplayed.livroCaixaDisponivel)}</dd>
+                      </div>
+                      {dasSobreNota !== null && (
+                        <div className="flex justify-between gap-3" data-testid="cpf-zero-tax-das-estimate">
+                          <dt>DAS estimado sobre a nota ({formatPercent(cnpjTax.effectiveTaxRate)})</dt>
+                          <dd className="whitespace-nowrap font-mono font-bold tabular-nums text-slate-900">{formatCurrency(dasSobreNota)}</dd>
+                        </div>
+                      )}
+                      <div className="flex justify-between gap-3">
+                        <dt>DARF que seria pago se tudo ficasse em recibo ({dueCompetenceLabel}, paga em {dueMonthLabel})</dt>
+                        <dd data-testid="cpf-irpf-value" className="whitespace-nowrap font-mono font-bold tabular-nums text-slate-900">{formatCurrency(cpfTaxAmountDisplayed)}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>Alíquota efetiva do Carnê-Leão (se fosse tudo recibo)</dt>
+                        <dd className="font-mono font-bold tabular-nums text-slate-900">{formatPercent(cpfEffectiveRateDisplayed)}</dd>
+                      </div>
+                    </dl>
+                  )}
+                </div>
+              );
+            })() : (
             <div className="my-5 p-4.5 rounded-2xl bg-teal-600 text-white shadow-sm flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
               <div className="min-w-0 flex-1 basis-48">
                 <span className="text-xs font-bold text-teal-100 uppercase tracking-wider block">
@@ -483,6 +603,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </span>
               </div>
             </div>
+            )}
 
             {/* Faixa da redução especial, sem somar Livro Caixa ao limite de rendimentos. */}
             <div className="mb-4 p-3.5 rounded-2xl bg-teal-50/70 border border-teal-200/80 space-y-2.5">
