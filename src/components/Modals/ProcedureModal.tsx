@@ -628,12 +628,11 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
               4. Preço do procedimento
             </span>
 
-            <div className={`grid grid-cols-1 ${canViewCosts ? 'lg:grid-cols-5' : ''} gap-4 items-start`}>
-              <div className={canViewCosts ? 'lg:col-span-2' : ''}>
-                <label className="block text-sm font-bold text-teal-950 mb-1.5">Quanto será cobrado do paciente?</label>
+            <div className="grid grid-cols-1 gap-4 items-start">
+              <div className="max-w-sm">
                 {canEditPrice ? (
                   <CurrencyInput
-                    label="Preço praticado"
+                    label="Valor cobrado do paciente"
                     required
                     value={defaultPrice}
                     onChange={setDefaultPrice}
@@ -642,7 +641,7 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
                   />
                 ) : (
                   <div className="p-3 rounded-xl bg-white border border-slate-200">
-                    <div className="text-[11px] font-semibold text-slate-500 uppercase">Preço praticado</div>
+                    <div className="text-[11px] font-semibold text-slate-500 uppercase">Valor cobrado do paciente</div>
                     <div className="text-xl font-black text-slate-900 font-mono">
                       {defaultPrice > 0 ? formatCurrency(defaultPrice) : 'A definir'}
                     </div>
@@ -653,8 +652,28 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
                 )}
               </div>
 
-              {canViewCosts && (
-                <div className="lg:col-span-3 grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="proc-price-helpers">
+            </div>
+          </div>
+
+          {/* 5. Composição do custo — modo avançado, recolhido, só para quem vê custos */}
+          {canViewCosts && (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/50" data-testid="proc-composition">
+              <button
+                type="button"
+                onClick={() => setShowComposition((v) => !v)}
+                aria-expanded={showComposition}
+                className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold text-slate-700 cursor-pointer"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Layers className="w-4 h-4 text-slate-500" />
+                  Análise de custo, margem e preço sugerido
+                </span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showComposition ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showComposition && (
+                <div className="px-4 pb-4 space-y-3 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3" data-testid="proc-price-helpers">
                   <div className="p-3 rounded-xl bg-teal-100/70 border border-teal-200 flex flex-col justify-between gap-2">
                     <div>
                       <div className="text-[10px] font-bold text-teal-800 uppercase tracking-wider">Preço sugerido pela clínica</div>
@@ -711,28 +730,6 @@ export const ProcedureModal: React.FC<ProcedureModalProps> = ({ isOpen, onClose,
                     )}
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
-
-          {/* 5. Composição do custo — modo avançado, recolhido, só para quem vê custos */}
-          {canViewCosts && (
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/50" data-testid="proc-composition">
-              <button
-                type="button"
-                onClick={() => setShowComposition((v) => !v)}
-                aria-expanded={showComposition}
-                className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold text-slate-700 cursor-pointer"
-              >
-                <span className="flex items-center gap-1.5">
-                  <Layers className="w-4 h-4 text-slate-500" />
-                  Ver composição do custo
-                </span>
-                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showComposition ? 'rotate-180' : ''}`} />
-              </button>
-
-              {showComposition && (
-                <div className="px-4 pb-4 space-y-3 text-xs">
                   {!pricing.configured && (
                     <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-2">
                       <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />

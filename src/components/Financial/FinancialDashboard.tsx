@@ -99,9 +99,11 @@ export const FinancialDashboard: React.FC<FinancialDashboardProps> = ({
       professional,
       payrollHistory,
       entityFilter,
-      fiscalBase
+      fiscalBase,
+      db.getPreferences().carneLeaoSettings?.excessIgnoredMonths || []
     );
-  }, [year, sales, expenses, taxRulesPf, taxRulesSimples, professional, payrollHistory, entityFilter, fiscalBase]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year, sales, expenses, taxRulesPf, taxRulesSimples, professional, payrollHistory, entityFilter, fiscalBase, (db.getPreferences().carneLeaoSettings?.excessIgnoredMonths || []).join(',')]);
 
   const categoryControlItems = useMemo(() => {
     return buildCategoryAnnualControl(year, sales, expenses, categories, entityFilter);

@@ -947,6 +947,8 @@ export function mapDbPreferencesToApp(db: any): SystemPreferences {
     lunchBreakEnd: db.lunch_break_end || undefined,
     cardFees: db.card_fees && typeof db.card_fees === 'object' ? db.card_fees : undefined,
     pricing: db.pricing_settings && typeof db.pricing_settings === 'object' ? db.pricing_settings : undefined,
+    carneLeaoSettings:
+      db.carne_leao_settings && typeof db.carne_leao_settings === 'object' ? db.carne_leao_settings : undefined,
   };
 }
 
@@ -962,6 +964,9 @@ export function mapAppPreferencesToDb(app: SystemPreferences, tenantId: string):
     lunch_break_end: app.lunchBreakEnd || null,
     card_fees: app.cardFees || {},
     pricing_settings: app.pricing || null,
+    // Só envia a coluna quando houver ajuste salvo: assim nenhuma gravação de preferências depende da
+    // migração 20261125120000 até alguém realmente usar a opção.
+    ...(app.carneLeaoSettings !== undefined ? { carne_leao_settings: app.carneLeaoSettings } : {}),
     updated_at: new Date().toISOString(),
   };
 }

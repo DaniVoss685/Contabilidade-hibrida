@@ -344,7 +344,9 @@ export function buildAnnualDre(
    * Base fiscal CANÔNICA (mesma do Dashboard/Motores). Quando informada, o DAS estimado de cada mês usa o
    * enquadramento dela; sem ela (chamadas legadas) o cálculo local antigo é preservado.
    */
-  fiscalBase?: CanonicalFiscalBase
+  fiscalBase?: CanonicalFiscalBase,
+  /** Meses desativados no excesso de Livro Caixa (ver carneLeaoExcessSettings). */
+  ignoredExcessMonths: readonly string[] = []
 ): AnnualDreSummary {
   let simplesBaseUnavailable = false;
   const months: MonthlyDreCol[] = [];
@@ -420,7 +422,8 @@ export function buildAnnualDre(
       year,
       taxRulesPf,
       professional.numDependentes,
-      professional.inssProprioMensal
+      professional.inssProprioMensal,
+      ignoredExcessMonths
     );
 
     let cnpjDasEstimated: number;

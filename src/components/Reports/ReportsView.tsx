@@ -29,6 +29,7 @@ import {
 import { estimateSimplesFromBase, formatCompetencyShortName } from '../../lib/fiscalBase';
 import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { formatCurrency, formatCpf, formatDateBr, formatPercent } from '../../lib/masks';
+import { db } from '../../lib/db';
 import { exportToCsv } from '../../lib/exportUtils';
 import { PeriodPicker, useToast } from '../UI';
 import { DeclaracaoFaturamentoView } from './DeclaracaoFaturamentoView';
@@ -105,6 +106,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       ? `${effectiveYear}`
       : `${effectiveYear}-${String(effectiveMonth).padStart(2, '0')}`;
 
+  const ignoredExcessMonths: string[] = db.getPreferences().carneLeaoSettings?.excessIgnoredMonths || [];
+  const ignoredExcessKey = ignoredExcessMonths.join(',');
   const cpfTax = useMemo(() => {
     return calculateCpfMonthlyTax(
       sales,
@@ -113,9 +116,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       effectiveYear,
       taxRulesPf,
       professional.numDependentes,
-      professional.inssProprioMensal
+      professional.inssProprioMensal,
+      ignoredExcessMonths
     );
-  }, [sales, expenses, competenceStr, effectiveYear, taxRulesPf, professional]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sales, expenses, competenceStr, effectiveYear, taxRulesPf, professional, ignoredExcessKey]);
 
   // Simples Nacional: mesma BASE FISCAL CANÔNICA do Dashboard e da tela Motores (última competência fechada).
   const fiscalBase = useFiscalBase({
@@ -124,6 +129,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     payrollHistory,
     taxRulesSimples,
     year: effectiveYear,
+    referenceCompetencyOverride: effectiveMonth === 'ALL' ? null : competenceStr,
   });
   const cnpjTax = useMemo(
     () =>
@@ -136,7 +142,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     [fiscalBase, sales, competenceStr, effectiveYear, taxRulesSimples]
   );
   const fiscalBaseNote = cnpjTax.available
-    ? `Base fiscal: última competência fechada (${formatCompetencyShortName(fiscalBase.referenceCompetency)})`
+    ? `Base fiscal: 12 meses anteriores a ${formatCompetencyShortName(fiscalBase.referenceCompetency)} (regime de caixa)`
     : fiscalBase.reasonMessage || 'Base fiscal indisponível';
   const UNAVAILABLE_TEXT = 'Base fiscal indisponível';
 

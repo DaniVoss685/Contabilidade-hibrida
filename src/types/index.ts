@@ -1171,6 +1171,15 @@ export interface PricingSettings {
   updatedAt?: string;
 }
 
+/** Ajustes do Carnê-Leão da clínica (persistidos em df_system_preferences.carne_leao_settings). */
+export interface CarneLeaoSettings {
+  /**
+   * Meses (YYYY-MM) DESATIVADOS no excesso de Livro Caixa. Usado enquanto as receitas de um mês ainda não
+   * foram lançadas, para o excesso não ficar inflado; reativar o mês volta a considerá-lo.
+   */
+  excessIgnoredMonths?: string[];
+}
+
 export interface SystemPreferences {
   hideCpf?: boolean; // Legado; CPF agora é exibido integralmente por padrão
   alertFatorR: boolean; // default: true
@@ -1181,6 +1190,7 @@ export interface SystemPreferences {
   lunchBreakEnd?: string; // ex: '13:00'
   cardFees?: CardFeeSettings;
   pricing?: PricingSettings; // Parâmetros de precificação (Configurações → Precificação)
+  carneLeaoSettings?: CarneLeaoSettings; // Meses desativados no excesso de Livro Caixa
   dismissedOnboarding?: boolean; // Se o checklist de primeiros passos foi fechado manualmente pelo usuário
 }
 

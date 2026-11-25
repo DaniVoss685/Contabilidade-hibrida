@@ -280,7 +280,8 @@ function calculateCpfYearToMonth(
   year: number,
   customRules: TaxRulesPf | undefined,
   dependentCount: number,
-  inssProprio: number
+  inssProprio: number,
+  ignoredExcessMonths: readonly string[] = []
 ) {
   const targetMonth = Number(yearMonth.slice(5, 7));
   const rules = getPfTaxRules(year, customRules);
@@ -304,6 +305,9 @@ function calculateCpfYearToMonth(
     if (month === targetMonth) {
       realized = monthResult;
       targetData = data;
+    } else if (ignoredExcessMonths.includes(monthKey)) {
+      // Mês DESATIVADO no excesso (ex.: receitas ainda não lançadas): não gera nem consome excesso;
+      // o saldo anterior segue intacto até o mês ser regularizado e reativado.
     } else {
       previousExcess = month < 12 ? monthResult.excessoLivroCaixaProximoMes : 0;
     }
@@ -319,6 +323,139 @@ function calculateCpfYearToMonth(
     taxRules: rules,
   });
   return { rules, targetData, previousExcess, realized: realized!, projected };
+}
+
+export interface LivroCaixaMonthRow {
+  /** 1 a 12 */
+  month: number;
+  monthKey: string;
+  /** Rendimentos CPF tributáveis efetivamente recebidos no mês (caixa). */
+  rendimentos: number;
+  /** Despesas de PF pagas no mês e dedutíveis no Livro Caixa (SIM + CONDICIONAL). */
+  despesas: number;
+  despesasCount: number;
+  excessoAnterior: number;
+  disponivel: number;
+  utilizado: number;
+  /** O que sobrou e passa para o mês seguinte (zera em dezembro). */
+  excessoProximoMes: number;
+  /** Explicação em português simples do que aconteceu naquele mês. */
+  motivo: string;
+  /** true = mês DESATIVADO pelo usuário: não entra no excesso (os números acima mostram o que ele geraria). */
+  ignorado: boolean;
+  /** Receita zerada com despesas lançadas: provável receita ainda não lançada. */
+  semReceitaComDespesas: boolean;
+  /** Excesso que realmente segue para o mês seguinte (igual ao saldo anterior se o mês estiver desativado). */
+  excessoRepassado: number;
+}
+
+const BRL_TEXT = (value: number): string =>
+  value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+function explainLivroCaixaMonth(row: Omit<LivroCaixaMonthRow, 'motivo'>): string {
+  const { rendimentos, despesas, excessoAnterior, disponivel, utilizado, excessoProximoMes, month, ignorado } = row;
+  if (ignorado) {
+    return (
+      `Mês desativado: não entra no excesso. Se ele entrasse, a receita (${BRL_TEXT(rendimentos)}) e as despesas ` +
+      `(${BRL_TEXT(despesas)}) deixariam ${BRL_TEXT(excessoProximoMes)} para o mês seguinte. ` +
+      `Reative quando as receitas deste mês estiverem lançadas.`
+    );
+  }
+  if (despesas <= 0 && excessoAnterior <= 0) {
+    return 'Sem despesas dedutíveis no Livro Caixa neste mês.';
+  }
+  const parteExcesso = excessoAnterior > 0 ? ` + ${BRL_TEXT(excessoAnterior)} trazidos de meses anteriores` : '';
+  const fim = month === 12 ? ' Como é dezembro, esse saldo é encerrado e NÃO vai para o ano seguinte.' : '';
+  if (rendimentos <= 0) {
+    return (
+      `Não houve receita de pessoa física recebida neste mês, então nada pôde ser deduzido. ` +
+      (month === 12
+        ? `As despesas do Livro Caixa (${BRL_TEXT(despesas)})${parteExcesso} não puderam ser aproveitadas.${fim}`
+        : `As despesas do Livro Caixa (${BRL_TEXT(despesas)})${parteExcesso} ficaram guardadas para o mês seguinte.`)
+    );
+  }
+  if (excessoProximoMes > 0) {
+    return (
+      `A receita do mês foi ${BRL_TEXT(rendimentos)}, mas as despesas dedutíveis (${BRL_TEXT(despesas)})${parteExcesso} ` +
+      `somaram ${BRL_TEXT(disponivel)}. A dedução não pode passar da receita do mês: foram usados ${BRL_TEXT(utilizado)} ` +
+      `e sobraram ${BRL_TEXT(excessoProximoMes)}.${fim}`
+    );
+  }
+  if (excessoAnterior > 0) {
+    return (
+      `A receita do mês (${BRL_TEXT(rendimentos)}) foi suficiente para deduzir tudo: ` +
+      `${BRL_TEXT(despesas)} do mês + ${BRL_TEXT(excessoAnterior)} trazidos de meses anteriores. Nada sobrou.`
+    );
+  }
+  return `A receita do mês (${BRL_TEXT(rendimentos)}) cobriu as despesas dedutíveis (${BRL_TEXT(despesas)}). Nada sobrou.`;
+}
+
+/**
+ * Histórico mês a mês do Livro Caixa (janeiro até o mês indicado), com a MESMA apuração do Carnê-Leão
+ * (calculateCarneLeaoMensal): mostra de onde veio cada centavo de excesso trazido.
+ * O excesso só acumula dentro do ano-calendário (a lei permite compensar até dezembro).
+ */
+export function getLivroCaixaMonthlyHistory(
+  sales: Sale[],
+  expenses: Expense[],
+  yearMonth: string,
+  year: number,
+  customRules: TaxRulesPf | undefined,
+  dependentCount: number,
+  inssProprio: number,
+  ignoredExcessMonths: readonly string[] = []
+): LivroCaixaMonthRow[] {
+  const targetMonth = Number(yearMonth.slice(5, 7));
+  const rules = getPfTaxRules(year, customRules);
+  const dependentDeduction = Math.max(0, dependentCount || 0) * rules.dependentDeductionMonthly;
+  const rows: LivroCaixaMonthRow[] = [];
+  let previousExcess = 0;
+  for (let month = 1; month <= targetMonth; month += 1) {
+    const monthKey = year + '-' + String(month).padStart(2, '0');
+    const data = collectCpfMonthlyCashData(monthKey, sales, expenses);
+    const result = calculateCarneLeaoMensal({
+      year,
+      month,
+      taxableIncome: data.receivedGrossCpf,
+      livroCaixaExpensesPaid: data.deductibleLivroCaixaPaid,
+      previousLivroCaixaExcess: previousExcess,
+      deductibleInss: inssProprio,
+      deductibleDependents: dependentDeduction,
+      taxRules: rules,
+    });
+    const despesasCount = expenses.filter(
+      (expense) =>
+        expense.entity === 'CPF' &&
+        expense.value > 0 &&
+        expense.status === 'PAGO' &&
+        expense.paymentDate?.startsWith(monthKey) &&
+        (expense.dedutivelLivroCaixaPf === 'SIM' || expense.dedutivelLivroCaixaPf === 'CONDICIONAL')
+    ).length;
+    // O mês apurado (último) nunca é desativado: só os anteriores alimentam o excesso trazido.
+    const ignorado = month < targetMonth && ignoredExcessMonths.includes(monthKey);
+    const excessoRepassado = ignorado
+      ? previousExcess
+      : month < 12
+        ? result.excessoLivroCaixaProximoMes
+        : 0;
+    const base = {
+      month,
+      monthKey,
+      rendimentos: result.rendimentosTributaveis,
+      despesas: result.despesasLivroCaixaMes,
+      despesasCount,
+      excessoAnterior: result.excessoLivroCaixaAnterior,
+      disponivel: result.livroCaixaDisponivel,
+      utilizado: result.livroCaixaUtilizado,
+      excessoProximoMes: result.excessoLivroCaixaProximoMes,
+      ignorado,
+      semReceitaComDespesas: result.rendimentosTributaveis <= 0 && result.despesasLivroCaixaMes > 0,
+      excessoRepassado,
+    };
+    rows.push({ ...base, motivo: explainLivroCaixaMonth(base) });
+    previousExcess = excessoRepassado;
+  }
+  return rows;
 }
 
 /** Compatibility wrapper; both public PF APIs share the same calculation path. */
@@ -596,14 +733,16 @@ export function calculateCpfMonthlyTax(
   year: number,
   customRules?: TaxRulesPf,
   dependentCount = 0,
-  inssProprio = 0
+  inssProprio = 0,
+  /** Meses (YYYY-MM) desativados no excesso de Livro Caixa — ver getLivroCaixaMonthlyHistory. */
+  ignoredExcessMonths: readonly string[] = []
 ) {
   if (yearMonth === String(year)) {
     const monthlyResults = Array.from({ length: 12 }, (_, index) => {
       const month = index + 1;
       const monthKey = year + '-' + String(month).padStart(2, '0');
       const context = calculateCpfYearToMonth(
-        sales, expenses, monthKey, year, customRules, dependentCount, inssProprio
+        sales, expenses, monthKey, year, customRules, dependentCount, inssProprio, ignoredExcessMonths
       );
       return makeCpfMonthSummary(monthKey, year, dependentCount, context);
     });
@@ -689,7 +828,7 @@ export function calculateCpfMonthlyTax(
   }
 
   const context = calculateCpfYearToMonth(
-    sales, expenses, yearMonth, year, customRules, dependentCount, inssProprio
+    sales, expenses, yearMonth, year, customRules, dependentCount, inssProprio, ignoredExcessMonths
   );
   return makeCpfMonthSummary(yearMonth, year, dependentCount, context);
 }

@@ -7,6 +7,8 @@
 // da MESMA competência fechada de onde já vem a alíquota (fiscalBase.referenceCompetency para o DAS;
 // getLastClosedCompetence — mesma função que a tela Motores já usa — para o Carnê-Leão). O painel
 // "Limite de Isenção" (Atual/Previsto) continua com o mês corrente, ao vivo — propósito diferente.
+// ATUALIZAÇÃO 2026-11-25: o Dashboard passou a ser REGIME DE CAIXA — o mês selecionado mostra o imposto do
+// próprio mês (a guia é paga no mês seguinte, mas já aparece adiantada). A seção 4 reflete essa regra.
 // Rodar com: npx tsx tests/functional/dashboardTaxCompetencyAlignment.test.ts
 
 import { readFileSync } from 'node:fs';
@@ -110,22 +112,21 @@ console.log('\n=== 3. Carnê-Leão: recebido do mês FECHADO, não do mês em an
 }
 
 // ---------------------------------------------------------------------------------------------
-console.log('\n=== 4. Checagem estática — DashboardView usa a competência fechada nos cards de guia ===');
+console.log('\n=== 4. Checagem estática — DashboardView usa REGIME DE CAIXA (mês selecionado) nos cards de guia ===');
 {
   const src = readFileSync('src/components/Dashboard/DashboardView.tsx', 'utf-8');
   const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const code = strip(src);
 
-  assert(code.includes('revenueCompetence: fiscalBase.referenceCompetency'), 'DAS: revenueCompetence é a MESMA competência da alíquota (fiscalBase.referenceCompetency), não competenceStr');
-  assert(!/revenueCompetence:\s*competenceStr/.test(code), 'regressão: nenhum lugar volta a usar competenceStr (mês em andamento) como base do DAS');
-  assert(code.includes('getLastClosedCompetence') && code.includes('dueCompetenceStr'), 'IRPF: usa getLastClosedCompetence (mesma função da tela Motores) para o mês do Carnê-Leão devido');
-  assert(code.includes('cpfTaxDue') && code.includes('cpfTaxDue.carneLeaoEstimated') && code.includes('cpfTaxDue.effectiveTaxRate'), 'card do IRPF usa cpfTaxDue (mês fechado), não cpfTax (mês corrente)');
-  assert(code.includes('const cpfTax = useMemo') && code.includes('cpfTax.grossRevenueReceived'), 'cpfTax (mês corrente, ao vivo) continua existindo e alimentando o painel de Limite de Isenção');
-  assert(code.includes('totalTaxesEstimated = cpfTaxDue.carneLeaoEstimated + cnpjTax.dasEstimated'), 'total consolidado (hero "Resultado Líquido") soma as DUAS guias da competência fechada, coerente com o resto do card ser Realizado (Caixa)');
-  assert(/Carnê-Leão \(PF\)<\/span>\s*\n\s*<span[^>]*>\{formatCurrency\(cpfTaxDue\.carneLeaoEstimated\)\}/.test(code), 'banner "Consolidação Tributária Híbrida" mostra o MESMO valor do card de IRPF (cpfTaxDue), sem número divergente na mesma tela');
-  assert(code.includes('Sobre {fiscalBaseLabel}') || code.includes('Sobre Ago'), 'rótulo do DAS informa de qual competência veio o faturamento (não fica implícito)');
-  assert(code.includes('Sobre recebimentos de {dueCompetenceLabel}'), 'rótulo do IRPF informa de qual competência veio o recebimento');
-  assert(code.includes('Faturamento em {fiscalBaseLabel} (NFS-e)'), '"Faturamento no Mês" foi renomeado para deixar claro que é da competência fechada, não do mês selecionado na tela');
+  // Decisão do dono (2026-11-25): o Dashboard é CAIXA. O que entrou em Nov mostra o imposto de Nov
+  // (a guia só é paga em Dez, mas já aparece adiantada). Nada de usar o mês anterior.
+  assert(/dueCompetenceStr\s*=\s*isAnnualPeriod\s*\?\s*getLastClosedCompetence\(\)\.competenceStr\s*:\s*competenceStr;/.test(code), 'mês selecionado => Carnê-Leão e DAS calculados sobre o PRÓPRIO mês (caixa); só "Todos os meses" usa a última competência fechada');
+  assert(!/addMonthsToCompetency\(competenceStr,\s*-1\)/.test(code), 'regressão: o Dashboard não volta a usar o mês anterior (competência) como base das guias');
+  assert(code.includes('referenceCompetencyOverride: isAnnualPeriod ? null : dueCompetenceStr'), 'base fiscal (RBT12/Fator R) é resolvida para o mesmo mês exibido');
+  assert(code.includes('revenueCompetence: isAnnualPeriod ? fiscalBase.referenceCompetency : dueCompetenceStr'), 'DAS: faturamento do mesmo mês exibido');
+  assert(code.includes('Sobre recebimentos de {dueCompetenceLabel}') && code.includes('(paga em {dueMonthLabel})'), 'rótulo do IRPF: recebimentos do mês exibido, paga no mês seguinte');
+  assert(code.includes('Vence dia 20 de {dueMonthLabel}') && code.includes('Sobre {dueCompetenceLabel}'), 'rótulo do DAS: vence dia 20 do mês seguinte, sobre o mês exibido');
+  assert(code.includes('const cpfTax = useMemo') && code.includes('cpfTax.grossRevenueReceived'), 'cpfTax alimenta o painel de Limite de Isenção');
 }
 
 console.log(`\n${passed} verificações passaram.`);

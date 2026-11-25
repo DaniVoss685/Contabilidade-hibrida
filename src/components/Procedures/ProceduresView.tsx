@@ -61,6 +61,8 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Colunas avançadas (lucro, custo total, sugerido): só para quem vê custos e só se pedir em "Mais opções".
+  const [showAdvancedColumns, setShowAdvancedColumns] = useState(false);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState<boolean>(initialOpenNewModal);
@@ -99,6 +101,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
   } = useSortableData(filteredProcedures, {
     customComparators: {
       directCost: (a, b) => (a.totalDirectCost || 0) - (b.totalDirectCost || 0),
+      inputsCost: (a, b) => (a.costInputsTotal || 0) - (b.costInputsTotal || 0),
       defaultPrice: (a, b) => (a.defaultPrice || 0) - (b.defaultPrice || 0),
       netProfit: (a, b) => ((a.defaultPrice || 0) - (a.totalDirectCost || 0)) - ((b.defaultPrice || 0) - (b.totalDirectCost || 0)),
       markupMargin: (a, b) => {
@@ -534,19 +537,21 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
                         <div>
-                          <div className="text-[10px] uppercase font-bold text-slate-400">Preço</div>
+                          <div className="text-[10px] uppercase font-bold text-slate-400">Valor</div>
                           <div className="font-black text-slate-900">{formatCurrency(proc.defaultPrice)}</div>
                         </div>
                         {canViewCosts && (
                           <>
                             <div>
-                              <div className="text-[10px] uppercase font-bold text-slate-400">Custo direto</div>
-                              <div className="font-bold text-slate-800">{formatCurrency(proc.totalDirectCost)}</div>
+                              <div className="text-[10px] uppercase font-bold text-slate-400">Custo dos insumos</div>
+                              <div className="font-bold text-slate-800">{formatCurrency(proc.costInputsTotal)}</div>
                             </div>
-                            <div>
-                              <div className="text-[10px] uppercase font-bold text-slate-400">Lucro</div>
-                              <div className="font-bold text-emerald-700">+{formatCurrency(profitBrl)}</div>
-                            </div>
+                            {showAdvancedColumns && (
+                              <div>
+                                <div className="text-[10px] uppercase font-bold text-slate-400">Lucro</div>
+                                <div className="font-bold text-emerald-700">+{formatCurrency(profitBrl)}</div>
+                              </div>
+                            )}
                             <div>
                               <div className="text-[10px] uppercase font-bold text-slate-400">Margem</div>
                               {marginInfo.status === 'NO_PRICE' ? (
@@ -602,22 +607,36 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
         )}
       </div>
 
+      {canViewCosts && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setShowAdvancedColumns((v) => !v)}
+            aria-pressed={showAdvancedColumns}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+          >
+            {showAdvancedColumns ? 'Ocultar custos e lucro' : 'Mais opções: custo total e lucro'}
+          </button>
+        </div>
+      )}
+
       {/* Table (desktop) */}
       <div className="hidden lg:block bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-700 uppercase font-bold text-[11px] tracking-wider border-b border-slate-200">
               <tr>
-                <th className="py-3 px-4 w-10 text-center">
+                <th className="py-3 px-3 w-14 text-center">
                   <button
                     type="button"
                     onClick={handleSelectAll}
-                    className="cursor-pointer text-slate-600 hover:text-slate-900"
+                    aria-label={allSelected ? 'Desmarcar todos' : 'Selecionar todos'}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg cursor-pointer text-slate-600 hover:bg-slate-100"
                   >
                     {allSelected ? (
-                      <CheckSquare className="w-4 h-4 text-teal-600" />
+                      <CheckSquare className="w-6 h-6 text-teal-600" />
                     ) : (
-                      <Square className="w-4 h-4 text-slate-400" />
+                      <Square className="w-6 h-6 text-slate-400" />
                     )}
                   </button>
                 </th>
@@ -647,7 +666,17 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                 />
                 {canViewCosts && (
                   <SortableHeader
-                    label="Custo Direto"
+                    label="Custo dos Insumos"
+                    sortKey="inputsCost"
+                    currentSortKey={sortKey}
+                    currentDirection={sortDirection}
+                    onSort={handleSort}
+                    align="right"
+                  />
+                )}
+                {canViewCosts && showAdvancedColumns && (
+                  <SortableHeader
+                    label="Custo Total"
                     sortKey="directCost"
                     currentSortKey={sortKey}
                     currentDirection={sortDirection}
@@ -656,7 +685,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                   />
                 )}
                 <SortableHeader
-                  label="Preço de Tabela"
+                  label="Valor"
                   sortKey="defaultPrice"
                   currentSortKey={sortKey}
                   currentDirection={sortDirection}
@@ -666,30 +695,32 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                 {canViewCosts && (
                   <>
                     <SortableHeader
-                      label="Margem Lucro"
+                      label="Margem"
                       sortKey="markupMargin"
                       currentSortKey={sortKey}
                       currentDirection={sortDirection}
                       onSort={handleSort}
                       align="center"
                     />
-                    <SortableHeader
-                      label="Lucro Líquido"
-                      sortKey="netProfit"
-                      currentSortKey={sortKey}
-                      currentDirection={sortDirection}
-                      onSort={handleSort}
-                      align="right"
-                    />
+                    {showAdvancedColumns && (
+                      <SortableHeader
+                        label="Lucro Líquido"
+                        sortKey="netProfit"
+                        currentSortKey={sortKey}
+                        currentDirection={sortDirection}
+                        onSort={handleSort}
+                        align="right"
+                      />
+                    )}
                   </>
                 )}
-                <th className="py-3 px-4 text-center">Ações</th>
+                <th className="py-3 px-4 text-center min-w-[136px] sticky right-0 z-10 bg-slate-50 shadow-[-8px_0_8px_-8px_rgba(15,23,42,0.15)]">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
               {displayProcedures.length === 0 ? (
                 <tr>
-                  <td colSpan={canViewCosts ? 9 : 6} className="py-8 text-center text-slate-400">
+                  <td colSpan={canViewCosts ? (showAdvancedColumns ? 10 : 8) : 6} className="py-8 text-center text-slate-400">
                     Nenhum procedimento encontrado. Clique em "+ NOVO PROCEDIMENTO" para cadastrar.
                   </td>
                 </tr>
@@ -702,21 +733,22 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                   return (
                     <tr
                       key={proc.id}
-                      className={`transition-colors ${
+                      className={`group transition-colors ${
                         isSelected ? 'bg-teal-50/50' : 'hover:bg-slate-50/80'
                       }`}
                     >
                       {/* Checkbox */}
-                      <td className="py-3.5 px-4 text-center">
+                      <td className="py-3.5 px-3 text-center">
                         <button
                           type="button"
                           onClick={() => handleToggleSelect(proc.id)}
-                          className="cursor-pointer text-slate-500 hover:text-slate-800"
+                          aria-label={isSelected ? 'Desmarcar procedimento' : 'Selecionar procedimento'}
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-lg cursor-pointer text-slate-500 hover:bg-slate-100 hover:text-slate-800"
                         >
                           {isSelected ? (
-                            <CheckSquare className="w-4 h-4 text-teal-600" />
+                            <CheckSquare className="w-6 h-6 text-teal-600" />
                           ) : (
-                            <Square className="w-4 h-4 text-slate-300" />
+                            <Square className="w-6 h-6 text-slate-300" />
                           )}
                         </button>
                       </td>
@@ -762,15 +794,20 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                         </span>
                       </td>
 
-                      {/* Direct Cost */}
+                      {/* Custo dos insumos (foco do custo para a clínica) */}
                       {canViewCosts && (
+                        <td className="py-3.5 px-4 text-right">
+                          <div className="font-bold text-slate-800">
+                            {formatCurrency(proc.costInputsTotal)}
+                          </div>
+                        </td>
+                      )}
+                      {canViewCosts && showAdvancedColumns && (
                         <td className="py-3.5 px-4 text-right">
                           <div className="font-bold text-slate-800">
                             {formatCurrency(proc.totalDirectCost)}
                           </div>
-                          <div className="text-[10px] text-slate-400">
-                            Insumos: {formatCurrency(proc.costInputsTotal)}
-                          </div>
+                          <div className="text-[10px] text-slate-400">Insumos + hora clínica</div>
                         </td>
                       )}
 
@@ -779,7 +816,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                         <div className="font-black text-slate-900 text-sm">
                           {formatCurrency(proc.defaultPrice)}
                         </div>
-                        {canViewCosts && proc.suggestedPrice && (
+                        {canViewCosts && showAdvancedColumns && proc.suggestedPrice && (
                           <div className="text-[10px] text-teal-700">
                             Sugerido: {formatCurrency(proc.suggestedPrice)}
                           </div>
@@ -818,7 +855,7 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                       )}
 
                       {/* Profit BRL */}
-                      {canViewCosts && (
+                      {canViewCosts && showAdvancedColumns && (
                         <td className="py-3.5 px-4 text-right">
                           <div className="font-bold text-emerald-700">
                             +{formatCurrency(profitBrl)}
@@ -827,30 +864,40 @@ export const ProceduresView: React.FC<ProceduresViewProps> = ({
                       )}
 
                       {/* Actions */}
-                      <td className="py-3.5 px-4 text-center">
+                      <td
+                        className={`py-3.5 px-3 text-center min-w-[136px] sticky right-0 z-10 shadow-[-8px_0_8px_-8px_rgba(15,23,42,0.15)] ${
+                          isSelected ? 'bg-teal-50' : 'bg-white group-hover:bg-slate-50'
+                        }`}
+                      >
                         <div className="flex items-center justify-center gap-1">
                           <button
+                            type="button"
                             onClick={() => handleEdit(proc)}
-                            className="p-1.5 rounded-lg text-slate-500 hover:text-teal-700 hover:bg-teal-50 transition-colors cursor-pointer"
-                            title="Editar procedimento e precificação"
+                            aria-label="Editar procedimento"
+                            className="shrink-0 p-2 rounded-lg text-slate-600 hover:text-teal-700 hover:bg-teal-50 transition-colors cursor-pointer"
+                            title="Editar procedimento"
                           >
-                            <Edit className="w-3.5 h-3.5" />
+                            <Edit className="w-4 h-4" />
                           </button>
 
                           <button
+                            type="button"
                             onClick={() => handleDuplicate(proc)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                            aria-label="Duplicar procedimento"
+                            className="shrink-0 p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
                             title="Duplicar procedimento"
                           >
-                            <Copy className="w-3.5 h-3.5" />
+                            <Copy className="w-4 h-4" />
                           </button>
 
                           <button
+                            type="button"
                             onClick={() => handleDelete(proc.id, proc.name)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                            aria-label="Excluir procedimento"
+                            className="shrink-0 p-2 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 transition-colors cursor-pointer"
                             title="Excluir procedimento"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
                       </td>

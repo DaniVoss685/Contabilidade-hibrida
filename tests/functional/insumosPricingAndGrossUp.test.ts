@@ -142,7 +142,7 @@ async function main() {
   const recep = getPricingAccess('RECEPTION', null, false);
   assert(!recep.canViewCosts && !recep.canEditPrice && !recep.canManagePricingParams, 'T08: recepção NÃO vê custos, não edita preço final nem parâmetros (não precisa preencher hora clínica)');
   const assistant = getPricingAccess('ASSISTANT', ['procedures:view', 'procedures:manage'], false);
-  assert(!assistant.canViewCosts && !assistant.canEditPrice, 'lista customizada com a aba de procedimentos NÃO concede acesso financeiro (nunca "de brinde")');
+  assert(!assistant.canViewCosts && assistant.canEditPrice && !assistant.canManagePricingParams, 'quem tem a aba de procedimentos (recepção) informa o preço, mas NÃO vê custos nem edita parâmetros (nunca "de brinde")');
   const owner = getPricingAccess('OWNER', null, false);
   assert(owner.canViewCosts && owner.canEditPrice && owner.canManagePricingParams, 'T10: proprietário/administrador alteram parâmetros e preço');
   const admin = getPricingAccess('ADMIN', ['procedures:view'], false);
@@ -284,14 +284,15 @@ async function main() {
   assert(!/label="Valor da Hora Clínica do Dentista"/.test(procModal) && !/Margem de Lucro Desejada/.test(procModal), 'T08: o formulário de procedimento não pede mais hora clínica nem margem desejada');
   assert(/Duração do procedimento/.test(procModal) && /data-testid="proc-duration-hours"/.test(procModal), 'a duração do procedimento fica em evidência');
   const priceIdx = procModal.indexOf('4. Preço do procedimento');
-  const compIdx = procModal.indexOf('Ver composição do custo');
+  const compIdx = procModal.indexOf('Análise de custo, margem e preço sugerido');
   assert(priceIdx > 0 && compIdx > priceIdx, 'T11: "Preço do procedimento" vem antes e fora da composição do custo (que fica recolhida no fim)');
-  assert(/Quanto será cobrado do paciente\?/.test(procModal) && /Preço praticado/.test(procModal), 'T11: pergunta principal "Quanto será cobrado do paciente?" + campo "Preço praticado"');
+  assert(/Valor cobrado do paciente/.test(procModal) && !/Quanto será cobrado do paciente\?/.test(procModal), 'T11: preço direto ("Valor cobrado do paciente"), sem pergunta nem "Preço praticado"');
   assert(/Usar preço sugerido/.test(procModal) && !/>\s*Adotar\s*</.test(procModal), 'T12: botão "Usar preço sugerido" (sem o ambíguo "Adotar")');
-  assert(/Preço sugerido pela clínica/.test(procModal) && /Custo estimado/.test(procModal) && /Margem real/.test(procModal), 'preço sugerido, custo estimado e margem ao lado do preço');
+  assert(/Preço sugerido pela clínica/.test(procModal) && /Custo estimado/.test(procModal) && /Margem real/.test(procModal), 'preço sugerido, custo estimado e margem ficam na análise recolhida (só gestão)');
+  assert(procModal.indexOf('proc-price-helpers') > compIdx, 'sugerido/custo/margem ficam DENTRO da análise recolhida, não ao lado do preço');
   assert(/showComposition/.test(procModal) && /aria-expanded/.test(procModal), 'composição do custo é uma seção recolhível (modo avançado)');
   assert(/evaluateMargin\(/.test(procModal) && !/marginPercent >= 40/.test(procModal), 'julgamento de margem só via evaluateMargin (sem limite 40% inventado)');
-  assert(/canViewCosts \? 9 : 6/.test(procView) && /canViewCosts &&/.test(procView), 'lista de procedimentos esconde custo direto, margem e lucro sem acesso financeiro');
+  assert(/canViewCosts \? \(showAdvancedColumns \? \d+ : \d+\) : \d+/.test(procView) && /canViewCosts &&/.test(procView) && /Custo dos Insumos/.test(procView) && /showAdvancedColumns/.test(procView), 'lista de procedimentos esconde custo dos insumos, margem e lucro sem acesso financeiro; lucro/custo total só em "Mais opções"');
   assert(/PricingSettingsCard/.test(settings), 'Configurações → card de Precificação');
   const card = strip(read('src/components/Settings/PricingSettingsCard.tsx'));
   assert(/canManagePricingParams/.test(card) && /if \(!canViewCosts\) return null/.test(card), 'parâmetros: só quem vê custos enxerga o card; só quem gerencia edita');

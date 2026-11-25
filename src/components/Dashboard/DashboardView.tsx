@@ -38,6 +38,10 @@ import { getLastClosedCompetence } from '../../lib/statusHelper';
 import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { FirstStepsChecklist } from './FirstStepsChecklist';
 import { FatorRProgress } from './FatorRProgress';
+import { LivroCaixaExcessModal } from './LivroCaixaExcessModal';
+import { getLivroCaixaMonthlyHistory } from '../../lib/taxEngine';
+import { normalizeIgnoredMonths, setMonthIgnored } from '../../lib/carneLeaoExcessSettings';
+import { hasPermission } from '../../lib/permissions';
 
 interface DashboardViewProps {
   sales: Sale[];
@@ -104,16 +108,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       ? `${effectiveYear}`
       : `${effectiveYear}-${String(effectiveMonth).padStart(2, '0')}`;
 
-  // A guia do mês selecionado vence no mês seguinte e considera a competência imediatamente anterior.
+  // Regime de CAIXA: o que a clínica recebeu/pagou no mês selecionado já mostra o imposto daquele mesmo
+  // mês (a guia só é paga no mês seguinte, mas o valor é calculado sobre o mês exibido).
   // Em “Todos os meses”, o painel mantém o resumo anual e a guia segue a última competência fechada.
   const isAnnualPeriod = effectiveMonth === 'ALL';
   const dueCompetenceStr = isAnnualPeriod
     ? getLastClosedCompetence().competenceStr
-    : addMonthsToCompetency(competenceStr, -1);
+    : competenceStr;
   const dueCompetenceYear = Number(dueCompetenceStr.slice(0, 4));
 
   // CPF (Carnê-Leão): em uma competência mensal, painel, memória resumida e guia usam o mesmo mês.
   // No resumo anual, os detalhes continuam acumulados no ano selecionado.
+  // Meses desativados no excesso de Livro Caixa (receitas ainda não lançadas). Salvo nas preferências da clínica.
+  const [ignoredExcessMonths, setIgnoredExcessMonths] = useState<string[]>(() =>
+    normalizeIgnoredMonths(db.getPreferences().carneLeaoSettings?.excessIgnoredMonths)
+  );
+  const ignoredExcessKey = ignoredExcessMonths.join(',');
+  const currentUserForExcess = db.getUser();
+  const canManageExcessMonths = hasPermission(
+    currentUserForExcess?.role,
+    'taxes:view',
+    currentUserForExcess?.permissions,
+    currentUserForExcess?.isPrimary
+  );
+  const handleToggleExcessMonth = (monthKey: string, ignored: boolean) => {
+    const next = setMonthIgnored(ignoredExcessMonths, monthKey, ignored);
+    setIgnoredExcessMonths(next);
+    db.updatePreferences({ carneLeaoSettings: { ...(db.getPreferences().carneLeaoSettings || {}), excessIgnoredMonths: next } });
+  };
+
   const cpfTax = useMemo(() => {
     return calculateCpfMonthlyTax(
       sales,
@@ -122,9 +145,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       isAnnualPeriod ? effectiveYear : dueCompetenceYear,
       taxRulesPf,
       professional.numDependentes,
-      professional.inssProprioMensal
+      professional.inssProprioMensal,
+      ignoredExcessMonths
     );
-  }, [sales, expenses, competenceStr, dueCompetenceStr, dueCompetenceYear, isAnnualPeriod, effectiveYear, taxRulesPf, professional]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sales, expenses, competenceStr, dueCompetenceStr, dueCompetenceYear, isAnnualPeriod, effectiveYear, taxRulesPf, professional, ignoredExcessKey]);
+  // Histórico mês a mês do Livro Caixa (para explicar o excesso trazido). Só faz sentido em mês único.
+  const [isExcessModalOpen, setIsExcessModalOpen] = useState(false);
+  const livroCaixaHistory = useMemo(
+    () =>
+      isAnnualPeriod
+        ? []
+        : getLivroCaixaMonthlyHistory(
+            sales,
+            expenses,
+            dueCompetenceStr,
+            dueCompetenceYear,
+            taxRulesPf,
+            professional.numDependentes,
+            professional.inssProprioMensal,
+            ignoredExcessMonths
+          ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sales, expenses, dueCompetenceStr, dueCompetenceYear, isAnnualPeriod, taxRulesPf, professional, ignoredExcessKey]
+  );
   const isCpfProjected = viewMode === 'PROJETADO';
   const cpfCalculationDisplayed = selectCarneLeaoScenario(
     cpfTax.monthlyCalculation,
@@ -142,8 +186,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const patientsCount = useMemo(() => db.getPatients().length, [sales]);
   const appointmentsCount = useMemo(() => db.getAppointments().length, [sales]);
 
-  // Simples Nacional: no mês selecionado, a base canônica e o faturamento usam a competência
-  // anterior. “Todos os meses” mantém a última competência fiscal fechada.
+  // Simples Nacional: no mês selecionado, o faturamento é o do próprio mês (caixa); a base fiscal
+  // (RBT12/Fator R) usa os 12 meses anteriores a ele. “Todos os meses” mantém a última competência fechada.
   const fiscalBase = useFiscalBase({
     professional,
     sales,
@@ -166,6 +210,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   );
   const fiscalBaseLabel = formatCompetencyShortName(fiscalBase.referenceCompetency);
   const dueCompetenceLabel = formatCompetencyShortName(dueCompetenceStr);
+  // A guia do mês é paga no mês seguinte.
+  const dueMonthLabel = formatCompetencyShortName(addMonthsToCompetency(dueCompetenceStr, 1));
   const fiscalBaseSourceLabel =
     fiscalBase.source === 'CONTABILEX' ? 'Base oficial Contaju' : fiscalBase.source === 'NONE' ? '' : 'Base informada manualmente';
 
@@ -346,7 +392,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="flex items-center gap-2 text-[11px] text-slate-500 pt-1 border-t border-rose-100/70">
               <span>
-                Dedutível PF: <strong className="text-slate-800 font-mono">{formatCurrency(projection.activeExpenses.cpfDeductible)}</strong>
+                Pessoa Física: <strong className="text-slate-800 font-mono">{formatCurrency(projection.activeExpenses.cpfDeductible)}</strong>
               </span>
               <span className="text-rose-300">•</span>
               <span>
@@ -414,17 +460,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
 
             {/* Indicador principal e detalhes sempre pertencem ao mesmo cenário selecionado. */}
-            <div className="my-5 p-4.5 rounded-2xl bg-teal-600 text-white shadow-sm flex items-center justify-between">
-              <div>
+            <div className="my-5 p-4.5 rounded-2xl bg-teal-600 text-white shadow-sm flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <div className="min-w-0 flex-1 basis-48">
                 <span className="text-xs font-bold text-teal-100 uppercase tracking-wider block">
                   IRPF {isCpfProjected ? 'PROJETADO' : 'REALIZADO'} A RECOLHER:
                 </span>
                 <span className="text-[11px] text-teal-100/80 font-medium mt-0.5 block">
-                  DARF Cód. 0190 • Sobre recebimentos de {dueCompetenceLabel}
+                  DARF Cód. 0190 • Sobre recebimentos de {dueCompetenceLabel} (paga em {dueMonthLabel})
                 </span>
               </div>
-              <div className="text-right">
-                <span className="text-2xl font-black text-white font-mono tabular-nums tracking-tight">
+              <div className="text-right shrink-0">
+                <span data-testid="cpf-irpf-value" className="block whitespace-nowrap text-2xl font-black text-white font-mono tabular-nums tracking-tight">
                   {formatCurrency(cpfTaxAmountDisplayed)}
                 </span>
                 <span className="block text-[11px] text-teal-200 font-medium mt-0.5">
@@ -585,15 +631,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <span className="font-mono tabular-nums text-slate-700">{formatCurrency(calculation.despesasLivroCaixaMes)}</span>
                       </div>
                       {calculation.excessoLivroCaixaAnterior > 0 && (
-                        <div className="flex justify-between">
-                          <span>+ Excesso trazido de meses anteriores:</span>
+                        <button
+                          type="button"
+                          onClick={() => setIsExcessModalOpen(true)}
+                          data-testid="open-excess-details"
+                          className="group flex w-full items-center justify-between gap-2 rounded-md px-1 -mx-1 py-0.5 text-left hover:bg-teal-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/40 cursor-pointer"
+                          title="Ver de onde veio o excesso, mês a mês"
+                        >
+                          <span className="underline decoration-dotted underline-offset-2 group-hover:text-teal-800">
+                            + Excesso trazido de meses anteriores
+                            <span className="ml-1.5 rounded-full bg-teal-100 px-1.5 py-0.5 text-[9.5px] font-bold text-teal-800 no-underline">ver detalhes</span>
+                          </span>
                           <span className="font-mono tabular-nums text-slate-700">{formatCurrency(calculation.excessoLivroCaixaAnterior)}</span>
-                        </div>
+                        </button>
                       )}
                       <div className="flex justify-between font-semibold text-slate-600">
                         <span>= Disponível para deduzir:</span>
                         <span className="font-mono tabular-nums">{formatCurrency(calculation.livroCaixaDisponivel)}</span>
                       </div>
+                      {ignoredExcessMonths.some((m) => m.startsWith(String(dueCompetenceYear))) && (
+                        <div className="text-amber-700" data-testid="excess-ignored-warning">
+                          Há mês(es) desativado(s) no excesso (receitas ainda não lançadas). O valor pode mudar quando forem reativados.
+                        </div>
+                      )}
                       {calculation.excessoLivroCaixaProximoMes > 0 && (
                         <div className="flex justify-between text-amber-700">
                           <span>Passa para o mês seguinte (a dedução não pode passar dos rendimentos):</span>
@@ -709,18 +769,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </span>
             </div>
 
-            {/* Primary Indicator: DAS estimado sobre a competência anterior ao mês selecionado. */}
-            <div className="my-5 p-4.5 rounded-2xl bg-blue-600 text-white shadow-sm flex items-center justify-between">
-              <div>
+            {/* Primary Indicator: DAS estimado sobre o mês selecionado (caixa). */}
+            <div className="my-5 p-4.5 rounded-2xl bg-blue-600 text-white shadow-sm flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <div className="min-w-0 flex-1 basis-48">
                 <span className="text-xs font-bold text-blue-100 uppercase tracking-wider block">
                   DAS Estimado (Simples):
                 </span>
                 <span className="text-[11px] text-blue-100/80 font-medium mt-0.5 block">
-                  Guia Única DAS • Vencimento dia 20 • Sobre {dueCompetenceLabel}
+                  Guia Única DAS • Vence dia 20 de {dueMonthLabel} • Sobre {dueCompetenceLabel}
                 </span>
               </div>
-              <div className="text-right">
-                <span data-testid="pj-das-value" className="text-2xl font-black text-white font-mono tabular-nums tracking-tight">
+              <div className="text-right shrink-0">
+                <span data-testid="pj-das-value" className="block whitespace-nowrap text-2xl font-black text-white font-mono tabular-nums tracking-tight">
                   {cnpjTax.available ? formatCurrency(cnpjTax.dasEstimated) : '—'}
                 </span>
                 <span data-testid="pj-effective-rate" className="block text-[11px] text-blue-200 font-medium mt-0.5">
@@ -883,6 +943,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       </div>
+      <LivroCaixaExcessModal
+        isOpen={isExcessModalOpen}
+        onClose={() => setIsExcessModalOpen(false)}
+        year={dueCompetenceYear}
+        history={livroCaixaHistory}
+        canManage={canManageExcessMonths}
+        onToggleMonth={handleToggleExcessMonth}
+      />
     </div>
   );
 };

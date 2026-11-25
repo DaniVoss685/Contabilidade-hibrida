@@ -59,7 +59,7 @@ import { selectCarneLeaoScenario } from '../../lib/carneLeaoCalculation';
 import { formatCurrency, formatPercent, formatMonthYear, formatMonthYearShort } from '../../lib/masks';
 import { db } from '../../lib/db';
 import { supabase } from '../../lib/supabaseClient';
-import { getLastClosedCompetence, getTodayCivilDate } from '../../lib/statusHelper';
+import { getTodayCivilDate } from '../../lib/statusHelper';
 import { PeriodPicker, CurrencyInput, useToast, ConfirmDialog } from '../UI';
 import { ContabilexIntegrationService } from '../../services/contabilexIntegrationService';
 import { publishFiscalContabilex } from '../../services/fiscalBaseStore';
@@ -110,16 +110,18 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
 }) => {
   const toast = useToast();
 
-  // Regra Contábil Oficial: O fechamento fiscal e a apuração do Fator R/Simples ocorrem SEMPRE
-  // sobre a competência encerrada (mês anterior ao mês civil atual).
-  // Exemplo: Em 16/09/2026, apura-se Agosto/2026. Em Outubro/2026, apura-se Setembro/2026.
-  const lastClosed = getLastClosedCompetence();
+  // REGIME DE CAIXA: o mês selecionado (inclusive o mês em andamento) é apurado sobre o que entrou/saiu
+  // NAQUELE mês — a guia é paga no mês seguinte, mas o valor já aparece adiantado.
+  // Só meses FUTUROS são bloqueados (voltam para o mês atual).
+  const lastClosed = (() => {
+    const [curY, curM] = getTodayCivilDate().split('-').map(Number);
+    return { year: curY, month: curM, competenceStr: `${curY}-${String(curM).padStart(2, '0')}` };
+  })();
 
   const isCurrentOrFutureMonth = (y: number, m: number | 'ALL'): boolean => {
     if (m === 'ALL') return false;
-    const todayStr = getTodayCivilDate();
-    const [curY, curM] = todayStr.split('-').map(Number);
-    return y > curY || (y === curY && m >= curM);
+    const [curY, curM] = getTodayCivilDate().split('-').map(Number);
+    return y > curY || (y === curY && m > curM);
   };
 
   const [internalYear, setInternalYear] = useState<number>(() => {
@@ -193,7 +195,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
     if (month !== 'ALL' && isCurrentOrFutureMonth(year, month)) {
       const todayStr = getTodayCivilDate();
       toast.info(
-        `A competência atual (${formatMonthYear(todayStr.substring(0, 7))}) ainda está em andamento. O fechamento contábil e Fator R são apurados sobre a competência encerrada (${formatMonthYear(lastClosed.competenceStr)}).`
+        `${formatMonthYear(`${year}-${String(month).padStart(2, '0')}`)} ainda não começou. Mostrando o mês atual (${formatMonthYear(todayStr.substring(0, 7))}).`
       );
       setInternalYear(lastClosed.year);
       setInternalMonth(lastClosed.month);
@@ -565,6 +567,8 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
   const [isSavingBases, setIsSavingBases] = useState<boolean>(false);
 
   // CPF Calculation (Carnê-Leão) — 100% segregado de PJ/RBT12/FS12
+  const ignoredExcessMonths: string[] = db.getPreferences().carneLeaoSettings?.excessIgnoredMonths || [];
+  const ignoredExcessKey = ignoredExcessMonths.join(',');
   const cpfTax = useMemo(() => {
     return calculateCpfMonthlyTax(
       sales,
@@ -573,9 +577,11 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
       effectiveYear,
       taxRulesPf,
       professional.numDependentes,
-      professional.inssProprioMensal
+      professional.inssProprioMensal,
+      ignoredExcessMonths
     );
-  }, [sales, expenses, competenceStr, effectiveYear, taxRulesPf, professional]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sales, expenses, competenceStr, effectiveYear, taxRulesPf, professional, ignoredExcessKey]);
   const isCpfProjected = cpfCalculationMode === 'PROJETADO';
   const cpfCalculationDisplayed = selectCarneLeaoScenario(
     cpfTax.monthlyCalculation,
@@ -616,8 +622,7 @@ export const TaxesView: React.FC<TaxesViewProps> = ({
           linkStatus: contabilexLink?.status ?? null,
           snapshots: contabilexSnapshots,
         },
-        referenceCompetencyOverride:
-          isCompetency(competenceStr) && competenceStr !== lastClosed.competenceStr ? competenceStr : null,
+        referenceCompetencyOverride: isCompetency(competenceStr) ? competenceStr : null,
       }),
     [
       professional,

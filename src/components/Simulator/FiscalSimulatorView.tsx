@@ -81,6 +81,8 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
     payrollHistory,
     taxRulesSimples,
     year: selectedYear,
+    referenceCompetencyOverride:
+      selectedMonth === 'ALL' ? null : `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`,
   });
   const baseAvailable = fiscalBase.status === 'AVAILABLE';
   const fiscalBaseLabel = formatCompetencyShortName(fiscalBase.referenceCompetency);
@@ -484,7 +486,7 @@ export const FiscalSimulatorView: React.FC<FiscalSimulatorViewProps> = ({
                 </p>
                 {baselineData.baseAvailable && (
                   <p data-testid="sim-base-note" className="text-[11px] text-slate-400">
-                    Base: última competência fechada ({fiscalBaseLabel})
+                    Base: 12 meses anteriores a {fiscalBaseLabel}
                     {fiscalBase.source === 'CONTABILEX' ? ' • Base oficial Contaju' : ' • Base informada manualmente'}
                   </p>
                 )}

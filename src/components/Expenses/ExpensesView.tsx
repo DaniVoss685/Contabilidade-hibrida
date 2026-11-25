@@ -27,6 +27,7 @@ import { formatCurrency, formatDateBr } from '../../lib/masks';
 import { formatPaymentMethodName, formatPaymentMethodWithInstallments } from '../../lib/paymentMethodFormat';
 import { exportToCsv } from '../../lib/exportUtils';
 import { db } from '../../lib/db';
+import { hasPermission } from '../../lib/permissions';
 import { getEffectivePayableStatus } from '../../lib/statusHelper';
 import { filterExpenses, summarizeFilteredMoney } from '../../lib/financialFilters';
 import { getRecurrenceIntervalLabel } from '../../lib/expenseRecurrence';
@@ -99,6 +100,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
     name: string;
   } | null>(null);
   const [viewingExpense, setViewingExpense] = useState<Expense | null>(null);
+
+  // Duas visões: a gestão (quem acessa a área fiscal) vê Livro Caixa/Fator R e o código da conta;
+  // a recepção vê só o essencial.
+  const currentUser = db.getUser();
+  const canViewFiscalAttributes = hasPermission(currentUser?.role, 'taxes:view', currentUser?.permissions, currentUser?.isPrimary);
 
   // Confirm dialog state
   const [confirmState, setConfirmState] = useState<{
@@ -888,18 +894,20 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                             Recorrente · {getRecurrenceIntervalLabel(exp.intervalMonths)}
                           </span>
                         )}
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold ${
-                            exp.dedutivelLivroCaixaPf === 'SIM'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : exp.dedutivelLivroCaixaPf === 'CONDICIONAL'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-rose-100 text-rose-800'
-                          }`}
-                        >
-                          Livro Caixa: {exp.dedutivelLivroCaixaPf}
-                        </span>
-                        {exp.impactaFatorRPj && (
+                        {canViewFiscalAttributes && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold ${
+                              exp.dedutivelLivroCaixaPf === 'SIM'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : exp.dedutivelLivroCaixaPf === 'CONDICIONAL'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
+                            Livro Caixa: {exp.dedutivelLivroCaixaPf}
+                          </span>
+                        )}
+                        {canViewFiscalAttributes && exp.impactaFatorRPj && (
                           <span className="px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-indigo-100 text-indigo-800">Fator R</span>
                         )}
                         {exp.attachmentName && (
@@ -1044,14 +1052,16 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                   align="center"
                   className="min-w-[110px] whitespace-nowrap"
                 />
-                <th className="py-3 px-4 text-center whitespace-nowrap min-w-[120px]">Atributos Fiscais</th>
+                {canViewFiscalAttributes && (
+                  <th className="py-3 px-4 text-center whitespace-nowrap min-w-[120px]">Atributos Fiscais</th>
+                )}
                 <th className="py-3 px-4 text-center whitespace-nowrap min-w-[130px]">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-700">
               {displayExpenses.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-400">
+                  <td colSpan={canViewFiscalAttributes ? 10 : 9} className="py-12 text-center text-slate-400">
                     {viewMode === 'recurrent' || typeFilter === 'RECORRENTE' ? (
                       <div className="flex flex-col items-center justify-center gap-2">
                         <Repeat className="w-8 h-8 text-indigo-300" />
@@ -1103,7 +1113,9 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                       {/* 1. Categoria */}
                       <td className="py-3.5 px-4">
                         <span className="font-semibold text-slate-900">{exp.categoryName}</span>
-                        <div className="text-[10px] font-mono text-slate-400">{exp.categoryCode}</div>
+                        {canViewFiscalAttributes && (
+                          <div className="text-[10px] font-mono text-slate-400">{exp.categoryCode}</div>
+                        )}
                       </td>
 
                       {/* 2. Descrição */}
@@ -1220,39 +1232,41 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                       </td>
 
                       {/* 7. Atributos Fiscais */}
-                      <td className="py-3.5 px-4 text-center">
-                        <div className="inline-flex flex-col gap-1 items-center">
-                          <div className="flex items-center gap-1.5 text-[10px]">
-                            <span
-                              className={`px-1.5 py-0.5 rounded font-bold ${
-                                exp.dedutivelLivroCaixaPf === 'SIM'
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : exp.dedutivelLivroCaixaPf === 'CONDICIONAL'
-                                  ? 'bg-amber-100 text-amber-800'
-                                  : 'bg-rose-100 text-rose-800'
-                              }`}
-                              title="Dedutibilidade no Livro Caixa do Carnê-Leão (PF)"
-                            >
-                              Livro Caixa: {exp.dedutivelLivroCaixaPf}
-                            </span>
-
-                            {exp.impactaFatorRPj && (
+                      {canViewFiscalAttributes && (
+                        <td className="py-3.5 px-4 text-center">
+                          <div className="inline-flex flex-col gap-1 items-center">
+                            <div className="flex items-center gap-1.5 text-[10px]">
                               <span
-                                className="px-1.5 py-0.5 rounded font-bold bg-indigo-100 text-indigo-800"
-                                title="Impacta diretamente o Fator R (Folha de Salários / Pró-labore)"
+                                className={`px-1.5 py-0.5 rounded font-bold ${
+                                  exp.dedutivelLivroCaixaPf === 'SIM'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : exp.dedutivelLivroCaixaPf === 'CONDICIONAL'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-rose-100 text-rose-800'
+                                }`}
+                                title="Dedutibilidade no Livro Caixa do Carnê-Leão (PF)"
                               >
-                                Fator R
+                                Livro Caixa: {exp.dedutivelLivroCaixaPf}
+                              </span>
+
+                              {exp.impactaFatorRPj && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded font-bold bg-indigo-100 text-indigo-800"
+                                  title="Impacta diretamente o Fator R (Folha de Salários / Pró-labore)"
+                                >
+                                  Fator R
+                                </span>
+                              )}
+                            </div>
+
+                            {exp.isOverridden && (
+                              <span className="text-[9px] text-amber-700 font-semibold" title={exp.overrideJustification}>
+                                (Alteração manual)
                               </span>
                             )}
                           </div>
-
-                          {exp.isOverridden && (
-                            <span className="text-[9px] text-amber-700 font-semibold" title={exp.overrideJustification}>
-                              (Alteração manual)
-                            </span>
-                          )}
-                        </div>
-                      </td>
+                        </td>
+                      )}
 
                       {/* 8. Ações */}
                       <td className="py-3.5 px-4 text-center whitespace-nowrap min-w-[130px]" onClick={(e) => e.stopPropagation()}>
@@ -1473,7 +1487,9 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
                     <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Categoria</div>
                     <div className="text-sm font-bold text-slate-800 mt-0.5">{exp.categoryName}</div>
-                    <div className="text-[10px] font-mono text-slate-400">{exp.categoryCode}</div>
+                    {canViewFiscalAttributes && (
+                      <div className="text-[10px] font-mono text-slate-400">{exp.categoryCode}</div>
+                    )}
                   </div>
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
                     <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Status</div>
@@ -1519,7 +1535,8 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                   </div>
                 </div>
 
-                {/* Atributos fiscais */}
+                {/* Atributos fiscais (só gestão) */}
+                {canViewFiscalAttributes && (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span
                     className={`px-1.5 py-0.5 rounded font-bold text-[10px] ${
@@ -1543,6 +1560,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({
                     </span>
                   )}
                 </div>
+                )}
 
                 {/* Observações */}
                 {exp.notes && (

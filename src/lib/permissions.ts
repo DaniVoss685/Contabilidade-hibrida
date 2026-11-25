@@ -634,7 +634,11 @@ export function getPricingAccess(
 ): PricingAccess {
   return {
     canViewCosts: hasPermission(role, 'procedures:costs:view', customPermissions, isPrimary),
-    canEditPrice: hasPermission(role, 'procedures:price:edit', customPermissions, isPrimary),
+    // Quem cadastra/edita procedimentos (ex.: recepção com a aba liberada) também informa o preço.
+    // Custos, margem e parâmetros continuam sendo um nível à parte (costs:view / pricing:manage).
+    canEditPrice:
+      hasPermission(role, 'procedures:price:edit', customPermissions, isPrimary) ||
+      hasPermission(role, 'procedures:manage', customPermissions, isPrimary),
     canManagePricingParams: hasPermission(role, 'pricing:manage', customPermissions, isPrimary),
   };
 }
