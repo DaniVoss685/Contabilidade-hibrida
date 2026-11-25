@@ -36,9 +36,10 @@ export const LivroCaixaExcessModal: React.FC<LivroCaixaExcessModalProps> = ({
 }) => {
   const current = history.length > 0 ? history[history.length - 1] : null;
   const previous = history.slice(0, -1);
-  // Meses anteriores sem nenhum movimento não poluem a lista.
+  // Meses anteriores sem nenhum movimento não poluem a lista. Meses DESATIVADOS ficam sempre visíveis,
+  // para poderem ser reativados.
   const relevantPrevious = previous.filter(
-    (row) => row.despesas > 0 || row.excessoAnterior > 0 || row.rendimentos > 0
+    (row) => row.despesas > 0 || row.excessoAnterior > 0 || row.rendimentos > 0 || row.ignorado
   );
   const carried = current?.excessoAnterior ?? 0;
 

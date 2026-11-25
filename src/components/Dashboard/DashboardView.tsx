@@ -124,6 +124,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     normalizeIgnoredMonths(db.getPreferences().carneLeaoSettings?.excessIgnoredMonths)
   );
   const ignoredExcessKey = ignoredExcessMonths.join(',');
+  // Meses anteriores (do mesmo ano) que estão desativados no excesso: a linha do excesso precisa continuar
+  // visível mesmo com o valor zerado, senão não haveria como reativar.
+  const ignoredBeforeCount = isAnnualPeriod
+    ? 0
+    : ignoredExcessMonths.filter((m) => m.startsWith(`${dueCompetenceYear}-`) && m < dueCompetenceStr).length;
   const currentUserForExcess = db.getUser();
   const canManageExcessMonths = hasPermission(
     currentUserForExcess?.role,
@@ -624,13 +629,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span>{isProjected ? 'Livro Caixa projetado/utilizado:' : 'Livro Caixa utilizado — realizado:'}</span>
                     <span className="font-bold text-rose-700 font-mono tabular-nums">− {formatCurrency(calculation.livroCaixaUtilizado)}</span>
                   </div>
-                  {(calculation.despesasLivroCaixaMes > 0 || calculation.excessoLivroCaixaAnterior > 0) && (
+                  {(calculation.despesasLivroCaixaMes > 0 || calculation.excessoLivroCaixaAnterior > 0 || ignoredBeforeCount > 0) && (
                     <div className="rounded-lg bg-slate-50 border border-slate-200/70 px-3 py-2 space-y-1 text-[11px] text-slate-500" data-testid="livro-caixa-breakdown">
                       <div className="flex justify-between">
                         <span>Despesas do Livro Caixa lançadas no mês:</span>
                         <span className="font-mono tabular-nums text-slate-700">{formatCurrency(calculation.despesasLivroCaixaMes)}</span>
                       </div>
-                      {calculation.excessoLivroCaixaAnterior > 0 && (
+                      {(calculation.excessoLivroCaixaAnterior > 0 || ignoredBeforeCount > 0) && (
                         <button
                           type="button"
                           onClick={() => setIsExcessModalOpen(true)}
@@ -640,7 +645,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         >
                           <span className="underline decoration-dotted underline-offset-2 group-hover:text-teal-800">
                             + Excesso trazido de meses anteriores
-                            <span className="ml-1.5 rounded-full bg-teal-100 px-1.5 py-0.5 text-[9.5px] font-bold text-teal-800 no-underline">ver detalhes</span>
+                            <span className="ml-1.5 rounded-full bg-teal-100 px-1.5 py-0.5 text-[9.5px] font-bold text-teal-800 no-underline">
+                              {ignoredBeforeCount > 0 ? 'ver detalhes / reativar' : 'ver detalhes'}
+                            </span>
                           </span>
                           <span className="font-mono tabular-nums text-slate-700">{formatCurrency(calculation.excessoLivroCaixaAnterior)}</span>
                         </button>
@@ -649,9 +656,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <span>= Disponível para deduzir:</span>
                         <span className="font-mono tabular-nums">{formatCurrency(calculation.livroCaixaDisponivel)}</span>
                       </div>
-                      {ignoredExcessMonths.some((m) => m.startsWith(String(dueCompetenceYear))) && (
+                      {ignoredBeforeCount > 0 && (
                         <div className="text-amber-700" data-testid="excess-ignored-warning">
-                          Há mês(es) desativado(s) no excesso (receitas ainda não lançadas). O valor pode mudar quando forem reativados.
+                          {ignoredBeforeCount === 1 ? '1 mês desativado' : `${ignoredBeforeCount} meses desativados`} no excesso (receitas ainda não lançadas). O valor pode mudar quando {ignoredBeforeCount === 1 ? 'for reativado' : 'forem reativados'}.{' '}
+                          <button
+                            type="button"
+                            onClick={() => setIsExcessModalOpen(true)}
+                            data-testid="reactivate-excess-months"
+                            className="font-bold underline underline-offset-2 hover:text-amber-900 cursor-pointer"
+                          >
+                            Reativar meses
+                          </button>
                         </div>
                       )}
                       {calculation.excessoLivroCaixaProximoMes > 0 && (

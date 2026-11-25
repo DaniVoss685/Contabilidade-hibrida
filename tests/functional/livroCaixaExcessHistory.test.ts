@@ -179,6 +179,8 @@ console.log('\n=== 8. Tela: botão por mês e aviso ===');
     assert(readFileSync(f, 'utf-8').includes('excessIgnoredMonths'), `${f.split('/').pop()} usa a mesma escolha de meses (sem número diferente entre telas)`);
   }
   assert(readFileSync('src/components/Financial/FinancialDashboard.tsx', 'utf-8').includes('excessIgnoredMonths'), 'DRE anual usa a mesma escolha de meses');
+  assert(dash.includes('ignoredBeforeCount > 0') && dash.includes('data-testid="reactivate-excess-months"'), 'com meses desativados a linha do excesso continua visível (mesmo com R$ 0,00) e há o botão "Reativar meses"');
+  assert(/row\.ignorado\s*\)/.test(modal) && modal.includes('Meses DESATIVADOS ficam sempre visíveis'), 'o detalhe lista sempre os meses desativados, mesmo sem movimento, para poderem ser reativados');
 }
 
 console.log(`\n${passed} verificações passaram.`);
