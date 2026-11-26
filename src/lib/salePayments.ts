@@ -348,7 +348,12 @@ export function buildSaleInstallments(p: {
         ...snap,
         netValue: row.net,
         dueDate: dueDateStr,
-        paymentDate: wasPaid ? prevInst?.paymentDate || al.paymentDate || (p.isEditing ? p.saleDate : p.paymentDate) : undefined,
+        // Receita já recebida: a data que o usuário informa na edição (1ª parcela da forma de pagamento) vale;
+        // antes a data antiga sempre vencia e a troca de recebimento (ex.: novembro -> setembro) nunca era salva.
+        // Sem data informada (ou nas demais parcelas), preserva a data já gravada.
+        paymentDate: wasPaid
+          ? (idx === 0 && al.paymentDate ? al.paymentDate : prevInst?.paymentDate || al.paymentDate || (p.isEditing ? p.saleDate : p.paymentDate))
+          : undefined,
         amountReceived: wasPaid ? prevInst?.amountReceived || row.net : undefined,
         status: wasPaid ? 'RECEBIDO' : 'A_RECEBER',
         receitaSaudeStatus: receitaStatus,
