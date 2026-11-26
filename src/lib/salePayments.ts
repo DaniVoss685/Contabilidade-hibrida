@@ -354,7 +354,11 @@ export function buildSaleInstallments(p: {
         paymentDate: wasPaid
           ? (idx === 0 && al.paymentDate ? al.paymentDate : prevInst?.paymentDate || al.paymentDate || (p.isEditing ? p.saleDate : p.paymentDate))
           : undefined,
-        amountReceived: wasPaid ? prevInst?.amountReceived || row.net : undefined,
+        // Receita já recebida: se o VALOR foi editado, o recebido acompanha o novo líquido (antes ficava o valor antigo
+        // e o Carnê-Leão/saldo somavam menos que a venda). Valor igual: preserva o recebido já gravado (ex.: baixa ajustada).
+        amountReceived: wasPaid
+          ? (prevInst && prevInst.value === row.value ? prevInst.amountReceived || row.net : row.net)
+          : undefined,
         status: wasPaid ? 'RECEBIDO' : 'A_RECEBER',
         receitaSaudeStatus: receitaStatus,
         receitaSaudeId: receitaId,
