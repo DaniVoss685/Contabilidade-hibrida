@@ -40,6 +40,8 @@ import { useFiscalBase } from '../../hooks/useFiscalBase';
 import { FirstStepsChecklist } from './FirstStepsChecklist';
 import { FatorRProgress } from './FatorRProgress';
 import { LivroCaixaExcessModal } from './LivroCaixaExcessModal';
+import { HybridSavingsCard } from './HybridSavingsCard';
+import { computeHybridSavings } from '../../lib/hybridSavings';
 import { getLivroCaixaMonthlyHistory } from '../../lib/taxEngine';
 import { normalizeIgnoredMonths, setMonthIgnored } from '../../lib/carneLeaoExcessSettings';
 import { hasPermission } from '../../lib/permissions';
@@ -234,6 +236,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [fiscalBase, sales, dueCompetenceStr, dueCompetenceYear, isAnnualPeriod, effectiveYear, taxRulesSimples]
   );
   const fiscalBaseLabel = formatCompetencyShortName(fiscalBase.referenceCompetency);
+
+  // Economia do modelo híbrido: imposto do mês se tudo fosse só PF, só PJ, e como está hoje (híbrido).
+  const hybridSavings = useMemo(() => {
+    if (cpfTax.isAnnualSummary) return null;
+    const result = computeHybridSavings({
+      cpf: cpfCalculationDisplayed,
+      cnpjRevenue: cnpjTax.monthlyRevenueNfse,
+      hybridDas: cnpjTax.available ? cnpjTax.dasEstimated : 0,
+      simplesEffectiveRatePct: cnpjTax.available ? cnpjTax.effectiveTaxRate : null,
+      taxRules: taxRulesPf,
+    });
+    return result.receitaTotal > 0 ? result : null;
+  }, [cpfTax.isAnnualSummary, cpfCalculationDisplayed, cnpjTax, taxRulesPf]);
   const dueCompetenceLabel = formatCompetencyShortName(dueCompetenceStr);
   // A guia do mês é paga no mês seguinte.
   const dueMonthLabel = formatCompetencyShortName(addMonthsToCompetency(dueCompetenceStr, 1));
@@ -1024,6 +1039,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       </div>
+
+      {hybridSavings && (
+        <HybridSavingsCard savings={hybridSavings} monthLabel={dueCompetenceLabel} isProjected={isCpfProjected} />
+      )}
 
       {/* QUICK PENDING ALERTS SECTION */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
